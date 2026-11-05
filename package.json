@@ -11,7 +11,8 @@
     "start": "node src/index.js",
     "dry": "node src/index.js --dry",
     "selftest": "node scripts/selftest.mjs",
-    "doctor": "node scripts/doctor.mjs"
+    "doctor": "node scripts/doctor.mjs",
+    "status": "bash scripts/status.sh"
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.76.0"

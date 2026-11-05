@@ -222,6 +222,8 @@ const M = { cost: optional, tokens: optional }
 
 不直接用桌面 App 那个 `serve --service` 实例：它用私有 token 认证，桥接不该去猜。桥接自己起一份，用配置里的密码。
 
+顺带的好处是**桌面 App 不用常开**：桥接用的是 App 装在磁盘上的那份二进制，不是 App 的进程。实测两个进程之间没有任何 socket 连接，关掉 App 对上层的飞书链路毫无影响。代价是 App 升级后要手动重起一次（新版本在新目录里）。
+
 ### 实现
 
 `src/which-opencode.js` 负责选二进制，优先级：
@@ -357,6 +359,7 @@ scripts/demo-card.mjs   发一张验收样式的卡片到飞书
 scripts/e2e-table.mjs   端到端表格渲染验证
 scripts/up.sh           起 serve + 起桥接，nohup 常驻，PID 落盘
 scripts/down.sh         按 PID 停止两个进程
+scripts/status.sh       看状态：serve、桥接、桌面 App、最近日志
 ```
 
 ---

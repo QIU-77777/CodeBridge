@@ -171,10 +171,12 @@ npm run doctor
 ### 5. 启动
 
 ```bash
-./scripts/up.sh     # 启动（同时拉起 serve 和桥接，后台常驻，写 pid 文件）
-./scripts/down.sh   # 停止
-tail -f logs/bridge.log
+./scripts/up.sh       # 启动：同时拉起 opencode serve + 桥接，后台常驻，写 pid 文件
+./scripts/status.sh   # 看状态：谁在跑、跑了多久、最近日志
+./scripts/down.sh     # 停止：两个一起停
 ```
+
+三个都可以重复跑：`up.sh` 在已运行时只提示「已在运行」，`down.sh` 在没有进程时也不报错。
 
 `up.sh` 会读配置里的 `password` 用同样的密码起 serve，不用手动对齐两边。
 
@@ -185,6 +187,12 @@ npm start
 ```
 
 看到 `✅ 桥接已就绪` 后，飞书里搜机器人名字，私聊发 `/help`。
+
+> **桌面版 App 不需要一直开着。** 桥接用的是 App 装在磁盘上的那份 `opencode-cli`（`~/Library/Application Support/ai.opencode.desktop/cli/<版本>-arm64/`），不是 App 的进程。两个进程各跑各的，实测桥接链路和 App 的 `serve --service` 之间没有任何连接。关掉 App 照样能在飞书里派活；只有在你想亲眼看着它执行、或者接着聊同一个会话时，才需要打开 App。
+>
+> 反过来要注意：升级桌面版之后，新版本的 CLI 在**新目录**里，正在跑的旧进程不会自己换。`./scripts/down.sh && ./scripts/up.sh` 一次即可。
+
+> **重启电脑不会自动起。** 因为用的是 `nohup`，不写进系统启动项。常见做法是手动跑一次 `./scripts/up.sh`；想要开机自启可以配一个 launchd 用户级 agent。
 
 > **不要同时跑两个桥接进程。** 有单实例锁（`~/.config/opencode-feishu-bridge/bridge.lock`），第二个会直接报错退出——否则同一条消息会被回两遍。
 
