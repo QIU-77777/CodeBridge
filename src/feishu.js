@@ -19,6 +19,10 @@ export class FeishuTransport {
     this.self = null
     /** chat_id -> 群名，取不到就记空串，避免每来一条消息打一次接口 */
     this.chatNames = new Map()
+    /** chat_id -> Map<open_id, 名字>，开了 im:chat.members:read 才有 */
+    this.members = new Map()
+    /** 成员接口被拒过一次就不再试，免得每条消息都撞 403 */
+    this.membersDenied = false
 
     this.client = new Lark.Client({
       appId: this.cfg.appId,
@@ -112,6 +116,46 @@ export class FeishuTransport {
     }
     this.chatNames.set(chatId, name)
     return name
+  }
+
+  /**
+   * 发送者名字：先问上层缓存（配置 / 之前 @ 攒的），没有再去拉群成员列表。
+   *
+   * 群成员列表要 im:chat.members:read。没开就置 membersDenied，之后不再重试，
+   * 名字退回「从 @ 提及里攒」——两条路都走不通时标注里只有 open_id，不影响功能。
+   */
+  async resolveSenderName(chatId, openId) {
+    if (!openId) return ''
+    const known = this.nameOf?.(openId) || ''
+    if (known) return known
+
+    if (!chatId || this.membersDenied) return ''
+    if (!this.members.has(chatId)) {
+      const map = new Map()
+      try {
+        let pageToken = ''
+        for (let page = 0; page < 5; page++) {
+          const url =
+            `/open-apis/im/v1/chats/${chatId}/members?member_id_type=open_id&page_size=100` +
+            (pageToken ? `&page_token=${encodeURIComponent(pageToken)}` : '')
+          const res = await this.client.request({ method: 'GET', url })
+          const items = res?.data?.items || []
+          for (const m of items) if (m?.member_id && m?.name) map.set(m.member_id, m.name)
+          pageToken = res?.data?.page_token || ''
+          if (!res?.data?.has_more || !pageToken) break
+        }
+      } catch (err) {
+        this.membersDenied = true
+        this.log.warn(
+          '群成员列表不可用（大概是缺 im:chat.members:read），名字改为从 @ 提及里攒: ' +
+            (err?.message || err),
+        )
+      }
+      this.members.set(chatId, map)
+      // 一次拿到的全家名字顺手交给上层存起来，下次连接口都不用打
+      if (map.size) this.onSeenNames?.([...map].map(([id, name]) => ({ openId: id, name })))
+    }
+    return this.members.get(chatId)?.get(openId) || ''
   }
 
   async handleImMessage(data) {
@@ -215,7 +259,7 @@ export class FeishuTransport {
     const where = isGroup ? (chatName ? `群「${chatName}」` : '群聊') : '私聊'
     const scope = isGroup ? (m.root_id ? '话题内' : '主聊天流') : ''
     const when = new Date(Number(m.create_time) || Date.now()).toLocaleString('zh-CN', { hour12: false })
-    const nick = this.nameOf?.(userId) || ''
+    const nick = (await this.resolveSenderName(m.chat_id, userId)) || ''
     const sender = nick ? `${nick} · ${userId}` : userId || '未知'
     const origin =
       `[飞书 · ${where}${scope ? ` · ${scope}` : ''} · ` +

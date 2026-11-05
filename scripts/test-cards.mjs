@@ -593,6 +593,121 @@ if (process.argv.includes('--live')) {
   unlinkSync(path)
 }
 
+// ---------- 6.7 开了 im:chat.members:read 之后自动补名字 ----------
+{
+  const { FeishuTransport } = await import('../src/feishu.js')
+  const got = []
+  const learned = []
+  const known = new Map()
+  const t = new FeishuTransport(
+    { feishu: { appId: 'cli_x', appSecret: 'sec_x', requireMention: true } },
+    {
+      onMessage: async (m) => got.push(m),
+      onCardAction: async () => {},
+      nameOf: (id) => known.get(id) || '',
+      onSeenNames: (list) => {
+        learned.push(...list)
+        for (const x of list) known.set(x.openId, x.name)
+      },
+      logger: { info() {}, warn() {}, error() {} },
+    },
+  )
+  t.resolveSelf = async () => ({ open_id: 'ou_me', name: 'LiLO' })
+  let memberCalls = 0
+  t.client = {
+    request: async ({ url }) => {
+      if (/\/members\?/.test(url)) {
+        memberCalls++
+        return {
+          data: {
+            items: [
+              { member_id: 'ou_lild', name: '小d' },
+              { member_id: 'ou_human', name: '邱璟光' },
+            ],
+            has_more: false,
+          },
+        }
+      }
+      if (/\/chats\/oc_g$/.test(url)) return { data: { name: '桥接话题探针' } }
+      throw new Error('no permission')
+    },
+  }
+
+  await t.handleImMessage({
+    message: {
+      message_type: 'text',
+      chat_type: 'group',
+      chat_id: 'oc_g',
+      message_id: 'om_m1',
+      content: JSON.stringify({ text: '@_user_1 你好' }),
+      mentions: [{ key: '@_user_1', id: { open_id: 'ou_me' }, name: 'LiLO' }],
+    },
+    sender: { sender_id: { open_id: 'ou_lild' }, sender_type: 'app' },
+  })
+  ok(/小d · ou_lild/.test(got[0]?.origin || ''), '成员列表可用时，发送者名字自动补上', got[0]?.origin)
+  ok(
+    learned.some((x) => x.openId === 'ou_human' && x.name === '邱璟光'),
+    '拉一次成员列表就把所有人的名字都存下来',
+  )
+  ok(memberCalls === 1, '同一个群只拉一次成员列表', `调用了 ${memberCalls} 次`)
+
+  await t.handleImMessage({
+    message: {
+      message_type: 'text',
+      chat_type: 'group',
+      chat_id: 'oc_g',
+      message_id: 'om_m2',
+      content: JSON.stringify({ text: '@_user_1 再来' }),
+      mentions: [{ key: '@_user_1', id: { open_id: 'ou_me' }, name: 'LiLO' }],
+    },
+    sender: { sender_id: { open_id: 'ou_human' }, sender_type: 'user' },
+  })
+  ok(/邱璟光 · ou_human/.test(got[1]?.origin || ''), '第二个人也直接命中缓存')
+  ok(memberCalls === 1, '没有重复打接口')
+}
+
+// ---------- 6.8 没有成员权限时，只警告一次并退回攒名字 ----------
+{
+  const { FeishuTransport } = await import('../src/feishu.js')
+  const warns = []
+  let calls = 0
+  const t = new FeishuTransport(
+    { feishu: { appId: 'cli_x', appSecret: 'sec_x', requireMention: true } },
+    {
+      onMessage: async () => {},
+      onCardAction: async () => {},
+      nameOf: () => '',
+      onSeenNames: () => {},
+      logger: { info() {}, warn: (m) => warns.push(m), error() {} },
+    },
+  )
+  t.resolveSelf = async () => ({ open_id: 'ou_me', name: 'LiLO' })
+  t.client = {
+    request: async ({ url }) => {
+      if (/\/members\?/.test(url)) {
+        calls++
+        throw new Error('99991672 Access denied')
+      }
+      return { data: { name: '群' } }
+    },
+  }
+  const ev = (id) => ({
+    message: {
+      message_type: 'text',
+      chat_type: 'group',
+      chat_id: 'oc_g',
+      message_id: id,
+      content: JSON.stringify({ text: '@_user_1 hi' }),
+      mentions: [{ key: '@_user_1', id: { open_id: 'ou_me' }, name: 'LiLO' }],
+    },
+    sender: { sender_id: { open_id: 'ou_x' }, sender_type: 'user' },
+  })
+  await t.handleImMessage(ev('om_n1'))
+  await t.handleImMessage(ev('om_n2'))
+  ok(calls === 1, '被拒一次后不再重试，避免每条消息都撞 403', `调用了 ${calls} 次`)
+  ok(warns.filter((w) => /members:read/.test(w)).length === 1, '只警告一次，并说明缺哪个权限')
+}
+
 // ---------- 7. 按钮要带上话题上下文 ----------
 {
   const st = new RunState('ses_a')
