@@ -180,6 +180,51 @@ OPENCODE_SERVER_PASSWORD="$PW" opencode serve --port 19876
 | 报 `Invalid URL` / `connect failed` | SDK 的 `domain` 传错。必须是 `Lark.Domain.Feishu` 枚举，不能是字符串 `'Feishu'`（会被当成 URL 前缀拼进请求路径） |
 | 报 `200672` | 回调返回体里带了 `card` 字段，只允许返回 `{toast}` |
 | 报 `200830` | 用旧版卡片 patch 一张 2.0 卡片（或反过来）。本项目卡片全是 2.0 |
+| `Failed to decode message msg_xxx in session ses_xxx` | 见下一节 |
+
+### opencode 升级后的历史数据兼容问题
+
+表现：某个会话突然发不出消息，卡片 1 秒内就失败，错误里带 `Failed to decode message … in session …`，而且每次都是同一个 `msg_id`。
+
+原因不在桥接。opencode 的会话历史存在 `~/.local/share/opencode/opencode.db` 的 `session_message` 表里，每条记录是一个 JSON。v2.0.32 的 `Session.Message.Compaction.Completed` schema 长这样：
+
+```js
+{ type:'compaction', status:'completed', reason:enum('auto','manual'),
+  model?: {...}, providerState?, summary: string,
+  recent: string,                      // ← 必填，没有 .optional()
+  providerContext?, cost?, tokens? }
+```
+
+有些记录是更早的版本写的，**没有 `recent` 字段**。opencode 在 `SessionRunner.drain → settleStaleToolCalls → SessionHistory.load` 读历史时解码失败，请求在走到模型之前就挂了，所以耗时永远不到 1 秒。
+
+诊断：
+
+```bash
+sqlite3 ~/.local/share/opencode/opencode.db "
+  select case when json_extract(data,'\$.recent') is null then '缺 recent' else 'ok' end k,
+         count(*) from session_message where type='compaction' group by k;"
+```
+
+修复（先停 serve、先备份）：
+
+```bash
+./scripts/down.sh
+cp -p ~/.local/share/opencode/opencode.db ~/.local/share/opencode/opencode.db.bak-$(date +%Y%m%d-%H%M%S)
+sqlite3 ~/.local/share/opencode/opencode.db "
+  BEGIN IMMEDIATE;
+  UPDATE session_message SET data = json_set(data,'\$.recent','')
+   WHERE type='compaction' AND json_valid(data)
+     AND json_extract(data,'\$.recent') IS NULL;
+  COMMIT;"
+./scripts/up.sh
+```
+
+`recent` 是「保留原文的最近若干轮」，补空串是合法值（事件投影里本身就有 `recent: r.data.recent ?? ""`）。`summary` 不动，压缩摘要不丢。
+
+验证：`GET /api/session/<id>/context` 返回 200 即恢复（这个接口走的就是 `SessionHistory.load`，和失败路径同一条）。
+
+桥接这边做了兜底：卡片会把这段错误翻译成一句人话，并提示可以修数据或 `/new`。
+
 
 ---
 
@@ -188,11 +233,11 @@ OPENCODE_SERVER_PASSWORD="$PW" opencode serve --port 19876
 | 层 | 手段 | 覆盖 |
 |---|---|---|
 | 组件级 | `scripts/probe-card.mjs` | 平台收不收这种结构 |
-| 单元级 | `scripts/test-cards.mjs`（31 项） | Markdown 解析、卡片结构、大小、看门狗 |
+| 单元级 | `scripts/test-cards.mjs`（36 项） | Markdown 解析、卡片结构、大小、看门狗 |
 | 集成级 | `scripts/selftest.mjs`（23 项） | 真实建会话、真实 prompt、流式聚合、命令、回调、白名单 |
 | 端到端 | `scripts/e2e-table.mjs` | 真实模型输出 → 真实事件流 → 真实卡片 |
 
-`test-cards.mjs` 加 `--live` 会额外真实发送并 patch 一张卡片，共 34 项。
+`test-cards.mjs` 加 `--live` 会额外真实发送并 patch 一张卡片，多 3 项。
 
 ---
 
@@ -210,7 +255,7 @@ src/feishu.js    飞书长连接与消息收发
 src/index.js     入口（含 --dry 模式、单实例锁）
 
 scripts/selftest.mjs    集成自测（23 项）
-scripts/test-cards.mjs  卡片、markdown、看门狗测试（31 项；--live 34 项）
+scripts/test-cards.mjs  卡片、markdown、看门狗、错误提示测试（36 项；--live 多 3 项）
 scripts/doctor.mjs      环境体检
 scripts/probe-card.mjs  卡片 schema 探针
 scripts/demo-card.mjs   发一张验收样式的卡片到飞书

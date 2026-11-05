@@ -38,6 +38,38 @@ function hr() {
   return { tag: 'hr' }
 }
 
+/**
+ * 把 opencode 抛出的原始错误码，翻译成一句「接下来该干什么」。
+ *
+ * 面向的是在手机上看卡片的人：他只看到一段堆栈样的英文，不知道是自己的问题
+ * 还是环境的问题。这里只覆盖已经真实踩到过的几种。
+ */
+const ERROR_HINTS = [
+  [
+    /Failed to decode message .+ in session/i,
+    '这个会话的历史里有本机 opencode 旧版本写入、当前版本读不出来的压缩记录（缺 `recent` 字段）。' +
+      '请求在读历史这一步就失败了，还没走到模型。修复：给本地 `opencode.db` 的 `session_message` 表补字段；' +
+      '或先 `/new` 开个新会话继续干活。',
+  ],
+  [
+    /not available in your country|RegionError/i,
+    '这个模型在当前地区不可用。用 `/model` 换一个。',
+  ],
+  [
+    /Session\.BusyError|session is busy/i,
+    '这个会话还有任务在跑。等它结束，或 `/stop` 后再发。',
+  ],
+  [
+    /Session\.NotFoundError/i,
+    '会话已经不存在了（可能被删掉）。用 `/new` 建一个。',
+  ],
+]
+
+function hintFor(msg) {
+  for (const [re, hint] of ERROR_HINTS) if (re.test(msg)) return hint
+  return ''
+}
+
 function button(text, value, type = 'default', extra = {}) {
   return {
     tag: 'button',
@@ -144,6 +176,8 @@ export function runCard(state, meta = {}) {
   if (state.status === 'failed' && state.error) {
     const msg = state.error.message || JSON.stringify(state.error)
     elements.push(hr(), div(`**错误**\n\`${truncate(msg, 500)}\``))
+    const hint = hintFor(msg)
+    if (hint) elements.push(note(`💡 ${hint}`))
   }
 
   const footer = []

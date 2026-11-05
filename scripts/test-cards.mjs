@@ -104,6 +104,26 @@ ok(JSON.stringify(rcTools).includes('工具调用'), 'showTools=true 时才显�
 const size = JSON.stringify(rc).length
 ok(size < 30_000, `runCard 序列化 < 30KB（${size} 字节）`)
 
+// 失败卡片：已知错误要带一句「接下来干什么」
+{
+  const mk = (message) => {
+    const s = new RunState('ses_err')
+    s.status = 'failed'
+    s.startedAt = Date.now() - 500
+    s.updatedAt = Date.now()
+    s.error = { message }
+    return JSON.stringify(runCard(s, { directory: '/Users/x/proj' }))
+  }
+  const decode = mk(
+    'Failed to decode message msg_1a680b70f001mTb0jsEsQXBe2v in session ses_ede75d736ffeZ57F53gCQtXRx4',
+  )
+  ok(decode.includes('recent'), '解码失败给出「缺 recent 字段」的定位')
+  ok(decode.includes('db') || decode.includes('opencode.db'), '解码失败提示可以修数据库')
+  ok(mk('RegionError: This model is not available in your country').includes('/model'), 'RegionError 提示换模型')
+  ok(mk('Session.BusyError: session is busy').includes('/stop'), 'BusyError 提示 /stop')
+  ok(!mk('some totally unknown failure').includes('💡'), '未知错误不加臆测提示')
+}
+
 for (const [name, card] of Object.entries({
   textCard: textCard('标题', '正文 **加粗**'),
   sessionsCard: sessionsCard({
