@@ -205,8 +205,8 @@ export function runCard(state, meta = {}) {
     if (hint) elements.push(note(`💡 ${hint}`))
   }
 
-  // 后缀：先一行用量/帮助，再是按钮。正文与后缀之间不再加分割线 ——
-  // 正文本身结尾就有留白，再加一条线会把卡片切得太碎。
+  // 后缀：按钮在上，用量/帮助那行小字在下。正文与后缀之间不加分割线 ——
+  // 正文结尾本身就有留白，再加一条线会把卡片切得太碎。
   /**
    * 用量 + 帮助合成一行。
    *
@@ -223,15 +223,15 @@ export function runCard(state, meta = {}) {
   // 按钮只覆盖三个高频动作，/model /cd /switch 这些不看 /help 是发现不了的。
   // 群里要写清楚还得先 @ 一下，否则用户以为直接打字就行。
   const help = meta.isGroup ? '@我 并发送 `/help` 查看全部命令' : '发送 `/help` 查看全部命令'
-  elements.push(note(usage.length ? `${usage.join(' · ')}　｜　${help}` : help))
 
-  // 按钮放在最后：先给结论和用量，要操作了再往下按。
   const footer = []
   const nav = navOf({ k: meta.key, rt: meta.rootId })
   if (state.status === 'running') footer.push(button('中止', { a: 'abort', s: state.sessionId, ...nav }, 'danger'))
   footer.push(button('新会话', { a: 'new', ...nav }, 'default'))
   footer.push(button('会话列表', { a: 'sessions', ...nav }, 'default'))
   elements.push(buttonRow(footer))
+
+  elements.push(note(usage.length ? `${usage.join(' · ')}　｜　${help}` : help))
 
   // 状态写进标题：光靠一个 emoji 看不出「还在跑」还是「已经停了」，
   // 尤其是流式过程中卡片本来就在一直变，用户需要一个明确的状态词。

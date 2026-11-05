@@ -111,7 +111,7 @@ ok(size < 30_000, `runCard 序列化 < 30KB（${size} 字节）`)
   ok(group.includes('/help'), '群里：卡片带 /help 提示')
   ok(group.includes('@我'), '群里：提示里写明要先 @，否则用户会直接打字')
   ok(dm.includes('/help') && !dm.includes('@我'), '私聊：只写发送 /help，不提 @')
-  ok(group.indexOf('/help') < group.indexOf('会话列表'), '帮助提示排在按钮之前（文本在上、按钮在下）')
+  ok(group.indexOf('/help') > group.indexOf('会话列表'), '帮助提示排在按钮之后')
 }
 
 // 分割线只在「前缀 │ 正文」之间，正文和按钮之间不加
@@ -125,10 +125,10 @@ ok(size < 30_000, `runCard 序列化 < 30KB（${size} 字节）`)
   ok(prefixAt === 0 && firstHr === 1, '分割线紧跟在前缀之后')
   ok(els.slice(2, btnAt).every((e) => e.tag !== 'hr'), '正文与按钮之间没有分割线')
 
-  // 后缀顺序：文本在上，按钮在下
+  // 后缀顺序：按钮在上，文字在下
   const noteAt = els.findIndex((e) => e.tag === 'markdown' && e.text_size === 'notation')
-  ok(noteAt > 0 && noteAt < btnAt, '用量/帮助那行在按钮之上')
-  ok(btnAt === els.length - 1, '按钮行是最后一个元素')
+  ok(noteAt > btnAt, '用量/帮助那行在按钮之下')
+  ok(noteAt === els.length - 1, '小字行是最后一个元素')
 
   // 没有前缀时不硬塞分割线
   const noDir = runCard(st, {}).body.elements
