@@ -33,17 +33,20 @@ export class Store {
     return this.data.chats[chatId] || null
   }
 
-  set(chatId, patch) {
-    const prev = this.data.chats[chatId] || { chatId }
-    this.data.chats[chatId] = { ...prev, ...patch, chatId, updatedAt: Date.now() }
+  set(key, patch) {
+    const prev = this.data.chats[key] || { key }
+    // chatId 是「发消息的目标会话」，key 是「哪个话题/哪个私聊」的绑定键。
+    // 私聊两者相同；群里 key 是 root:<话题根消息>，chatId 仍是群 id。
+    const chatId = patch.chatId || prev.chatId || key
+    this.data.chats[key] = { ...prev, ...patch, key, chatId, updatedAt: Date.now() }
     this.scheduleSave()
-    return this.data.chats[chatId]
+    return this.data.chats[key]
   }
 
-  clearSession(chatId) {
-    const cur = this.data.chats[chatId]
+  clearSession(key) {
+    const cur = this.data.chats[key]
     if (!cur) return
-    this.data.chats[chatId] = { chatId, directory: cur.directory, updatedAt: Date.now() }
+    this.data.chats[key] = { ...cur, sessionId: undefined, updatedAt: Date.now() }
     this.scheduleSave()
   }
 

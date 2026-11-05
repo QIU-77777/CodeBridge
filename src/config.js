@@ -36,6 +36,9 @@ const DEFAULTS = {
     maxBodyChars: 6000,
     // 超时多久（毫秒）认为执行卡死
     idleTimeoutMs: 15 * 60 * 1000,
+    // 同时最多跑几个任务（群里每个话题是一个独立会话，彼此并行）。
+    // 设 0 = 不限。每个会话都在真跑 bash/node，开太多会打满本机，建议 2–3
+    maxParallel: 2,
   },
 }
 
@@ -106,6 +109,7 @@ export function writeExampleConfig() {
       showTools: false,
       maxBodyChars: 6000,
       idleTimeoutMs: 900000,
+      maxParallel: 2,
     },
   }
   writeFileSync(CONFIG_PATH, JSON.stringify(example, null, 2), 'utf8')

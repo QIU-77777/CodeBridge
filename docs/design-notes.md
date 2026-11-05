@@ -134,13 +134,18 @@ const replyNew = (toast, card) => {
 
 ## 六、状态与并发
 
-### chat → session 映射是唯一真相来源
+### 绑定键 → session 映射是唯一真相来源
 
 存在 `~/.config/opencode-feishu-bridge/state.json`：
 
 ```json
-{ "chats": { "oc_xxx": { "sessionId": "ses_xxx", "directory": "/Users/you/project" } } }
+{ "chats": {
+    "oc_xxx":          { "key": "oc_xxx", "chatId": "oc_xxx", "sessionId": "ses_xxx", "directory": "~/proj" },
+    "root:om_yyy":     { "key": "root:om_yyy", "chatId": "oc_zzz", "replyTo": "om_yyy", "sessionId": "ses_yyy" }
+} }
 ```
+
+键是「哪个私聊」或「群里哪条话题」（私聊 = `chat_id`，群里 = `root:<话题根消息>`，见第十二节）。`chatId` 是发消息的目标，`replyTo` 是话题根，两者都不能拿键去顶。
 
 为什么不问 opencode「当前活跃会话是哪个」？因为 v2 的 `/api/session/active` **只反映界面选中项**，不是「这个飞书聊天该用哪个」。而且 IM 天然多租户：一个私聊、一个群各自独立绑定，opencode 侧没有这个概念。
 
@@ -155,6 +160,8 @@ const replyNew = (toast, card) => {
 ### 并发保护
 
 同一会话只能跑一个任务。上一条还在跑时新消息直接拒绝，不排队——排队的失败是静默的，用户不知道自己的话什么时候生效。
+
+群里是「一条话题一个会话」，所以不同话题天然并行；整机再压一道 `behavior.maxParallel`（默认 2）的上限，细节见第十二节。
 
 ---
 
@@ -328,7 +335,8 @@ sqlite3 ~/.local/share/opencode/opencode.db "
 | 层 | 手段 | 覆盖 |
 |---|---|---|
 | 组件级 | `scripts/probe-card.mjs` | 平台收不收这种结构 |
-| 单元级 | `scripts/test-cards.mjs`（43 项） | Markdown 解析、卡片结构、大小、看门狗、错误提示、二进制选择 |
+| 行为探针 | `scripts/probe-thread.mjs` | 飞书话题的 `thread_id` / `root_id` 到底是什么 |
+| 单元级 | `scripts/test-cards.mjs`（61 项） | Markdown 解析、卡片结构、大小、看门狗、错误提示、二进制选择、话题绑定、并行上限 |
 | 集成级 | `scripts/selftest.mjs`（23 项） | 真实建会话、真实 prompt、流式聚合、命令、回调、白名单 |
 | 端到端 | `scripts/e2e-table.mjs` | 真实模型输出 → 真实事件流 → 真实卡片 |
 
@@ -351,10 +359,11 @@ src/index.js     入口（含 --dry 模式、单实例锁）
 src/which-opencode.js  选哪个 opencode 二进制（桌面版 CLI 优先）
 
 scripts/selftest.mjs    集成自测（23 项）
-scripts/test-cards.mjs  卡片、markdown、看门狗、错误提示测试（43 项；--live 多 3 项）
+scripts/test-cards.mjs  卡片、markdown、看门狗、错误提示、话题绑定测试（61 项；--live 多 3 项）
 scripts/doctor.mjs      环境体检（含版本一致性检查）
 scripts/which-opencode.mjs  打印选中的二进制，供 up.sh 调用
 scripts/probe-card.mjs  卡片 schema 探针
+scripts/probe-thread.mjs 话题探针（建群/发话题/打印 thread_id）
 scripts/demo-card.mjs   发一张验收样式的卡片到飞书
 scripts/e2e-table.mjs   端到端表格渲染验证
 scripts/up.sh           起 serve + 起桥接，nohup 常驻，PID 落盘
@@ -364,7 +373,66 @@ scripts/status.sh       看状态：serve、桥接、桌面 App、最近日志
 
 ---
 
-## 十二、后续方向
+## 十二、群聊：一条话题一个会话
+
+私聊只有一个会话，串行是对的。群里不行：绑定键是 `chat_id`，整个群共用一个会话，所有人 @ 它都排在同一个队列里，上下文还互相污染。
+
+### 先量了一遍飞书的行为
+
+`scripts/probe-thread.mjs` 建个测试群，把三种消息的原始字段打出来：
+
+| 消息 | `thread_id` | `root_id` | `parent_id` |
+|---|---|---|---|
+| 主聊天流里发一条 | null | null | null |
+| 用 `reply_in_thread` 回它 | `omt_1989e0…` | 被回复的消息 | 被回复的消息 |
+| 再回同一条一次 | `omt_1989e0…`（没变，并进原话题） | 同上 | 同上 |
+| 用户在这个话题里发言 | `omt_1989e0…` | 同上 | 同上 |
+
+两条结论：机器人可以**用一条回复把话题开出来**（`reply_in_thread: true`，卡片也行）；话题开出来之后，里面的每条消息都带着同一个 `root_id`。
+
+### 键怎么定：用话题的根消息
+
+```
+key = root:<root_id || message_id>
+```
+
+- 主聊天流里的新消息：`root_id` 为空 → 它自己就是新话题的根 → 新键 → 新会话
+- 话题里的后续消息：`root_id` 指向那条根 → 同一个键 → 同一个会话
+
+**关键是开完话题不用改绑**：话题的 `root_id` 就是那条原始消息本身（见上表），所以第一句话算出来的键和后面所有话算出来的键天然一致。如果当初按 `thread_id` 做键，就得在发完第一张卡片后把绑定从临时键搬到 `omt_…`，中间还有一个「消息比卡片先到」的竞态。
+
+私聊不走这套，键仍是 `chat_id`，行为一点没变。
+
+### 发出去的东西必须进话题
+
+`sendCard` / `sendText` 增加 `replyTo` 参数，有值就走 `message.reply({reply_in_thread: true})`。不带的话，卡片会落在主群，用户在话题里看不到自己的执行过程。
+
+卡片按钮额外带两个字段：`k`（绑定键）和 `rt`（话题根）。因为飞书的卡片回调只给 `open_message_id`，**不给 thread 信息**，只能自己带回来。老卡片没带的，按 message_id 反查 run，再退回 `chat_id`。
+
+### 并发：锁一直是按会话的
+
+锁从来没锁过「chat」，锁的是一句话没跑完不许在同一会话里再发（`this.runs.get(session.id)`）。所以键一拆开，并行是自然结果，不需要改事件流或渲染层——`this.runs` 本来就是 `Map<sessionId, run>`，多条 run 各 patch 各的卡片。
+
+实际加了的是**上限**：`behavior.maxParallel`（默认 2）。每个会话都在真跑 bash/node，开十个话题会打满本机，还会撞模型限流。超了直接回一句「现在已经有 N 个在跑」，不排队——排队的失败是静默的。
+
+实测（同一台机器、同一个 serve、免费模型、跑完即删）：
+
+| 方式 | 任务 A | 任务 B | 总耗时 |
+|---|---|---|---|
+| 串行 | 6.75s | 4.60s | 11.34s |
+| 并行 | 3.37s | 3.07s | 3.37s |
+
+### 顺手放松的一条规则
+
+群里默认要求 @ 机器人才响应。但话题里已经绑过会话了，还说一句话就点一次机器人没法用，所以：**这条话题已经绑过会话就不再要求 @**。
+
+### 状态里两个 id 不能混
+
+`store` 的键现在是 `root:om_xxx` 这种，不能拿去当 `chat_id` 发消息。所以绑定记录里同时存 `key`（绑定键）、`chatId`（真实会话）、`replyTo`（话题根）。改完这条踩过一次：`store.set()` 原来会把第一个参数直接写成 `chatId`，群里就会往 `root:om_xxx` 发消息，飞书报 chat not found。
+
+---
+
+## 十三、后续方向
 
 优先级按「补短板 / 提体验 / 扩形态」排，不按有趣程度排。
 

@@ -5,11 +5,13 @@ import * as Lark from '@larksuiteoapi/node-sdk'
  * 长连接模式不需要公网 IP、不需要内网穿透。
  */
 export class FeishuTransport {
-  constructor(config, { onMessage, onCardAction, logger = console }) {
+  constructor(config, { onMessage, onCardAction, onTopicKnown, logger = console }) {
     this.cfg = config.feishu
     this.log = logger
     this.onMessage = onMessage
     this.onCardAction = onCardAction
+    /** 话题里已经绑过会话就返回 true（用于话题内免 @） */
+    this.onTopicKnown = onTopicKnown
 
     this.client = new Lark.Client({
       appId: this.cfg.appId,
@@ -66,14 +68,40 @@ export class FeishuTransport {
     text = text.replace(/@_user_\d+/g, '').trim()
     if (!text) return
 
+    /**
+     * 群里一条话题 = 一个会话。话题的「根」就是那条被回复的消息：
+     *   - 已经在话题里的消息：root_id 指向话题根
+     *   - 主聊天流里新 @ 的消息：root_id 为空，它自己就成为新话题的根
+     * 两种情况的键用同一个公式，所以开完话题不需要再改绑定。
+     */
+    const isGroup = m.chat_type === 'group'
+    const rootId = isGroup ? m.root_id || m.message_id : null
+    const key = isGroup ? `root:${rootId}` : m.chat_id
+    const threadId = m.thread_id || null
+
     // 群聊要求 @ 机器人
-    if (m.chat_type === 'group' && this.cfg.requireMention) {
+    if (isGroup && this.cfg.requireMention) {
       const mentioned = Array.isArray(m.mentions) && m.mentions.length > 0
-      if (!mentioned) return
+      // 已经服务过的话题里继续说话，不用再 @ 一次 —— 否则每句话都要点一次机器人，没法用
+      const known = !mentioned && this.onTopicKnown?.({ key })
+      if (!mentioned && !known) return
+    }
+
+    // 群消息记一行原始上下文：话题绑定要看 thread_id / root_id，
+    // 出了问题先看这行，不用再去翻飞书后台的事件原始包。
+    if (isGroup) {
+      this.log.info(
+        `[group] chat=${String(m.chat_id).slice(-6)} key=${key} thread=${threadId || '-'} ` +
+          `root=${m.root_id || '-'} parent=${m.parent_id || '-'} msg=${m.message_id}`,
+      )
     }
 
     await this.onMessage({
       chatId: m.chat_id,
+      key,
+      rootId,
+      threadId,
+      isGroup,
       userId: data?.sender?.sender_id?.open_id || data?.sender?.sender_id?.user_id || '',
       text,
       messageId: m.message_id,
@@ -92,19 +120,33 @@ export class FeishuTransport {
     return this.onCardAction({ chatId, userId, action, messageId })
   }
 
-  async sendCard(chatId, card) {
+  /**
+   * 发送消息。replyTo 有值就进话题（reply_in_thread），否则发到会话主聊天流。
+   * 群里的所有输出都应该带 replyTo，否则卡片会散落在主群、和话题对不上。
+   */
+  async _send(chatId, msgType, content, replyTo) {
+    if (replyTo) {
+      const res = await this.client.im.v1.message.reply({
+        path: { message_id: replyTo },
+        data: { msg_type: msgType, content, reply_in_thread: true },
+      })
+      if (res?.code !== 0 && res?.code !== undefined) {
+        throw new Error(`发送消息失败 code=${res.code} msg=${res.msg}`)
+      }
+      return res?.data?.message_id
+    }
     const res = await this.client.im.v1.message.create({
       params: { receive_id_type: 'chat_id' },
-      data: {
-        receive_id: chatId,
-        msg_type: 'interactive',
-        content: JSON.stringify(card),
-      },
+      data: { receive_id: chatId, msg_type: msgType, content },
     })
     if (res?.code !== 0 && res?.code !== undefined) {
-      throw new Error(`发送卡片失败 code=${res.code} msg=${res.msg}`)
+      throw new Error(`发送消息失败 code=${res.code} msg=${res.msg}`)
     }
     return res?.data?.message_id
+  }
+
+  async sendCard(chatId, card, { replyTo = null } = {}) {
+    return this._send(chatId, 'interactive', JSON.stringify(card), replyTo)
   }
 
   async patchCard(messageId, card) {
@@ -118,19 +160,8 @@ export class FeishuTransport {
     return true
   }
 
-  async sendText(chatId, text) {
-    const res = await this.client.im.v1.message.create({
-      params: { receive_id_type: 'chat_id' },
-      data: {
-        receive_id: chatId,
-        msg_type: 'text',
-        content: JSON.stringify({ text }),
-      },
-    })
-    if (res?.code !== 0 && res?.code !== undefined) {
-      throw new Error(`发送文本失败 code=${res.code} msg=${res.msg}`)
-    }
-    return res?.data?.message_id
+  async sendText(chatId, text, { replyTo = null } = {}) {
+    return this._send(chatId, 'text', JSON.stringify({ text }), replyTo)
   }
 
   async stop() {

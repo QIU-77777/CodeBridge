@@ -266,5 +266,124 @@ if (process.argv.includes('--live')) {
   }
 }
 
+// ---------- 5. 群里一条话题一个会话 ----------
+{
+  const { Bridge } = await import('../src/handler.js')
+  const b = new Bridge({
+    oc: {},
+    store: {},
+    config: { behavior: { maxParallel: 2, idleTimeoutMs: 0 } },
+    transport: {},
+    logger: { info() {}, warn() {}, error() {} },
+  })
+
+  const p2p = b.ctxOf({ chatId: 'oc_dm', chatType: 'p2p', messageId: 'om_1' })
+  ok(p2p.key === 'oc_dm' && p2p.replyTo === null, '私聊：键仍是 chat_id，不发到话题')
+
+  const fresh = b.ctxOf({ chatId: 'oc_g', chatType: 'group', messageId: 'om_1' })
+  ok(fresh.key === 'root:om_1' && fresh.replyTo === 'om_1', '群里新 @ 的消息：它自己就是新话题的根')
+
+  const inThread = b.ctxOf({ chatId: 'oc_g', chatType: 'group', messageId: 'om_2', rootId: 'om_1', threadId: 'omt_1' })
+  ok(inThread.key === fresh.key, '同一话题里的后续消息落到同一个键（开话题后不用改绑）')
+
+  const other = b.ctxOf({ chatId: 'oc_g', chatType: 'group', messageId: 'om_3' })
+  ok(other.key !== fresh.key, '群里另起一条 @ 是另一个键 → 另一个会话，可以并行')
+}
+
+// ---------- 6. 全局并行上限 ----------
+{
+  const { Bridge } = await import('../src/handler.js')
+  const sent = []
+  const b = new Bridge({
+    oc: { getSession: async () => ({ id: 'ses_me', location: { directory: '/tmp' } }) },
+    store: { get: () => ({ sessionId: 'ses_me', directory: '/tmp', chatId: 'oc_g', replyTo: 'om_9' }) },
+    config: { behavior: { maxParallel: 1 }, opencode: { defaultDirectory: '/tmp' } },
+    transport: {
+      sendText: async (chatId, text, opt) => sent.push({ chatId, text, opt }),
+      sendCard: async () => 'card_x',
+    },
+    logger: { info() {}, warn() {}, error() {} },
+  })
+
+  const busy = new RunState('ses_busy')
+  busy.status = 'running'
+  b.runs.set('ses_busy', { state: busy, cardId: 'c0', meta: {} })
+
+  const msg = { chatId: 'oc_g', chatType: 'group', messageId: 'om_9', text: '干活' }
+  await b.runPrompt(msg, b.ctxOf(msg))
+
+  ok(sent.length === 1 && /上限/.test(sent[0].text), '超过 maxParallel 时拒绝并说明上限', JSON.stringify(sent))
+  ok(sent[0]?.opt?.replyTo === 'om_9', '拒绝提示也发进同一条话题，不落到主群')
+  ok(b.runs.get('ses_busy').state.status === 'running', '被拒绝的请求没有顶掉正在跑的任务')
+}
+
+// ---------- 7. 按钮要带上话题上下文 ----------
+{
+  const st = new RunState('ses_a')
+  st.status = 'running'
+  const card = runCard(st, { directory: '/tmp', key: 'root:om_1', rootId: 'om_1' })
+  const json = JSON.stringify(card)
+  ok(json.includes('"k":"root:om_1"'), '执行卡片按钮带绑定键 k')
+  ok(json.includes('"rt":"om_1"'), '执行卡片按钮带话题根 rt')
+  ok(!JSON.stringify(runCard(st, { directory: '/tmp' })).includes('"k":'), '没有话题上下文时不塞空字段')
+
+  const list = sessionsCard({ sessions: [], directory: '/tmp', k: 'root:om_1', rt: 'om_1' })
+  ok(JSON.stringify(list).includes('"k":"root:om_1"'), '会话列表按钮也带绑定键')
+}
+
+// ---------- 8. 群消息走 reply_in_thread ----------
+{
+  const { FeishuTransport } = await import('../src/feishu.js')
+  const ft = new FeishuTransport(
+    { feishu: { appId: 'a', appSecret: 'b', domain: 'feishu' } },
+    { onMessage() {}, onCardAction() {} },
+  )
+  const calls = []
+  ft.client = {
+    im: { v1: { message: {
+      reply: async (a) => {
+        calls.push(['reply', a])
+        return { code: 0, data: { message_id: 'om_reply' } }
+      },
+      create: async (a) => {
+        calls.push(['create', a])
+        return { code: 0, data: { message_id: 'om_create' } }
+      },
+    } } },
+  }
+
+  const id1 = await ft.sendCard('oc_g', { schema: '2.0' }, { replyTo: 'om_1' })
+  ok(calls[0][0] === 'reply' && calls[0][1].data.reply_in_thread === true, '群里发卡片走 reply_in_thread（进话题）')
+  ok(calls[0][1].path.message_id === 'om_1', '回复挂在话题根消息下', calls[0][1]?.path?.message_id)
+  ok(id1 === 'om_reply', '返回新建卡片的 message_id')
+
+  await ft.sendText('oc_g', 'hi')
+  ok(calls[1][0] === 'create' && calls[1][1].data.receive_id === 'oc_g', '没有话题根时仍走 create（私聊/主群）')
+}
+
+// ---------- 9. 绑定键与真实 chat_id 分开存 ----------
+{
+  const { Store } = await import('../src/store.js')
+  const { mkdtempSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const dir = mkdtempSync(join(tmpdir(), 'oc-store-'))
+  try {
+    const st = new Store(join(dir, 'state.json'))
+    st.set('root:om_1', { chatId: 'oc_g', replyTo: 'om_1', sessionId: 'ses_a', directory: '/tmp' })
+    const r = st.get('root:om_1')
+    ok(r.key === 'root:om_1' && r.chatId === 'oc_g', '绑定记录同时保留 key 和真实 chat_id')
+
+    st.set('root:om_1', { sessionId: 'ses_b' })
+    ok(st.get('root:om_1').chatId === 'oc_g', '再次写入不会把 chat_id 覆盖成绑定键')
+
+    st.clearSession('root:om_1')
+    const c = st.get('root:om_1')
+    ok(!c.sessionId && c.chatId === 'oc_g' && c.replyTo === 'om_1', '换会话后还知道该发到哪个群哪条话题')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
 console.log(`\n${fail === 0 ? '✅ 全部通过' : '❌ 有失败'}：${pass} 通过 / ${fail} 失败`)
 process.exit(fail === 0 ? 0 : 1)

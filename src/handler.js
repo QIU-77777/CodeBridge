@@ -124,9 +124,11 @@ export class Bridge {
     const card = permissionCard({
       request: { ...req, id: req?.id || ev.data?.requestID, sessionID: sid },
       sessionTitle: this.shortSessionTitle(sid),
+      k: chat.key || chat.chatId,
+      rt: chat.replyTo || '',
     })
     this.t
-      .sendCard(chat.chatId, card)
+      .sendCard(chat.chatId, card, { replyTo: chat.replyTo || null })
       .catch((e) => this.log.error('推送权限卡片失败: ' + e.message))
   }
 
@@ -191,6 +193,20 @@ export class Bridge {
   /**
    * @param {{chatId: string, userId: string, text: string, messageId?: string}} msg
    */
+  /**
+   * 一条消息的寻址上下文。
+   *   key      —— 会话绑定的键。私聊就是 chat_id；群里一个话题一个键（root:<话题根消息>）
+   *   chatId   —— 发消息的目标会话
+   *   replyTo  —— 有值就往这个消息下面回（群里进话题），私聊为空
+   */
+  ctxOf(msg) {
+    if (msg.chatType !== 'group') {
+      return { key: msg.chatId, chatId: msg.chatId, replyTo: null }
+    }
+    const rootId = msg.rootId || msg.messageId
+    return { key: msg.key || `root:${rootId}`, chatId: msg.chatId, replyTo: rootId }
+  }
+
   async onMessage(msg) {
     const text = (msg.text || '').trim()
     if (!text) return
@@ -200,13 +216,20 @@ export class Bridge {
       return
     }
 
-    if (text.startsWith('/')) return this.onCommand(msg)
-    return this.runPrompt(msg)
+    const ctx = this.ctxOf(msg)
+    if (text.startsWith('/')) return this.onCommand(msg, ctx)
+    return this.runPrompt(msg, ctx)
   }
 
-  async runPrompt(msg) {
-    const chatId = msg.chatId
-    let binding = this.store.get(chatId)
+  /** 同时在跑的任务数 / 上限（0 = 不限） */
+  runningCount() {
+    let n = 0
+    for (const r of this.runs.values()) if (r.state.status === 'running') n++
+    return n
+  }
+
+  async runPrompt(msg, ctx) {
+    let binding = this.store.get(ctx.key)
     const directory = binding?.directory || this.cfg.opencode.defaultDirectory
 
     // 没有绑定或不存在的会话 -> 自动建一个
@@ -220,13 +243,25 @@ export class Bridge {
       binding = null
     }
     if (!session) {
-      session = await this.createAndBind(chatId, directory)
+      session = await this.createAndBind(ctx, directory)
     }
 
     // 一个会话同时只跑一个任务。否则新 run 会覆盖旧的，旧卡片永远停在「执行中」
     const running = this.runs.get(session.id)
     if (running && running.state.status === 'running') {
-      return this.t.sendText(chatId, '上一条还在执行中，等它结束，或者先发 /stop 中止。')
+      return this.t.sendText(ctx.chatId, '这条话题的上一条还在执行中，等它结束，或者先发 /stop 中止。', {
+        replyTo: ctx.replyTo,
+      })
+    }
+
+    // 话题之间可以并行，但不能无限并行：每个会话都在真跑 bash / node，开太多会打满本机
+    const cap = Number(this.cfg.behavior?.maxParallel) || 0
+    if (cap > 0 && this.runningCount() >= cap) {
+      return this.t.sendText(
+        ctx.chatId,
+        `现在已经有 ${cap} 个任务在跑（上限 behavior.maxParallel=${cap}），等一个结束再发。`,
+        { replyTo: ctx.replyTo },
+      )
     }
 
     const raw = msg.text || ''
@@ -237,12 +272,14 @@ export class Bridge {
       directory: session.location?.directory || directory,
       model: session.model ? `${session.model.providerID}/${session.model.id}` : '',
       title: session.title || 'opencode',
+      key: ctx.key,
+      rootId: ctx.replyTo,
     }
-    const run = { state, cardId: null, chatId, timer: null, lastFlush: 0, meta }
+    const run = { state, cardId: null, chatId: ctx.chatId, replyTo: ctx.replyTo, timer: null, lastFlush: 0, meta }
     this.runs.set(session.id, run)
 
     try {
-      const cardId = await this.t.sendCard(chatId, runCard(state, meta))
+      const cardId = await this.t.sendCard(ctx.chatId, runCard(state, meta), { replyTo: ctx.replyTo })
       run.cardId = cardId
       run.lastFlush = Date.now()
     } catch (err) {
@@ -260,68 +297,68 @@ export class Bridge {
 
   // ---------- 命令 ----------
 
-  async onCommand(msg) {
+  async onCommand(msg, ctx = this.ctxOf(msg)) {
     const raw = msg.text.trim()
     const [, nameRaw, ...restParts] = raw.match(/^\/(\S+)\s*([\s\S]*)$/) || []
     const name = (nameRaw || '').toLowerCase()
     const arg = restParts.join(' ').trim()
-    const chatId = msg.chatId
+    const to = (text) => this.t.sendText(ctx.chatId, text, { replyTo: ctx.replyTo })
 
     switch (name) {
       case 'help':
       case '?':
-        return this.t.sendCard(chatId, helpCard())
+        return this.t.sendCard(ctx.chatId, helpCard(), { replyTo: ctx.replyTo })
 
       case 'new':
-        return this.cmdNew(chatId, arg)
+        return this.cmdNew(ctx, arg)
 
       case 'sessions':
       case 'ls':
-        return this.cmdSessions(chatId, 0)
+        return this.cmdSessions(ctx, 0)
 
       case 'switch':
       case 'use':
-        return this.cmdSwitch(chatId, arg)
+        return this.cmdSwitch(ctx, arg)
 
       case 'cd':
-        return this.cmdCd(chatId, arg)
+        return this.cmdCd(ctx, arg)
 
       case 'status':
-        return this.cmdStatus(chatId)
+        return this.cmdStatus(ctx)
 
       case 'stop':
       case 'abort':
-        return this.cmdStop(chatId)
+        return this.cmdStop(ctx)
 
       case 'rename':
-        return this.cmdRename(chatId, arg)
+        return this.cmdRename(ctx, arg)
 
       case 'del':
       case 'delete':
-        return this.cmdDelete(chatId, arg)
+        return this.cmdDelete(ctx, arg)
 
       case 'model':
-        return this.cmdModel(chatId, arg)
+        return this.cmdModel(ctx, arg)
 
       case 'agent':
-        return this.cmdAgent(chatId, arg)
+        return this.cmdAgent(ctx, arg)
 
       default:
-        return this.t.sendText(chatId, `未知命令 /${name}，发送 /help 查看可用命令`)
+        return to(`未知命令 /${name}，发送 /help 查看可用命令`)
     }
   }
 
-  async cmdNew(chatId, arg) {
-    const binding = this.store.get(chatId)
+  async cmdNew(ctx, arg) {
+    const binding = this.store.get(ctx.key)
     let dir = binding?.directory || this.cfg.opencode.defaultDirectory
     if (arg) {
       const resolved = this.resolveDir(arg)
-      if (!resolved) return this.t.sendText(chatId, `目录不存在: ${arg}`)
+      if (!resolved) return this.t.sendText(ctx.chatId, `目录不存在: ${arg}`, { replyTo: ctx.replyTo })
       dir = resolved
     }
-    const session = await this.createAndBind(chatId, dir)
+    const session = await this.createAndBind(ctx, dir)
     return this.t.sendCard(
-      chatId,
+      ctx.chatId,
       textCard(
         '🆕 新会话已绑定',
         [
@@ -334,41 +371,52 @@ export class Bridge {
           .filter(Boolean)
           .join('\n'),
         'green',
-        [buttonListNew(chatId)],
+        [buttonListNew(ctx)],
       ),
+      { replyTo: ctx.replyTo },
     )
   }
 
-  async cmdSessions(chatId, page) {
-    const binding = this.store.get(chatId)
+  async cmdSessions(ctx, page) {
+    const binding = this.store.get(ctx.key)
     const dir = binding?.directory || this.cfg.opencode.defaultDirectory
-    let sessions = this.sessionCache.get(chatId)
-    if (!sessions || sessions.expires < Date.now()) {
+    let cached = this.sessionCache.get(ctx.key)
+    if (!cached || cached.expires < Date.now()) {
       const all = await this.oc.listSessions({ limit: '100' })
       const filtered = all.filter((s) => (s.location?.directory || '') === dir)
-      sessions = { sessions: filtered, expires: Date.now() + 15_000 }
-      this.sessionCache.set(chatId, sessions)
+      cached = { sessions: filtered, expires: Date.now() + 15_000 }
+      this.sessionCache.set(ctx.key, cached)
     }
     const card = sessionsCard({
-      sessions: sessions.sessions,
+      sessions: cached.sessions,
       currentId: binding?.sessionId,
       directory: dir,
       page,
+      k: ctx.key,
+      rt: ctx.replyTo,
     })
-    return this.t.sendCard(chatId, card)
+    return this.t.sendCard(ctx.chatId, card, { replyTo: ctx.replyTo })
   }
 
-  async cmdSwitch(chatId, arg) {
-    if (!arg) return this.t.sendText(chatId, '用法: /switch <序号|sessionId>，先用 /sessions 查看')
-    const binding = this.store.get(chatId)
+  async cmdSwitch(ctx, arg) {
+    if (!arg) {
+      return this.t.sendText(ctx.chatId, '用法: /switch <序号|sessionId>，先用 /sessions 查看', {
+        replyTo: ctx.replyTo,
+      })
+    }
+    const binding = this.store.get(ctx.key)
     const dir = binding?.directory || this.cfg.opencode.defaultDirectory
 
     let targetId = arg
     if (/^\d+$/.test(arg)) {
-      const cached = this.sessionCache.get(chatId)
-      const list = cached?.sessions || (await this.oc.listSessions({ limit: '100' })).filter((s) => (s.location?.directory || '') === dir)
+      const cached = this.sessionCache.get(ctx.key)
+      const list =
+        cached?.sessions ||
+        (await this.oc.listSessions({ limit: '100' })).filter((s) => (s.location?.directory || '') === dir)
       const idx = Number(arg) - 1
-      if (idx < 0 || idx >= list.length) return this.t.sendText(chatId, `序号超出范围（共 ${list.length} 个）`)
+      if (idx < 0 || idx >= list.length) {
+        return this.t.sendText(ctx.chatId, `序号超出范围（共 ${list.length} 个）`, { replyTo: ctx.replyTo })
+      }
       targetId = list[idx].id
     }
 
@@ -376,123 +424,159 @@ export class Bridge {
     try {
       session = await this.oc.getSession(targetId)
     } catch {
-      return this.t.sendText(chatId, `会话不存在: ${targetId}`)
+      return this.t.sendText(ctx.chatId, `会话不存在: ${targetId}`, { replyTo: ctx.replyTo })
     }
-    this.store.set(chatId, {
+    this.store.set(ctx.key, {
       sessionId: session.id,
       directory: session.location?.directory || dir,
     })
     return this.t.sendCard(
-      chatId,
+      ctx.chatId,
       textCard(
         '✅ 已切换会话',
-        [`**会话** \`${session.id}\``, `**标题** ${session.title || '(无标题)'}`, `**目录** \`${shortDir(session.location?.directory)}\``].join('\n'),
+        [
+          `**会话** \`${session.id}\``,
+          `**标题** ${session.title || '(无标题)'}`,
+          `**目录** \`${shortDir(session.location?.directory)}\``,
+        ].join('\n'),
         'green',
       ),
+      { replyTo: ctx.replyTo },
     )
   }
 
-  async cmdCd(chatId, arg) {
+  async cmdCd(ctx, arg) {
     if (!arg) {
-      const b = this.store.get(chatId)
-      return this.t.sendText(chatId, `当前工作目录: ${b?.directory || this.cfg.opencode.defaultDirectory}\n用法: /cd <绝对路径>`)
+      const b = this.store.get(ctx.key)
+      return this.t.sendText(
+        ctx.chatId,
+        `当前工作目录: ${b?.directory || this.cfg.opencode.defaultDirectory}\n用法: /cd <绝对路径>`,
+        { replyTo: ctx.replyTo },
+      )
     }
     const resolved = this.resolveDir(arg)
-    if (!resolved) return this.t.sendText(chatId, `目录不存在: ${arg}`)
-    this.store.set(chatId, { directory: resolved, sessionId: undefined })
-    return this.t.sendText(chatId, `工作目录已切到 ${resolved}，会话绑定已重置，发送 /new 新建会话（或直接发消息自动创建）`)
+    if (!resolved) return this.t.sendText(ctx.chatId, `目录不存在: ${arg}`, { replyTo: ctx.replyTo })
+    this.store.set(ctx.key, { directory: resolved, sessionId: undefined, chatId: ctx.chatId, replyTo: ctx.replyTo })
+    return this.t.sendText(
+      ctx.chatId,
+      `工作目录已切到 ${resolved}，会话绑定已重置，发送 /new 新建会话（或直接发消息自动创建）`,
+      { replyTo: ctx.replyTo },
+    )
   }
 
-  async cmdStatus(chatId) {
-    const binding = this.store.get(chatId)
+  async cmdStatus(ctx) {
+    const binding = this.store.get(ctx.key)
     let session = null
     if (binding?.sessionId) {
       session = await this.oc.getSession(binding.sessionId).catch(() => null)
     }
     const health = await this.oc.health().catch((e) => ({ ok: false, error: e.message }))
     return this.t.sendCard(
-      chatId,
+      ctx.chatId,
       statusCard({
         session,
         binding,
         directory: this.lastEnv?.directory,
         server: health,
+        k: ctx.key,
+        rt: ctx.replyTo,
       }),
+      { replyTo: ctx.replyTo },
     )
   }
 
-  async cmdStop(chatId) {
-    const binding = this.store.get(chatId)
-    if (!binding?.sessionId) return this.t.sendText(chatId, '当前没有绑定会话')
+  async cmdStop(ctx) {
+    const binding = this.store.get(ctx.key)
+    if (!binding?.sessionId) {
+      return this.t.sendText(ctx.chatId, '这条话题还没有绑定会话', { replyTo: ctx.replyTo })
+    }
     const ok = await this.oc.interrupt(binding.sessionId)
-    return this.t.sendText(chatId, ok ? '已发送中止请求' : '中止失败（可能当前没有在执行）')
+    return this.t.sendText(ctx.chatId, ok ? '已发送中止请求' : '中止失败（可能当前没有在执行）', {
+      replyTo: ctx.replyTo,
+    })
   }
 
-  async cmdRename(chatId, arg) {
-    const binding = this.store.get(chatId)
-    if (!binding?.sessionId) return this.t.sendText(chatId, '当前没有绑定会话')
-    if (!arg) return this.t.sendText(chatId, '用法: /rename <新标题>')
+  async cmdRename(ctx, arg) {
+    const binding = this.store.get(ctx.key)
+    if (!binding?.sessionId) {
+      return this.t.sendText(ctx.chatId, '当前没有绑定会话', { replyTo: ctx.replyTo })
+    }
+    if (!arg) return this.t.sendText(ctx.chatId, '用法: /rename <新标题>', { replyTo: ctx.replyTo })
     const s = await this.oc.renameSession(binding.sessionId, arg)
-    this.sessionCache.delete(chatId)
-    return this.t.sendText(chatId, `已重命名为「${s?.title || arg}」`)
+    this.sessionCache.delete(ctx.key)
+    return this.t.sendText(ctx.chatId, `已重命名为「${s?.title || arg}」`, { replyTo: ctx.replyTo })
   }
 
-  async cmdDelete(chatId, arg) {
-    const binding = this.store.get(chatId)
+  async cmdDelete(ctx, arg) {
+    const binding = this.store.get(ctx.key)
     const dir = binding?.directory || this.cfg.opencode.defaultDirectory
-    if (!arg) return this.t.sendText(chatId, '用法: /del <序号>，先用 /sessions 查看')
-    const cached = this.sessionCache.get(chatId)
-    const list = cached?.sessions || (await this.oc.listSessions({ limit: '100' })).filter((s) => (s.location?.directory || '') === dir)
+    if (!arg) return this.t.sendText(ctx.chatId, '用法: /del <序号>，先用 /sessions 查看', { replyTo: ctx.replyTo })
+    const cached = this.sessionCache.get(ctx.key)
+    const list =
+      cached?.sessions ||
+      (await this.oc.listSessions({ limit: '100' })).filter((s) => (s.location?.directory || '') === dir)
     let targetId = arg
     if (/^\d+$/.test(arg)) {
       const idx = Number(arg) - 1
-      if (idx < 0 || idx >= list.length) return this.t.sendText(chatId, `序号超出范围（共 ${list.length} 个）`)
+      if (idx < 0 || idx >= list.length) {
+        return this.t.sendText(ctx.chatId, `序号超出范围（共 ${list.length} 个）`, { replyTo: ctx.replyTo })
+      }
       targetId = list[idx].id
     }
     await this.oc.deleteSession(targetId)
-    this.sessionCache.delete(chatId)
-    if (binding?.sessionId === targetId) this.store.clearSession(chatId)
-    return this.t.sendText(chatId, `已删除会话 ${targetId}`)
+    this.sessionCache.delete(ctx.key)
+    if (binding?.sessionId === targetId) this.store.clearSession(ctx.key)
+    return this.t.sendText(ctx.chatId, `已删除会话 ${targetId}`, { replyTo: ctx.replyTo })
   }
 
-  async cmdModel(chatId, arg) {
-    const binding = this.store.get(chatId)
-    if (!binding?.sessionId) return this.t.sendText(chatId, '当前没有绑定会话，先 /new')
-    let cache = this.modelCache.get(chatId)
+  async cmdModel(ctx, arg) {
+    const binding = this.store.get(ctx.key)
+    if (!binding?.sessionId) {
+      return this.t.sendText(ctx.chatId, '当前没有绑定会话，先 /new', { replyTo: ctx.replyTo })
+    }
+    let cache = this.modelCache.get(ctx.key)
     if (!cache || cache.expires < Date.now()) {
       const models = await this.oc.listModels()
       cache = { models, expires: Date.now() + 5 * 60_000 }
-      this.modelCache.set(chatId, cache)
+      this.modelCache.set(ctx.key, cache)
     }
     if (!arg) {
       // 只列中国大陆区能用的那批更实用：全部列出但截断为 60 条
       const lines = cache.models.slice(0, 60).map((m, i) => `${i + 1}. \`${m.providerID}/${m.id}\` ${m.name || ''}`)
       return this.t.sendCard(
-        chatId,
+        ctx.chatId,
         textCard('🧠 模型列表', lines.join('\n') + '\n\n用 `/model <序号>` 切换', 'purple'),
+        { replyTo: ctx.replyTo },
       )
     }
     const idx = Number(arg)
-    const target = Number.isFinite(idx) && idx > 0 ? cache.models[idx - 1] : cache.models.find((m) => m.id === arg)
-    if (!target) return this.t.sendText(chatId, `找不到模型: ${arg}`)
+    const target =
+      Number.isFinite(idx) && idx > 0 ? cache.models[idx - 1] : cache.models.find((m) => m.id === arg)
+    if (!target) return this.t.sendText(ctx.chatId, `找不到模型: ${arg}`, { replyTo: ctx.replyTo })
     await this.oc.switchModel(binding.sessionId, { id: target.id, providerID: target.providerID })
-    return this.t.sendText(chatId, `已切换到 ${target.providerID}/${target.id}`)
+    return this.t.sendText(ctx.chatId, `已切换到 ${target.providerID}/${target.id}`, { replyTo: ctx.replyTo })
   }
 
-  async cmdAgent(chatId, arg) {
-    const binding = this.store.get(chatId)
-    if (!binding?.sessionId) return this.t.sendText(chatId, '当前没有绑定会话，先 /new')
+  async cmdAgent(ctx, arg) {
+    const binding = this.store.get(ctx.key)
+    if (!binding?.sessionId) {
+      return this.t.sendText(ctx.chatId, '当前没有绑定会话，先 /new', { replyTo: ctx.replyTo })
+    }
     const agents = await this.oc.listAgents()
     if (!arg) {
       const lines = agents.map((a, i) => `${i + 1}. \`${a.id}\` ${a.description || ''}`)
-      return this.t.sendCard(chatId, textCard('🧩 Agent 列表', lines.join('\n') + '\n\n用 `/agent <名字>` 切换', 'violet'))
+      return this.t.sendCard(
+        ctx.chatId,
+        textCard('🧩 Agent 列表', lines.join('\n') + '\n\n用 `/agent <名字>` 切换', 'violet'),
+        { replyTo: ctx.replyTo },
+      )
     }
     const idx = Number(arg)
     const target = Number.isFinite(idx) && idx > 0 ? agents[idx - 1] : agents.find((a) => a.id === arg)
-    if (!target) return this.t.sendText(chatId, `找不到 agent: ${arg}`)
+    if (!target) return this.t.sendText(ctx.chatId, `找不到 agent: ${arg}`, { replyTo: ctx.replyTo })
     await this.oc.switchAgent(binding.sessionId, target.id)
-    this.store.set(chatId, { agent: target.id })
-    return this.t.sendText(chatId, `已切换到 agent ${target.id}`)
+    this.store.set(ctx.key, { agent: target.id, chatId: ctx.chatId, replyTo: ctx.replyTo })
+    return this.t.sendText(ctx.chatId, `已切换到 agent ${target.id}`, { replyTo: ctx.replyTo })
   }
 
   // ---------- 卡片回调 ----------
@@ -511,11 +595,19 @@ export class Bridge {
     if (!this.isAllowed(userId)) return { toast: { type: 'error', content: '无权限' } }
     const a = action || {}
 
+    // 绑定键从按钮 value 里带过来（cards.js 的 nav）；
+    // 老卡片没带 k 的，按卡片 message_id 反查属于哪个 run，再不行退回 chatId（私聊老行为）
+    const key = a.k || this.keyForCard(messageId) || chatId
+    const replyTo = a.rt || null
+    const ctx = { key, chatId, replyTo }
+
     // 新发一条消息承载结果，历史保持不变
     const replyNew = (toast, card) => {
       if (card) {
         setTimeout(() => {
-          this.t.sendCard(chatId, card).catch((e) => this.log.warn?.(`回调后发卡片失败: ${e.message}`))
+          this.t
+            .sendCard(chatId, card, { replyTo })
+            .catch((e) => this.log.warn?.(`回调后发卡片失败: ${e.message}`))
         }, 250)
       }
       return { toast }
@@ -534,21 +626,28 @@ export class Bridge {
     try {
       switch (a.a) {
         case 'new': {
-          const b = this.store.get(chatId)
+          const b = this.store.get(key)
           const dir = b?.directory || this.cfg.opencode.defaultDirectory
-          const s = await this.createAndBind(chatId, dir)
+          const s = await this.createAndBind(ctx, dir)
           return replyNew(
             { type: 'success', content: '已新建会话' },
             textCard('🆕 新会话已绑定', `**会话** \`${s.id}\`\n**目录** \`${shortDir(dir)}\`\n\n直接发消息开始。`, 'green'),
           )
         }
         case 'sessions': {
-          const b = this.store.get(chatId)
+          const b = this.store.get(key)
           const dir = b?.directory || this.cfg.opencode.defaultDirectory
           const all = await this.oc.listSessions({ limit: '100' })
           const filtered = all.filter((s) => (s.location?.directory || '') === dir)
-          this.sessionCache.set(chatId, { sessions: filtered, expires: Date.now() + 15_000 })
-          const card = sessionsCard({ sessions: filtered, currentId: b?.sessionId, directory: dir, page: a.p || 0 })
+          this.sessionCache.set(key, { sessions: filtered, expires: Date.now() + 15_000 })
+          const card = sessionsCard({
+            sessions: filtered,
+            currentId: b?.sessionId,
+            directory: dir,
+            page: a.p || 0,
+            k: key,
+            rt: replyTo || '',
+          })
           const toast = { type: 'success', content: `共 ${filtered.length} 个会话` }
           // 翻页（带 p）就地更新列表自己；首次点击新发一条
           return 'p' in a ? replySelf(toast, card) : replyNew(toast, card)
@@ -556,7 +655,12 @@ export class Bridge {
         case 'switch': {
           if (!a.s) return { toast: { type: 'error', content: '缺少会话 ID，请重新打开 /sessions' } }
           const session = await this.oc.getSession(a.s)
-          this.store.set(chatId, { sessionId: session.id, directory: session.location?.directory })
+          this.store.set(key, {
+            sessionId: session.id,
+            directory: session.location?.directory,
+            chatId,
+            replyTo,
+          })
           return replyNew(
             { type: 'success', content: `已切换到 ${truncate(session.title || session.id, 20)}` },
             textCard('✅ 已切换会话', `**${session.title || '(无标题)'}**\n\`${session.id}\`\n\n后续消息将进入这个会话。`, 'green'),
@@ -584,7 +688,7 @@ export class Bridge {
 
   // ---------- 工具 ----------
 
-  async createAndBind(chatId, directory) {
+  async createAndBind(ctx, directory) {
     const model = this.cfg.opencode.defaultModel
     let modelRef
     if (model) {
@@ -593,9 +697,29 @@ export class Bridge {
     }
     const title = `飞书 · ${new Date().toLocaleString('zh-CN', { hour12: false })}`
     const session = await this.oc.createSession({ title, directory, model: modelRef })
-    this.store.set(chatId, { sessionId: session.id, directory })
-    this.sessionCache.delete(chatId)
+    this.store.set(ctx.key, {
+      sessionId: session.id,
+      directory,
+      chatId: ctx.chatId,
+      replyTo: ctx.replyTo,
+    })
+    this.sessionCache.delete(ctx.key)
     return session
+  }
+
+  /** 老卡片没带绑定键时，按卡片 message_id 找回它是哪个 run 的 */
+  keyForCard(messageId) {
+    if (!messageId) return null
+    for (const run of this.runs.values()) {
+      if (run.cardId === messageId && run.meta?.key) return run.meta.key
+    }
+    return null
+  }
+
+  /** 群里这条话题是否已经服务过（用于话题内免 @） */
+  isKnownTopic({ key }) {
+    const b = this.store.get(key)
+    return Boolean(b?.sessionId)
   }
 
   resolveDir(input) {
@@ -622,6 +746,9 @@ function shortDir(dir) {
   return home && dir.startsWith(home) ? '~' + dir.slice(home.length) : dir
 }
 
-function buttonListNew() {
-  return { tag: 'button', text: { tag: 'plain_text', content: '查看会话' }, type: 'default', value: { a: 'sessions' } }
+function buttonListNew(ctx) {
+  const value = { a: 'sessions' }
+  if (ctx?.key) value.k = ctx.key
+  if (ctx?.replyTo) value.rt = ctx.replyTo
+  return { tag: 'button', text: { tag: 'plain_text', content: '查看会话' }, type: 'default', value }
 }

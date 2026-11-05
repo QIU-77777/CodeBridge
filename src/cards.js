@@ -80,6 +80,18 @@ function button(text, value, type = 'default', extra = {}) {
   }
 }
 
+/**
+ * 按钮必须自己带上「我在哪个话题」——飞书的卡片回调只给 open_message_id，
+ * 不给 thread_id，光靠回调上下文没法还原到群里的某一条话题。
+ * k = 绑定键（root:<根消息> 或 chat_id），rt = 话题根消息 id（回发时用它进话题）
+ */
+function navOf(nav = {}) {
+  const out = {}
+  if (nav.k) out.k = nav.k
+  if (nav.rt) out.rt = nav.rt
+  return out
+}
+
 /** 一行横排按钮。2.0 没有 action 容器，用 column_set 拼横向布局 */
 function buttonRow(buttons) {
   if (buttons.length === 1) return buttons[0]
@@ -181,9 +193,10 @@ export function runCard(state, meta = {}) {
   }
 
   const footer = []
-  if (state.status === 'running') footer.push(button('中止', { a: 'abort', s: state.sessionId }, 'danger'))
-  footer.push(button('新会话', { a: 'new' }, 'default'))
-  footer.push(button('会话列表', { a: 'sessions' }, 'default'))
+  const nav = navOf({ k: meta.key, rt: meta.rootId })
+  if (state.status === 'running') footer.push(button('中止', { a: 'abort', s: state.sessionId, ...nav }, 'danger'))
+  footer.push(button('新会话', { a: 'new', ...nav }, 'default'))
+  footer.push(button('会话列表', { a: 'sessions', ...nav }, 'default'))
   elements.push(buttonRow(footer))
 
   const usage = []
@@ -201,7 +214,8 @@ export function textCard(title, body, template = 'blue', buttons = []) {
   return card(title, template, elements)
 }
 
-export function sessionsCard({ sessions, currentId, directory, page = 0, pageSize = 8 }) {
+export function sessionsCard({ sessions, currentId, directory, page = 0, pageSize = 8, k = '', rt = '' }) {
+  const nav = navOf({ k, rt })
   const total = sessions.length
   const pages = Math.max(1, Math.ceil(total / pageSize))
   const p = Math.min(Math.max(0, page), pages - 1)
@@ -212,7 +226,7 @@ export function sessionsCard({ sessions, currentId, directory, page = 0, pageSiz
       '📂 会话列表',
       `当前目录 \`${shortDir(directory)}\` 下没有会话。\n发送 \`/new\` 新建一个。`,
       'grey',
-      [button('新建会话', { a: 'new' }, 'primary')],
+      [button('新建会话', { a: 'new', ...nav }, 'primary')],
     )
   }
 
@@ -237,24 +251,25 @@ export function sessionsCard({ sessions, currentId, directory, page = 0, pageSiz
         [
           isCurrent
             ? button('当前', { a: 'noop' }, 'default', { disabled: true })
-            : button('切换', { a: 'switch', s: s.id }, 'primary'),
+            : button('切换', { a: 'switch', s: s.id, ...nav }, 'primary'),
         ],
       ),
     )
   }
 
-  const nav = []
+  const navRow = []
   if (pages > 1) {
-    nav.push(button('上一页', { a: 'sessions', p: p - 1 }, 'default', { disabled: p <= 0 }))
-    nav.push(button(`${p + 1}/${pages}`, { a: 'noop' }, 'default', { disabled: true }))
-    nav.push(button('下一页', { a: 'sessions', p: p + 1 }, 'default', { disabled: p >= pages - 1 }))
+    navRow.push(button('上一页', { a: 'sessions', p: p - 1, ...nav }, 'default', { disabled: p <= 0 }))
+    navRow.push(button(`${p + 1}/${pages}`, { a: 'noop' }, 'default', { disabled: true }))
+    navRow.push(button('下一页', { a: 'sessions', p: p + 1, ...nav }, 'default', { disabled: p >= pages - 1 }))
   }
-  elements.push(hr(), buttonRow([...nav, button('新建会话', { a: 'new' }, 'primary')]))
+  elements.push(hr(), buttonRow([...navRow, button('新建会话', { a: 'new', ...nav }, 'primary')]))
 
   return card('📂 会话列表', 'turquoise', elements)
 }
 
-export function permissionCard({ request, sessionTitle }) {
+export function permissionCard({ request, sessionTitle, k = '', rt = '' }) {
+  const nav = navOf({ k, rt })
   const resources = (request.resources || []).map((r) => `\`${truncate(r, 120)}\``).join('\n')
   const body = [
     `**会话** ${sessionTitle || request.sessionID}`,
@@ -268,14 +283,15 @@ export function permissionCard({ request, sessionTitle }) {
   return card('🔐 需要授权', 'orange', [
     div(body),
     buttonRow([
-      button('允许一次', { a: 'perm', s: request.sessionID, r: request.id, d: 'once' }, 'primary'),
-      button('总是允许', { a: 'perm', s: request.sessionID, r: request.id, d: 'always' }, 'default'),
-      button('拒绝', { a: 'perm', s: request.sessionID, r: request.id, d: 'reject' }, 'danger'),
+      button('允许一次', { a: 'perm', s: request.sessionID, r: request.id, d: 'once', ...nav }, 'primary'),
+      button('总是允许', { a: 'perm', s: request.sessionID, r: request.id, d: 'always', ...nav }, 'default'),
+      button('拒绝', { a: 'perm', s: request.sessionID, r: request.id, d: 'reject', ...nav }, 'danger'),
     ]),
   ])
 }
 
-export function statusCard({ session, binding, directory, server }) {
+export function statusCard({ session, binding, directory, server, k = '', rt = '' }) {
+  const nav = navOf({ k, rt })
   const lines = [
     `**opencode** ${server?.version ? `v${server.version}` : '未知'} ${server?.ok ? '🟢' : '🔴'}`,
     `**绑定会话** ${binding?.sessionId ? `\`${binding.sessionId}\`` : '未绑定（发送 /new 新建）'}`,
@@ -293,8 +309,8 @@ export function statusCard({ session, binding, directory, server }) {
     if (session.cost) lines.push(`**累计成本** $${session.cost.toFixed(4)}`)
   }
   return textCard('📊 状态', lines.join('\n'), 'indigo', [
-    button('会话列表', { a: 'sessions' }, 'default'),
-    button('新会话', { a: 'new' }, 'primary'),
+    button('会话列表', { a: 'sessions', ...nav }, 'default'),
+    button('新会话', { a: 'new', ...nav }, 'primary'),
   ])
 }
 
