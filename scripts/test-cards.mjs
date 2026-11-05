@@ -111,29 +111,35 @@ ok(size < 30_000, `runCard 序列化 < 30KB（${size} 字节）`)
   ok(group.includes('/help'), '群里：卡片带 /help 提示')
   ok(group.includes('@我'), '群里：提示里写明要先 @，否则用户会直接打字')
   ok(dm.includes('/help') && !dm.includes('@我'), '私聊：只写发送 /help，不提 @')
-  ok(group.indexOf('/help') > group.indexOf('会话列表'), '帮助提示排在按钮之后')
+  ok(group.indexOf('/help') < group.indexOf('会话列表'), '帮助提示排在按钮之前（文本在上、按钮在下）')
 }
 
-// 三段式：前缀 ─── 正文 ─── 后缀
+// 分割线只在「前缀 │ 正文」之间，正文和按钮之间不加
 {
   const els = runCard(st, { directory: '/Users/x/proj' }).body.elements
   const hrs = els.filter((e) => e.tag === 'hr').length
   const prefixAt = els.findIndex((e) => JSON.stringify(e).includes('**目录**'))
   const firstHr = els.findIndex((e) => e.tag === 'hr')
   const btnAt = els.findIndex((e) => e.tag === 'column_set' || e.tag === 'button')
-  const lastHr = els.map((e) => e.tag).lastIndexOf('hr')
-  ok(hrs === 2, `前缀/正文/后缀之间各一条分割线（实际 ${hrs} 条）`)
+  ok(hrs === 1, `只有一条分割线（实际 ${hrs} 条）`)
   ok(prefixAt === 0 && firstHr === 1, '分割线紧跟在前缀之后')
-  ok(lastHr < btnAt, '正文与按钮之间也有分割线')
+  ok(els.slice(2, btnAt).every((e) => e.tag !== 'hr'), '正文与按钮之间没有分割线')
+
+  // 后缀顺序：文本在上，按钮在下
+  const noteAt = els.findIndex((e) => e.tag === 'markdown' && e.text_size === 'notation')
+  ok(noteAt > 0 && noteAt < btnAt, '用量/帮助那行在按钮之上')
+  ok(btnAt === els.length - 1, '按钮行是最后一个元素')
 
   // 没有前缀时不硬塞分割线
   const noDir = runCard(st, {}).body.elements
   ok(noDir[0].tag !== 'hr', '没有前缀时不以分割线开头')
+  ok(noDir.filter((e) => e.tag === 'hr').length === 0, '没有前缀时整张卡一条分割线都没有')
 }
 
 // 后缀一行：用量 ｜ 帮助
 {
-  const last = (card) => JSON.stringify(card.body.elements.at(-1))
+  const last = (card) =>
+    JSON.stringify(card.body.elements.find((e) => e.tag === 'markdown' && e.text_size === 'notation'))
   const line = last(runCard(st, { directory: '/tmp', isGroup: true }))
   ok(line.includes('in 1200') && line.includes('out 340'), '后缀带 in/out')
   ok(line.includes('$0.0123'), '后缀带金额')
@@ -151,7 +157,9 @@ ok(size < 30_000, `runCard 序列化 < 30KB（${size} 字节）`)
   zero.text = 'ok'
   zero.cost = 0
   zero.tokens = { input: 66636, output: 9509 }
-  const line = JSON.stringify(runCard(zero, { directory: '/tmp' }).body.elements.at(-1))
+  const noteOf = (card) =>
+    JSON.stringify(card.body.elements.find((e) => e.tag === 'markdown' && e.text_size === 'notation'))
+  const line = noteOf(runCard(zero, { directory: '/tmp' }))
   ok(line.includes('$0.0000'), 'cost=0 时显示 $0.0000，而不是把金额藏掉')
   ok(line.includes('in 66636') && line.includes('out 9509'), 'cost=0 不影响 in/out 显示')
 
@@ -159,7 +167,7 @@ ok(size < 30_000, `runCard 序列化 < 30KB（${size} 字节）`)
   const bare = new RunState('ses_bare')
   bare.status = 'done'
   bare.text = 'ok'
-  const bareLine = JSON.stringify(runCard(bare, { directory: '/tmp' }).body.elements.at(-1))
+  const bareLine = noteOf(runCard(bare, { directory: '/tmp' }))
   ok(!bareLine.includes('$'), '没有用量时不显示金额')
 }
 

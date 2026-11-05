@@ -164,11 +164,10 @@ export function runCard(state, meta = {}) {
 
   const elements = []
 
-  // 卡片分三段：前缀（目录/模型/耗时）│ 正文 │ 后缀（按钮 + 用量/帮助）。
-  // 正文是整块 markdown，段落一多就跟元信息糊在一起，用分割线切开更清楚。
-  let hasPrefix = false
+  // 卡片分三段：前缀（目录/模型/耗时）│ 正文 │ 后缀（用量/帮助 + 按钮）。
+  // 只在前缀和正文之间加分割线：正文自己是整块 markdown，跟元信息糊在一起
+  // 最难读；而正文结尾本身就有留白，再往按钮前塞一条线会把卡片切得太碎。
   if (meta.directory) {
-    hasPrefix = true
     elements.push(
       div(
         `**目录** ${shortDir(meta.directory)}` +
@@ -206,16 +205,8 @@ export function runCard(state, meta = {}) {
     if (hint) elements.push(note(`💡 ${hint}`))
   }
 
-  // 后缀起点。正文再长也别跟按钮贴在一起。
-  if (hasPrefix || bodyEls.length) elements.push(hr())
-
-  const footer = []
-  const nav = navOf({ k: meta.key, rt: meta.rootId })
-  if (state.status === 'running') footer.push(button('中止', { a: 'abort', s: state.sessionId, ...nav }, 'danger'))
-  footer.push(button('新会话', { a: 'new', ...nav }, 'default'))
-  footer.push(button('会话列表', { a: 'sessions', ...nav }, 'default'))
-  elements.push(buttonRow(footer))
-
+  // 后缀：先一行用量/帮助，再是按钮。正文与后缀之间不再加分割线 ——
+  // 正文本身结尾就有留白，再加一条线会把卡片切得太碎。
   /**
    * 用量 + 帮助合成一行。
    *
@@ -233,6 +224,14 @@ export function runCard(state, meta = {}) {
   // 群里要写清楚还得先 @ 一下，否则用户以为直接打字就行。
   const help = meta.isGroup ? '@我 并发送 `/help` 查看全部命令' : '发送 `/help` 查看全部命令'
   elements.push(note(usage.length ? `${usage.join(' · ')}　｜　${help}` : help))
+
+  // 按钮放在最后：先给结论和用量，要操作了再往下按。
+  const footer = []
+  const nav = navOf({ k: meta.key, rt: meta.rootId })
+  if (state.status === 'running') footer.push(button('中止', { a: 'abort', s: state.sessionId, ...nav }, 'danger'))
+  footer.push(button('新会话', { a: 'new', ...nav }, 'default'))
+  footer.push(button('会话列表', { a: 'sessions', ...nav }, 'default'))
+  elements.push(buttonRow(footer))
 
   // 状态写进标题：光靠一个 emoji 看不出「还在跑」还是「已经停了」，
   // 尤其是流式过程中卡片本来就在一直变，用户需要一个明确的状态词。
