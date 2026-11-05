@@ -142,11 +142,11 @@ ok(size < 30_000, `runCard 序列化 < 30KB（${size} 字节）`)
     JSON.stringify(card.body.elements.find((e) => e.tag === 'markdown' && e.text_size === 'notation'))
   const line = last(runCard(st, { directory: '/tmp', isGroup: true }))
   ok(line.includes('in 1200') && line.includes('out 340'), '后缀带 in/out')
-  ok(line.includes('$0.0123'), '后缀带金额')
+  ok(line.includes('$0.01'), '后缀带金额')
   ok(line.includes('｜') && line.includes('/help'), '用量和帮助在同一行，用 ｜ 隔开')
-  ok(line.includes('$0.0123｜@我'), '｜ 前后不留空格')
+  ok(line.includes('$0.01｜@我'), '｜ 前后不留空格')
   ok(
-    line.indexOf('out 340') < line.indexOf('$0.0123') && line.indexOf('$0.0123') < line.indexOf('｜'),
+    line.indexOf('out 340') < line.indexOf('$0.01') && line.indexOf('$0.01') < line.indexOf('｜'),
     '顺序是 in · out · 金额 ｜ 帮助',
   )
 }
@@ -161,7 +161,7 @@ ok(size < 30_000, `runCard 序列化 < 30KB（${size} 字节）`)
   const noteOf = (card) =>
     JSON.stringify(card.body.elements.find((e) => e.tag === 'markdown' && e.text_size === 'notation'))
   const line = noteOf(runCard(zero, { directory: '/tmp' }))
-  ok(line.includes('$0.0000'), 'cost=0 时显示 $0.0000，而不是把金额藏掉')
+  ok(line.includes('$0.00'), 'cost=0 时显示 $0.00，而不是把金额藏掉')
   ok(line.includes('in 66636') && line.includes('out 9509'), 'cost=0 不影响 in/out 显示')
 
   // 完全没用量也没金额时，不显示空的金额位
@@ -174,11 +174,11 @@ ok(size < 30_000, `runCard 序列化 < 30KB（${size} 字节）`)
 
 // 金额格式随量级变化
 {
-  ok(fmtCost(0) === '$0.0000', 'fmtCost(0)')
-  ok(fmtCost(0.00042) === '$0.0004', 'fmtCost 分币级保留 4 位')
-  ok(fmtCost(0.0123) === '$0.0123', 'fmtCost 分币级')
-  ok(fmtCost(0.1234) === '$0.1234', 'fmtCost 元以下一律 4 位')
-  ok(fmtCost(12.3456) === '$12.35', 'fmtCost 元级保留 2 位')
+  ok(fmtCost(0) === '$0.00', 'fmtCost(0)')
+  ok(fmtCost(0.00042) === '$0.00', 'fmtCost 小于一分显示 $0.00')
+  ok(fmtCost(0.0123) === '$0.01', 'fmtCost 一分钱')
+  ok(fmtCost(0.1234) === '$0.12', 'fmtCost 一角二')
+  ok(fmtCost(12.3456) === '$12.35', 'fmtCost 两位小数四舍五入')
   ok(fmtCost(undefined) === '' && fmtCost(NaN) === '', 'fmtCost 非法值返回空')
 }
 
