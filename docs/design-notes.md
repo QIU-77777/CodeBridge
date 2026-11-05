@@ -169,8 +169,8 @@ PW=$(node -e "console.log(require('$HOME/.config/opencode-feishu-bridge/config.j
 OPENCODE_SERVER_PASSWORD="$PW" "$(node scripts/which-opencode.mjs)" serve --port 19876
 ```
 
-`"$(node scripts/which-opencode.mjs)"` 拿到的和 `up.sh` 用的是同一份二进制，
-不要手敲 `opencode`——PATH 里那个可能是别的版本。
+`"$(node scripts/which-opencode.mjs)"` 拿到的和 `up.sh` 用的是同一份二进制。
+不要手敲 `opencode`：PATH 里那份不一定是桌面版这一份，混起来会发生第八节那种事。
 
 凡是「两份必须一致的东西」，就不该让人手工保持一致。
 
@@ -183,11 +183,36 @@ OPENCODE_SERVER_PASSWORD="$PW" "$(node scripts/which-opencode.mjs)" serve --port
 | 来源 | 路径 | 谁在用 |
 |---|---|---|
 | 桌面版自带 CLI | `~/Library/Application Support/ai.opencode.desktop/cli/<版本>-arm64/opencode-cli` | 桌面 App 自己 `serve --service`，跑在随机端口 |
-| npm 全局 | `~/.npm-global/bin/opencode` | `npm i -g @opencode/cli` 装的，PATH 里那个 |
+| npm 全局 | `~/.npm-global/bin/opencode` | `npm i -g @opencode/cli` 装的，会遮住桌面版。**本机已卸载**，现在只剩桌面版一份 |
 
 **它们写同一个数据库**：`~/.local/share/opencode/opencode.db`。用 `lsof` 能看到两个进程打开同一个 inode。
 
-版本不一致时的故障不是「接口报错」，而是「数据读不出来」：新版本加了必填字段，旧版本写的行就解不出。2026-11 就踩过一次——compaction 记录缺 `recent`，整批会话发不出消息，错误却在桥接的卡片上，看着像桥接的锅（详见上一节的诊断步骤）。
+如果你机器上 `which opencode` 有输出，先把那份卸掉（`npm rm -g @opencode/cli`）。留着它不会立刻出错，但它会在某次 `npm i -g` 之后悄悄换版本，而两边共用数据库。
+
+版本不一致时的故障不是「接口报错」，而是「数据读不出来」：新版本换了必填字段，旧版本写的行就解不出。2026-11 就踩过一次——compaction 记录缺 `recent`，整批会话发不出消息，错误却显示在桥接的卡片上，看着像桥接的锅（诊断步骤见第九节）。
+
+### 字段是会来回增减的
+
+那次事故之后把两个版本的 `Session.Message.Compaction.Completed` 都拉出来对了一遍，结论比「新版加字段」更麻烦——**字段在版本之间是双向增删的**：
+
+```js
+// v2.0.32
+{ type:'compaction', status:'completed', reason, model?, providerState?,
+  summary, recent: string,          // ← 必填，没有 .optional()
+  providerContext?, cost?, tokens? }
+
+// v2.2.5（从二进制里读出来的原文，压缩后变量名不同）
+const p = { type:'compaction', ...common }
+const M = { cost: optional, tokens: optional }
+{ ...p, status:'completed', reason, model?, native?, summary, ...M }
+//   ↑ 没有 recent，没有 providerState，没有 providerContext
+```
+
+2.2.5 把 `recent` 和 `providerContext` **删掉了**，新增了 `native`。
+
+所以「按报错提示补字段」只是补当时那个版本的账：给 2.0.32 补上的 `recent`，到 2.2.5 已经是多余字段（宽松 schema 会忽略，所以补过的 10 条记录在 2.2.5 下依然能读——实测 5 个会话的 `/context` 全 200）。反过来，2.2.5 写的行如果带着 2.0.32 不认识的形状，拿 2.0.32 去读一样会挂。
+
+这就是为什么不能靠「出问题再修数据」兜底：修完这轮，下一轮换个方向再来一遍。**写和读必须是同一份二进制**——这是下面那条决策的全部理由。
 
 ### 决策：优先用桌面版自带的 CLI
 
@@ -204,6 +229,8 @@ OPENCODE_SERVER_PASSWORD="$PW" "$(node scripts/which-opencode.mjs)" serve --port
 ```
 OPENCODE_BIN 环境变量  →  桌面版自带 CLI（版本号倒序取最新）  →  PATH 里的 opencode
 ```
+
+第三档只是给「没装桌面版、自己另装了一份」的人留的，本机现在是空的（`which opencode` 无输出）。
 
 桌面版升级后目录名里的版本号会变（`2.2.5-arm64` → `2.2.6-arm64`），所以按 `2.x.y` 数值倒序探测目录，不写死路径。`up.sh` 和 `doctor` 共用这一个模块，不用两边各写一份 shell 判断。
 
@@ -236,7 +263,7 @@ node scripts/test-cards.mjs
 | 报 `Invalid URL` / `connect failed` | SDK 的 `domain` 传错。必须是 `Lark.Domain.Feishu` 枚举，不能是字符串 `'Feishu'`（会被当成 URL 前缀拼进请求路径） |
 | 报 `200672` | 回调返回体里带了 `card` 字段，只允许返回 `{toast}` |
 | 报 `200830` | 用旧版卡片 patch 一张 2.0 卡片（或反过来）。本项目卡片全是 2.0 |
-| `Failed to decode message msg_xxx in session ses_xxx` | 见下一节 |
+| `Failed to decode message msg_xxx in session ses_xxx` | 见本节最后的「opencode 升级后的历史数据兼容问题」 |
 
 ### opencode 升级后的历史数据兼容问题
 
@@ -252,6 +279,15 @@ node scripts/test-cards.mjs
 ```
 
 有些记录是更早的版本写的，**没有 `recent` 字段**。opencode 在 `SessionRunner.drain → settleStaleToolCalls → SessionHistory.load` 读历史时解码失败，请求在走到模型之前就挂了，所以耗时永远不到 1 秒。
+
+**先排除版本错配，再动数据。** 比对两个版本号：
+
+```bash
+curl -s -u "opencode:$PW" http://127.0.0.1:19876/api/info   # 正在跑的 serve
+node scripts/which-opencode.mjs --json                       # 本地会用的那份
+```
+
+不一致时先 `./scripts/down.sh && ./scripts/up.sh` 换成同一份二进制，很多会话到这一步就自己能读了（读它的是写它的那个版本）。换完仍报同一个 `msg_id`，再往下修数据。
 
 诊断：
 
@@ -281,6 +317,7 @@ sqlite3 ~/.local/share/opencode/opencode.db "
 
 桥接这边做了兜底：卡片会把这段错误翻译成一句人话，并提示可以修数据或 `/new`。
 
+**这条修复的保质期是「当时那个版本」。** 换到 2.2.5 之后复核：`recent` 在 2.2.5 的 schema 里已经不是字段了，多出来的键被忽略，那 10 条补过的记录照常能读（5 个会话 `/context` 全 200）。所以修数据只是把旧版本写的行迁就给它当时读它的那个版本；只要两个版本还在混用，下一轮会从另一个方向再坏一次。要根治得固定二进制来源——见第八节。
 
 ---
 

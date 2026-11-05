@@ -42,9 +42,15 @@
 
 ## 快速开始
 
-需要 Node.js 20+，以及装好的 **OpenCode 桌面版**（<https://opencode.ai>）。桥接会用桌面版自带的那份 CLI，不需要另外 `npm i -g opencode`。
+需要 Node.js 20+，以及装好的 **OpenCode 桌面版**（<https://opencode.ai>）。桥接会用桌面版自带的那份 CLI。
 
-> 为什么用桌面版自带的：桌面版和它的 CLI 是同一个版本、写同一个数据库。混用两个版本会出现「新版本写入、旧版本读不出来」，表现为某些会话突然发不出消息。详见 [docs/design-notes.md](docs/design-notes.md#八用哪个-opencode版本一致性)。
+不需要另外 `npm i -g opencode`。装过的话建议卸掉——两份 opencode 共用同一个会话数据库，混着用会让某些会话突然读不出历史：
+
+```bash
+which opencode && npm rm -g @opencode/cli
+```
+
+> 为什么用桌面版自带的：桌面版和它的 CLI 是同一个版本、写同一个数据库。混用两个版本会出现「一个版本写入、另一个版本读不出来」，表现为某些会话突然发不出消息。详见 [docs/design-notes.md](docs/design-notes.md#八用哪个-opencode版本一致性)。
 
 ### 1. 确认用哪份 opencode
 
@@ -275,6 +281,7 @@ npm start
 | 按钮点了转圈没返回 | 「回调配置」里没加 `card.action.trigger` |
 | 群聊不回 | 没 @机器人（`requireMention: true`），或没把机器人拉进群 |
 | 报 `RegionError` | `defaultModel` 用了当前地区不可用的模型，换一个 |
+| 某个会话一直发不出消息，1 秒内就失败，错误里有 `Failed to decode message` | 这个会话的历史里有另一个 opencode 版本写入、当前版本读不出的记录。先 `npm run doctor` 看 serve 和本地 CLI 版本是否一致，一致仍报错见 [design-notes 第九节](docs/design-notes.md#opencode-升级后的历史数据兼容问题) |
 | 卡片不更新 | `streamIntervalMs` 设太低被限流，调回 1800 |
 | 卡片一直停在「执行中」 | 事件流断了但进程还活着。看 `logs/bridge.log` 有没有「事件流断开」；`idleTimeoutMs` 到期会自动转失败 |
 | 同一条消息回两遍 | 跑了两个桥接实例。`./scripts/down.sh` 全停再 `./scripts/up.sh` |
@@ -327,7 +334,7 @@ src/handler.js  命令分发、会话绑定、prompt 下发、卡片回调
   ▼
 src/oc.js       opencode v2 HTTP API + SSE 事件流（自动重连）
   ▼
-opencode serve  →  本地项目目录
+opencode serve（桌面版自带 CLI）  →  本地项目目录
 ```
 
 两个关键设计：`/api/session` 建会话时带 `location.directory`，所以一个 serve 就能服务任意多个项目；事件流每条都带 `sessionID`，按它过滤只刷新对应那张卡片。
@@ -336,6 +343,7 @@ opencode serve  →  本地项目目录
 src/md.js      Markdown → 飞书卡片元素（表格/代码块/标题/列表分段解析）
 src/cards.js   卡片模板（card 2.0）
 src/render.js  事件 → 运行态聚合
+src/which-opencode.js  选哪份 opencode 二进制（up.sh 与 doctor 共用）
 scripts/       体检、自测、卡片探针、端到端验证
 ```
 
