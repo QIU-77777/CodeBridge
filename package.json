@@ -15,7 +15,8 @@
     "status": "bash scripts/status.sh",
     "up": "bash scripts/up.sh",
     "down": "bash scripts/down.sh",
-    "probe:names": "node scripts/probe-names.mjs"
+    "probe:names": "node scripts/probe-names.mjs",
+    "probe:msg": "node scripts/probe-msg.mjs"
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.76.0"
