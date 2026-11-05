@@ -428,6 +428,36 @@ npm run probe:names <chat_id>
 
 ---
 
+## 本地管理后台
+
+一个在本机跑的管理后台，把配置、查看、管理三件事从终端搬进浏览器。零新增依赖：node 内置模块起服务，界面是单页原生 HTML/JS，没有构建步骤。
+
+```bash
+npm run admin                # 起服务，只监听 127.0.0.1:19877
+npm run admin -- --port 8080 # 换端口
+```
+
+浏览器打开 <http://127.0.0.1:19877> 。界面左侧是功能栏，右侧是内容区。
+
+| 页面 | 能做什么 |
+|---|---|
+| 总览 | 本机所有实例一行一条：运行状态、后端类型、配置目录、pid 与已运行时长、serve 健康、绑定会话数、进行中卡片数；已装 launchd 常驻服务的实例可一键启动、停止、重启 |
+| 配置 | 按实例编辑 `config.json` 的四段（feishu / opencode / behavior / backend）；appSecret 与 serve 密码掩码显示，留空表示保持原值；保存前备份成 `config.json.bak`，临时文件加重命名落盘 |
+| 飞书应用 | 按实例校验 appId 与 appSecret（打 `bot/v3/info`，回显机器人名与 open_id）；allowlist 按 open_id 逐条增删；names 对照表 |
+| 会话与后端 | opencode 后端：serve 健康（`/api/info`）、模型列表（`/api/model`）、会话列表（`/api/session`）；pi 后端：CLI 可用性；`state.json` 只读展示（每个 chat 与话题的绑定、进行中的卡片、攒到的名字） |
+| 日志与体检 | `bridge.log` 与 `serve.log` 近实时跟随（按字节偏移增量拉取，两秒一轮）；一键跑 doctor，输出解析成逐条检查项，失败标红 |
+
+几个实现要点：
+
+- **实例发现以 launchd plist 为准。** 扫 `~/Library/LaunchAgents/ai.qiguang.ocbridge*.plist`，label 推实例名，plist 环境变量里的 `OCB_CONFIG_DIR` 推配置目录。`install-agent.sh` 的 `--config-dir` 与 `--instance` 相互独立，从目录后缀猜实例名会猜错，plist 是唯一同时可靠的来源。没装 plist 的实例（nohup 起的）只展示、不起停。
+- **起停转调既有脚本。** 带上对应实例的 `OCB_INSTANCE` 与 `OCB_CONFIG_DIR` 调 `scripts/up.sh` 与 `down.sh`，launchd 与 pid 文件两条路都走脚本里验证过的逻辑，单实例锁语义不变。`down.sh` 末尾的 `pkill` 会误杀本机所有桥接进程，所以没有 plist 的实例不提供起停入口，页面只给安装指引。
+- **安全边界。** 只绑 `127.0.0.1`，Host 头只接受 `localhost` 与 `127.0.0.1`；接口只收 `application/json`，写操作额外要求自定义头 `X-OCB-Admin: 1`；appSecret 与 serve 密码不以明文返回浏览器，也不写进 admin 自己的日志。
+- **doctor 按实例跑。** 传该实例的 `OCB_CONFIG_DIR`，不传查的是默认实例。
+
+代码在 `admin/`：`server.js`（HTTP 服务与接口）、`instances.js`（实例发现与状态采集）、`control.js`（起停、体检、日志）、`public/index.html`（单页界面）。测试：`npm run test:admin`。
+
+---
+
 ## 卡片能显示什么
 
 模型输出的 markdown 会被拆开，分别落到合适的飞书组件上：
