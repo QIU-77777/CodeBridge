@@ -20,6 +20,34 @@ import { CONFIG_DIR } from './config.js'
 const MAX_STDOUT_CHARS = 4 * 1024 * 1024
 const MAX_STDERR_CHARS = 64 * 1024
 
+/**
+ * exit 之后等这么久再结算：直接子进程一死，已写进 stdio 管道的数据可能还没被
+ * 读完，立刻结算会截断尾部输出。几百毫秒足够管道里缓存的数据全部到达。
+ */
+const EXIT_DRAIN_MS = 300
+
+/**
+ * kill 整个进程组。pi 的 bash 工具会留下长驻子进程，只杀直接子进程的话，孤儿
+ * 进程继续持有继承来的 stdout/stderr，close 一直不来，收尾被拖住。spawn 时加
+ * detached: true，子进程自成进程组，-pid 即打到全组。
+ */
+function killTree(child, signal) {
+  if (!child) return
+  try {
+    if (process.platform === 'win32') {
+      child.kill(signal)
+      return
+    }
+    process.kill(-child.pid, signal)
+  } catch {
+    try {
+      child.kill(signal)
+    } catch {
+      /* 进程已经没了 */
+    }
+  }
+}
+
 /** 从 pi 的 message_end / turn_end 里抠出最终文本 */
 function textOf(message) {
   const content = message?.content
@@ -181,20 +209,31 @@ export class PiBackend {
   /** 跑一个不做推理的短命令（--version / --list-models） */
   _runOnce(args, timeoutMs) {
     return new Promise((resolve, reject) => {
-      const child = this.spawnImpl(this.bin, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+      const child = this.spawnImpl(this.bin, args, { stdio: ['ignore', 'pipe', 'pipe'], detached: true })
       let stdout = ''
       let stderr = ''
-      const t = setTimeout(() => child.kill('SIGKILL'), timeoutMs)
+      let settled = false
+      let drainTimer = null
+      const t = setTimeout(() => killTree(child, 'SIGKILL'), timeoutMs)
       child.stdout?.on('data', (d) => (stdout += d.toString()))
       child.stderr?.on('data', (d) => (stderr += d.toString()))
-      child.on('error', (err) => {
+      const settle = (code) => {
+        if (settled) return
+        settled = true
         clearTimeout(t)
-        reject(err)
-      })
-      child.on('close', (code) => {
-        clearTimeout(t)
+        if (drainTimer) clearTimeout(drainTimer)
         if (code === 0) resolve({ stdout, stderr })
         else reject(new Error(`${this.bin} ${args.join(' ')} -> ${code}: ${stderr.slice(0, 200)}`))
+      }
+      child.on('error', (err) => {
+        clearTimeout(t)
+        settled = true
+        reject(err)
+      })
+      // 收尾听 exit 而不是 close：close 要等 stdio 管道全部关闭，短命令被
+      // SIGKILL 后若有孤儿进程持有管道，health 检查的超时就形同虚设。
+      child.on('exit', (code) => {
+        drainTimer = setTimeout(() => settle(code), EXIT_DRAIN_MS)
       })
     })
   }
@@ -310,12 +349,8 @@ export class PiBackend {
     const p = this.procs.get(id)
     if (!p) return false
     p.aborted = true
-    try {
-      p.child.kill('SIGTERM')
-      p.killTimer = setTimeout(() => p.child.kill('SIGKILL'), 2000)
-    } catch {
-      /* noop */
-    }
+    killTree(p.child, 'SIGTERM')
+    p.killTimer = setTimeout(() => killTree(p.child, 'SIGKILL'), 2000)
     return true
   }
 
@@ -350,6 +385,7 @@ export class PiBackend {
           cwd: s.location?.directory || undefined,
           env: process.env,
           stdio: ['ignore', 'pipe', 'pipe'],
+          detached: true,
         })
       } catch (err) {
         this._emit(sessionId, 'session.execution.failed', { error: { message: err.message } })
@@ -362,15 +398,12 @@ export class PiBackend {
       let stdout = ''
       let stderr = ''
       let settled = false
+      let drainTimer = null
 
       const timer = setTimeout(() => {
         rec.timedOut = true
-        try {
-          child.kill('SIGTERM')
-          rec.killTimer = setTimeout(() => child.kill('SIGKILL'), 2000)
-        } catch {
-          /* noop */
-        }
+        killTree(child, 'SIGTERM')
+        rec.killTimer = setTimeout(() => killTree(child, 'SIGKILL'), 2000)
       }, this.timeoutMs)
       timer.unref?.()
 
@@ -379,6 +412,7 @@ export class PiBackend {
         settled = true
         clearTimeout(timer)
         if (rec.killTimer) clearTimeout(rec.killTimer)
+        if (drainTimer) clearTimeout(drainTimer)
         this.procs.delete(sessionId)
 
         const parsed = parsePiJsonl(stdout)
@@ -427,7 +461,13 @@ export class PiBackend {
         stderr += `\n${err.message}`
         finish(-1)
       })
-      child.on('close', (code) => finish(code))
+      // 收尾听 exit 而不是 close：close 要等 stdio 管道全部关闭，pi 的 bash
+      // 工具子进程会成为孤儿进程，继续持有继承来的 stdout/stderr，中止和超时
+      // 的收尾被拖住（实测中断后 29 秒才发 interrupted）。exit 只等直接子进程
+      // 结束，与 stdio 无关；已写入管道的数据给一个兜底定时器再结算。
+      child.on('exit', (code) => {
+        drainTimer = setTimeout(() => finish(code), EXIT_DRAIN_MS)
+      })
     })
   }
 }
