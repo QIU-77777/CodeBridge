@@ -276,6 +276,7 @@ export class Bridge {
       title: session.title || 'opencode',
       key: ctx.key,
       rootId: ctx.replyTo,
+      isGroup: Boolean(msg.isGroup),
     }
     const run = { state, cardId: null, chatId: ctx.chatId, replyTo: ctx.replyTo, timer: null, lastFlush: 0, meta }
     this.runs.set(session.id, run)

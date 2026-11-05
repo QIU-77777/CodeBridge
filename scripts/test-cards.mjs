@@ -104,6 +104,20 @@ ok(JSON.stringify(rcTools).includes('工具调用'), 'showTools=true 时才显�
 const size = JSON.stringify(rc).length
 ok(size < 30_000, `runCard 序列化 < 30KB（${size} 字节）`)
 
+// 卡片末尾要告诉用户「怎么找帮助」，且群里要写清楚得先 @
+{
+  const group = JSON.stringify(runCard(st, { directory: '/tmp', isGroup: true }))
+  const dm = JSON.stringify(runCard(st, { directory: '/tmp', isGroup: false }))
+  ok(group.includes('/help'), '群里：卡片带 /help 提示')
+  ok(group.includes('@我'), '群里：提示里写明要先 @，否则用户会直接打字')
+  ok(dm.includes('/help') && !dm.includes('@我'), '私聊：只写发送 /help，不提 @')
+  ok(
+    group.indexOf('/help') > group.indexOf('"tag":"action"'),
+    '帮助提示排在按钮之后',
+  )
+}
+
+
 // 失败卡片：已知错误要带一句「接下来干什么」
 {
   const mk = (message) => {

@@ -199,6 +199,12 @@ export function runCard(state, meta = {}) {
   footer.push(button('会话列表', { a: 'sessions', ...nav }, 'default'))
   elements.push(buttonRow(footer))
 
+  // 按钮只覆盖三个高频动作，/model /cd /switch 这些不看 /help 是发现不了的。
+  // 群里要写清楚还得先 @ 一下，否则用户以为直接打字就行。
+  elements.push(
+    note(meta.isGroup ? '需要帮助？@我 并发送 `/help` 查看全部命令' : '需要帮助？发送 `/help` 查看全部命令'),
+  )
+
   const usage = []
   if (state.tokens?.input) usage.push(`in ${state.tokens.input}`)
   if (state.tokens?.output) usage.push(`out ${state.tokens.output}`)
@@ -317,7 +323,9 @@ export function statusCard({ session, binding, directory, server, k = '', rt = '
 export function helpCard() {
   const body = [
     '**对话**',
-    '直接发消息 = 发给当前绑定会话。',
+    '群里：每句话都要 @我 再说内容，没 @ 的消息我收不到（会直接丢弃）。',
+    '私聊：直接发消息就行。',
+    '内容会发给当前绑定的会话。',
     '',
     '**会话**',
     '`/new [目录]` 新建会话并绑定（目录省略则用默认目录）',
