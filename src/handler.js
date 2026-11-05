@@ -1,6 +1,8 @@
 import { existsSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { resolve } from 'node:path'
+import { CONFIG_PATH } from './config.js'
+import { watchConfig } from './config-reload.js'
 import { RunState } from './render.js'
 import {
   helpCard,
@@ -62,6 +64,13 @@ export class Bridge {
 
     // 上一个进程可能死在半路，飞书上留着没收尾的卡片，先统一标注掉
     await this.reconcileInflight()
+
+    /**
+     * 配置热更：改名字、加白名单、调节流参数不必重启。
+     * 重启会打断正在跑的任务，改一个字符串付这个代价不值。
+     */
+    this.stopConfigWatch = watchConfig({ path: CONFIG_PATH, cfg: this.cfg, log: this.log })
+    this.log.info('配置热更已开启：改 feishu.names / allowlist / behavior 立即生效')
   }
 
   /**
@@ -123,6 +132,7 @@ export class Bridge {
 
   stop() {
     this.stopEvents?.()
+    this.stopConfigWatch?.()
     if (this.watchdog) clearInterval(this.watchdog)
     for (const run of this.runs.values()) {
       if (run.timer) clearTimeout(run.timer)
