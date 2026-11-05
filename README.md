@@ -453,22 +453,6 @@ npm run probe:names <chat_id>
 
 ## 配置项
 
-### 改完要不要重启
-
-`config.json` 会被盯着，改完保存即可，不用重启——但只有一部分字段能热更：
-
-| 改什么 | 生效方式 |
-|---|---|
-| `feishu.names`、`feishu.allowlist`、`feishu.requireMention` | **立即生效**，日志会打 `[config] 已热更新：feishu.names` |
-| `behavior.*`（刷新间隔、并行上限、超时、显示项） | 立即生效 |
-| `opencode.defaultModel`、`opencode.defaultDirectory` | 立即生效（下一个任务开始用新值） |
-| `feishu.appId` / `appSecret` / `domain` / `botOpenId` | **必须重启**：涉及握手和机器人身份 |
-| `opencode.url` / `password` | **必须重启**：连接参数 |
-
-改了需要重启的字段，日志会直接提示 `[config] 这些改动要重启才生效：feishu.appSecret`，不用猜。重启用 `npm run up`。
-
-> 为什么不全热更：换了 appId 却继续用旧连接、旧机器人身份，行为会变得没法解释。宁可明确要求重启。
-
 | 键 | 说明 | 默认 |
 |---|---|---|
 | `feishu.appId` / `appSecret` | 飞书应用凭证 | — |
