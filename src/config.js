@@ -18,6 +18,10 @@ const DEFAULTS = {
     // 机器人自己的 open_id。留空则启动时调 /open-apis/bot/v3/info 自动取；
     // 多机器人同群时建议显式填上，避免接口取不到时退化成「@ 谁都算」而互相抢答
     botOpenId: '',
+    // open_id -> 显示名。飞书没有「open_id 反查机器人名字」的接口，
+    // 想让标注里显示名字就在这里写；留空则只会显示 open_id
+    // （从消息 @ 提及里攒到的名字也会自动补进来）
+    names: {},
   },
   opencode: {
     url: 'http://127.0.0.1:19876',
@@ -100,6 +104,7 @@ export function writeExampleConfig() {
       allowlist: [],
       requireMention: true,
       botOpenId: '',
+      names: {},
     },
     opencode: {
       url: 'http://127.0.0.1:19876',

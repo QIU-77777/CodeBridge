@@ -275,7 +275,28 @@ npm start
 - **发送者完整的 `open_id`** —— @ 某人需要对方完整的 open_id，猜不出来。之前模型想 @ 另一个机器人，只能写 `@LiLO` 这种字面量，发出去对方收不到提醒。
 - **人 / 机器人** —— 来自事件的 `sender_type`，模型据此知道该用哪种语气、要不要防循环。
 
-群名走 `GET /im/v1/chats/:chat_id`，取到一次就缓存；没开 `im:chat` 权限会静默降级成「群聊」，不影响主干。发送者的**名字**需要 `im:chat.members:read`，默认拿不到，所以只给 open_id。
+群名走 `GET /im/v1/chats/:chat_id`，取到一次就缓存；没开 `im:chat` 权限会静默降级成「群聊」，不影响主干。
+
+**发送者的名字是个坑。** 飞书没有「open_id 反查名字」的通用接口：
+
+| 对象 | 能不能按 open_id 查名字 |
+|---|---|
+| 人类用户 | 能，但要 `contact:user.base:readonly`；没开会返回 200 但 `name` 字段直接不给 |
+| 机器人（应用） | **不能**。通讯录接口对机器人 open_id 直接报 `41050 no user authority` |
+| 群成员列表 | 要 `im:chat.members:read`，且不确定是否包含机器人成员 |
+
+所以名字走三层：**`feishu.names` 人工声明** > **从消息 @ 提及里攒** > 空（只显示 open_id）。
+
+第二条是免费的：每条消息的 `mentions[]` 里都带着被 @ 者的 `name` 和 `open_id`，碰到就记进 `state.json` 的 `names`，用得越久越全。缺点是要等某个对象被 @ 过一次。
+
+想知道你这边哪条路能走，跑一下：
+
+```bash
+npm run probe:names              # 自动挑一个群
+npm run probe:names <chat_id>
+```
+
+它会分别打「群信息 / 群成员列表 / 通讯录反查」，把每种结果和缺哪个权限直接打出来。
 
 #### 多个 agent 同群时要注意
 
@@ -341,6 +362,7 @@ npm start
 | `feishu.allowlist` | open_id 白名单，空 = 不限制（不建议） | `[]` |
 | `feishu.requireMention` | 群聊是否必须 @ **本机器人** 才响应 | `true` |
 | `feishu.botOpenId` | 机器人自己的 open_id。留空则启动时自动向飞书取；多机器人同群建议显式填 | `""` |
+| `feishu.names` | `open_id → 显示名`，只影响来源标注里显不显示名字。留空则从消息 @ 提及里自动攒 | `{}` |
 | `opencode.url` | serve 地址 | `http://127.0.0.1:19876` |
 | `opencode.password` | 与 `OPENCODE_SERVER_PASSWORD` 一致；serve 没设密码就留空 | `""` |
 | `opencode.defaultDirectory` | `/new` 不带目录时用这个 | `$HOME` |

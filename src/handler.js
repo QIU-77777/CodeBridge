@@ -179,6 +179,23 @@ export class Bridge {
     return list.includes(userId)
   }
 
+  /**
+   * open_id -> 显示名。
+   *
+   * 优先级：配置里的 feishu.names（人工声明，最准）> 从 @ 提及里攒的 > 空。
+   * 之所以要声明这一条，是因为飞书没有「open_id 反查机器人名字」的接口 ——
+   * contact 接口对机器人 open_id 直接返回 41050 no user authority。
+   */
+  nameOf(openId) {
+    if (!openId) return ''
+    return this.cfg.feishu?.names?.[openId] || this.store.getName?.(openId) || ''
+  }
+
+  /** 每条消息里被 @ 的人，把 (open_id, 名字) 记下来 */
+  learnNames(list) {
+    for (const x of list || []) this.store.setName?.(x.openId, x.name)
+  }
+
   dedupe(messageId) {
     if (!messageId) return false
     if (this.seenMessages.has(messageId)) return true

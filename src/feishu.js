@@ -5,11 +5,15 @@ import * as Lark from '@larksuiteoapi/node-sdk'
  * 长连接模式不需要公网 IP、不需要内网穿透。
  */
 export class FeishuTransport {
-  constructor(config, { onMessage, onCardAction, logger = console }) {
+  constructor(config, { onMessage, onCardAction, nameOf, onSeenNames, logger = console }) {
     this.cfg = config.feishu
     this.log = logger
     this.onMessage = onMessage
     this.onCardAction = onCardAction
+    /** open_id -> 显示名；拿不到就空串，标注里退回只显示 id */
+    this.nameOf = nameOf
+    /** 把消息 mentions 里的 (open_id, name) 交给上层攒起来 */
+    this.onSeenNames = onSeenNames
 
     /** 机器人自己的身份，start() 时取一次并缓存 */
     this.self = null
@@ -187,6 +191,16 @@ export class FeishuTransport {
     const userId = data?.sender?.sender_id?.open_id || data?.sender?.sender_id?.user_id || ''
     const isBot = data?.sender?.sender_type === 'app'
 
+    // 顺手把这条消息里被 @ 的人记下来。飞书没有「open_id 反查名字」的接口
+    // （contact 对机器人 open_id 直接 41050），mentions 里的 name 是唯一免费来源。
+    if (this.onSeenNames && mentions.length) {
+      this.onSeenNames(
+        mentions
+          .map((x) => ({ openId: x?.id?.open_id, name: x?.name }))
+          .filter((x) => x.openId && x.name),
+      )
+    }
+
     /**
      * 给模型标一行来源。
      *
@@ -195,16 +209,17 @@ export class FeishuTransport {
      * 把来源和发送者 open_id 一并给出来：既省掉这轮探索，也让它有能力 @ 回去
      * （@ 某人需要对方完整的 open_id，靠猜是猜不到的）。
      *
-     * 名字拿不到（要 im:chat.members:read 权限），但 open_id 和「人 / 机器人」
-     * 这两个信息足够定位。
+     * 名字能攒到就带名字，攒不到就只给 id —— id 必须完整，截断了就 @ 不回去。
      */
     const chatName = isGroup ? await this.resolveChatName(m.chat_id) : ''
     const where = isGroup ? (chatName ? `群「${chatName}」` : '群聊') : '私聊'
     const scope = isGroup ? (m.root_id ? '话题内' : '主聊天流') : ''
     const when = new Date(Number(m.create_time) || Date.now()).toLocaleString('zh-CN', { hour12: false })
+    const nick = this.nameOf?.(userId) || ''
+    const sender = nick ? `${nick} · ${userId}` : userId || '未知'
     const origin =
       `[飞书 · ${where}${scope ? ` · ${scope}` : ''} · ` +
-      `发送者 ${userId || '未知'}（${isBot ? '机器人' : '用户'}） · ${when}]`
+      `发送者 ${sender}（${isBot ? '机器人' : '用户'}） · ${when}]`
 
     await this.onMessage({
       chatId: m.chat_id,

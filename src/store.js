@@ -54,6 +54,26 @@ export class Store {
     return Object.values(this.data.chats)
   }
 
+  /**
+   * open_id -> 显示名。
+   *
+   * 飞书没有「open_id 反查机器人名字」的接口（contact 接口对机器人 open_id
+   * 直接返回 41050 no user authority），所以名字只能从消息的 mentions 里攒：
+   * 谁被 @ 过，我们就把那条 mention 的 name 记下来。用得越久越全。
+   */
+  getName(openId) {
+    if (!openId) return ''
+    return this.data.names?.[openId] || ''
+  }
+
+  setName(openId, name) {
+    if (!openId || !name) return
+    const names = this.data.names || (this.data.names = {})
+    if (names[openId] === name) return
+    names[openId] = name
+    this.scheduleSave()
+  }
+
   /** 找出所有绑定了某个 session 的 chat，用于事件回推 */
   chatsBySession(sessionId) {
     return this.all().filter((c) => c.sessionId === sessionId)

@@ -194,6 +194,8 @@ ${created ? '   已为你生成模板，请填入 appId / appSecret。\n' : '   
   const ft = new FeishuTransport(cfg, {
     onMessage: (msg) => bridge.onMessage(msg),
     onCardAction: (ctx) => bridge.onCardAction(ctx),
+    nameOf: (id) => bridge.nameOf(id),
+    onSeenNames: (list) => bridge.learnNames(list),
   })
   bridge.t = ft
 

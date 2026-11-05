@@ -459,11 +459,15 @@ if (process.argv.includes('--live')) {
 {
   const { FeishuTransport } = await import('../src/feishu.js')
   const got = []
+  const seen = []
+  const names = new Map([['ou_lild', '小d']])
   const t = new FeishuTransport(
     { feishu: { appId: 'cli_x', appSecret: 'sec_x', requireMention: true } },
     {
       onMessage: async (m) => got.push(m),
       onCardAction: async () => {},
+      nameOf: (id) => names.get(id) || '',
+      onSeenNames: (list) => seen.push(...list),
       logger: { info() {}, warn() {}, error() {} },
     },
   )
@@ -492,6 +496,11 @@ if (process.argv.includes('--live')) {
   ok(/群「桥接话题探针」/.test(o1), '来源标注带群名', o1)
   ok(/主聊天流/.test(o1), '来源标注区分主聊天流 / 话题内', o1)
   ok(/ou_lild（机器人）/.test(o1), '来源标注带发送者 open_id 和「人 / 机器人」', o1)
+  ok(/小d · ou_lild/.test(o1), '知道名字时显示「名字 · open_id」，id 保持完整以便 @ 回去', o1)
+  ok(
+    seen.some((x) => x.openId === 'ou_me' && x.name === 'LiLO'),
+    '把消息里被 @ 的 (open_id, 名字) 交给上层攒起来',
+  )
 
   await t.handleImMessage({
     message: {
@@ -552,6 +561,36 @@ if (process.argv.includes('--live')) {
   ok(sentText.startsWith('[飞书 · '), 'prompt 第一行是来源标注', sentText.slice(0, 40))
   ok(sentText.includes('帮我看下'), '正文没丢')
   ok(sentText.indexOf(']') < sentText.indexOf('帮我看下'), '来源标注在正文之前')
+}
+
+// ---------- 6.6 名字从哪来：配置 > @ 攒的 > 空 ----------
+{
+  const { Store } = await import('../src/store.js')
+  const { Bridge } = await import('../src/handler.js')
+  const { unlinkSync } = await import('node:fs')
+  const path = '/tmp/ocb-names-test-' + Date.now() + '.json'
+
+  const st = new Store(path)
+  ok(st.getName('ou_x') === '', '没有记录时返回空串')
+
+  st.setName('ou_x', '小d')
+  ok(st.getName('ou_x') === '小d', 'setName 之后读得到')
+  st.flush()
+
+  const st2 = new Store(path)
+  ok(st2.getName('ou_x') === '小d', '名字落盘并能在下次启动读回来')
+
+  const b = new Bridge({
+    oc: {},
+    store: st2,
+    config: { behavior: {}, feishu: { names: { ou_x: '声明名' } } },
+    transport: {},
+    logger: { info() {}, warn() {}, error() {} },
+  })
+  ok(b.nameOf('ou_x') === '声明名', '配置里的 feishu.names 优先于 @ 攒到的名字')
+  ok(b.nameOf('ou_nobody') === '', '两处都没有时为空，标注退回只显示 open_id')
+
+  unlinkSync(path)
 }
 
 // ---------- 7. 按钮要带上话题上下文 ----------
