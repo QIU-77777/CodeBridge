@@ -1,8 +1,31 @@
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve, dirname } from 'node:path'
 import { homedir } from 'node:os'
+import { fileURLToPath } from 'node:url'
 
-export const CONFIG_DIR = join(homedir(), '.config', 'opencode-feishu-bridge')
+const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+
+/**
+ * 配置目录。按优先级：
+ *
+ *   1. `$OCB_CONFIG_DIR`（多实例部署时每个 agent 指一份）
+ *   2. `<repo>/.config/opencode-feishu-bridge` —— **存在 config.json 就用它**
+ *   3. `~/.config/opencode-feishu-bridge`
+ *
+ * 第 2 条是给「想把配置放在项目里」准备的。只要目录在，所有入口（桥接、脚本、
+ * 探针）都会自动切过去，不用设环境变量。
+ *
+ * ⚠️ 这个目录里有 appSecret，`.gitignore` 已经排除 `.config/`，别手动 add。
+ */
+function resolveConfigDir() {
+  const explicit = process.env.OCB_CONFIG_DIR
+  if (explicit) return resolve(explicit)
+  const inRepo = join(REPO, '.config', 'opencode-feishu-bridge')
+  if (existsSync(join(inRepo, 'config.json'))) return inRepo
+  return join(homedir(), '.config', 'opencode-feishu-bridge')
+}
+
+export const CONFIG_DIR = resolveConfigDir()
 export const CONFIG_PATH = join(CONFIG_DIR, 'config.json')
 export const STATE_PATH = join(CONFIG_DIR, 'state.json')
 

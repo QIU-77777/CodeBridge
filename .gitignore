@@ -3,3 +3,6 @@ logs/
 *.log
 .DS_Store
 *.pid
+
+# 本地配置与状态：含 appSecret 和会话绑定，绝不入库
+.config/

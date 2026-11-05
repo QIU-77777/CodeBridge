@@ -1,8 +1,10 @@
 #!/bin/bash
 # 一眼看清现在在跑什么：opencode serve、桥接、桌面 App、最近日志
 cd "$(dirname "$0")/.." || exit 1
+ROOT="$(pwd)"
+. "$ROOT/scripts/lib/config-dir.sh"
 
-CONFIG="$HOME/.config/opencode-feishu-bridge/config.json"
+CONFIG="$(ocb_config_dir "$ROOT")/config.json"
 URL=$(node -e "try{console.log(require('$CONFIG').opencode.url||'http://127.0.0.1:19876')}catch{console.log('http://127.0.0.1:19876')}" 2>/dev/null)
 PW=$(node -e "try{console.log(require('$CONFIG').opencode.password||'')}catch{console.log('')}" 2>/dev/null)
 

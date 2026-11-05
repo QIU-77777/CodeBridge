@@ -2,6 +2,8 @@
 # 一键启动 serve + 桥接（后台常驻，日志在 logs/）
 set -u
 cd "$(dirname "$0")/.." || exit 1
+ROOT="$(pwd)"
+. "$ROOT/scripts/lib/config-dir.sh"
 mkdir -p logs
 
 # 装了 launchd agent 的话，别在这儿再起一份（桥接有单实例锁，起来会互相打架）。
@@ -25,7 +27,7 @@ if agent_installed ai.qiguang.ocbridge.app; then
   exit 0
 fi
 
-CONFIG="${HOME}/.config/opencode-feishu-bridge/config.json"
+CONFIG="$(ocb_config_dir "$ROOT")/config.json"
 [ -f "$CONFIG" ] || { echo "❌ 配置不存在: $CONFIG"; exit 1; }
 
 read_cfg() {

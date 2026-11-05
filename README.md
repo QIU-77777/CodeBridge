@@ -116,10 +116,34 @@ curl -s -u opencode:my-secret-123 http://127.0.0.1:19876/api/info
 
 **2.6 拿凭证** ｜ 「凭证与基础信息」→ 复制 **App ID**（`cli_` 开头）和 **App Secret**。
 
+### 配置放在哪
+
+配置目录按这个顺序找，第一个命中的生效：
+
+| 优先级 | 位置 | 什么时候用 |
+|---|---|---|
+| 1 | `$OCB_CONFIG_DIR` | 一台机器跑多个 agent，每个指一份 |
+| 2 | **`.config/opencode-feishu-bridge/`（项目内）** | 存在 `config.json` 就用它，默认推荐 |
+| 3 | `~/.config/opencode-feishu-bridge/` | 项目里没有配置时的老位置 |
+
+项目内的目录长这样：
+
+```
+opencode-feishu-bridge/
+└── .config/opencode-feishu-bridge/
+    ├── config.json      ← 你的配置（含 appSecret）
+    ├── state.json       ← 会话绑定、攒到的名字、未收尾的卡片
+    └── bridge.lock      ← 单实例锁
+```
+
+> ⚠️ **`.config/` 已经在 `.gitignore` 里，永远不要 `git add -f`。** 里面有 `appSecret`，一旦推上去等于把机器人交给所有人。
+
+三个入口（`npm start`、`scripts/*.sh`、`scripts/probe-*.mjs`）用的是同一套解析规则，不会出现「命令读 A、桥接读 B」的情况。
+
 ### 3. 填配置
 
 ```bash
-open ~/.config/opencode-feishu-bridge/config.json
+open .config/opencode-feishu-bridge/config.json
 ```
 
 ```json
@@ -207,7 +231,7 @@ npm start
 
 > **为什么建议用 `install-agent.sh`。** `nohup` 起的进程还挂在某个 shell 的进程组里，那个 shell 退出时可能被一起收掉——表现就是「用着用着机器人不说话了，日志里连报错都没有」。装成 launchd agent 之后，进程归 launchd 管：登录自动起、被杀自动起（实测 kill -9 后 10 秒内恢复），关终端、退出 WorkBuddy 都不影响。
 
-> **不要同时跑两个桥接进程。** 有单实例锁（`~/.config/opencode-feishu-bridge/bridge.lock`），第二个会直接报错退出——否则同一条消息会被回两遍。
+> **不要同时跑两个桥接进程。** 有单实例锁（配置目录下的 `bridge.lock`），第二个会直接报错退出——否则同一条消息会被回两遍。
 
 ---
 

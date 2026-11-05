@@ -12,11 +12,10 @@
  */
 import * as Lark from '@larksuiteoapi/node-sdk'
 import { readFileSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { CONFIG_PATH, STATE_PATH } from '../src/config.js'
 
-const CONFIG = join(homedir(), '.config', 'opencode-feishu-bridge', 'config.json')
-const STATE = join(homedir(), '.config', 'opencode-feishu-bridge', 'state.json')
+const CONFIG = CONFIG_PATH
+const STATE = STATE_PATH
 
 // 飞书 SDK 会把每个失败请求的整个 axios error 打到 console，
 // 这里只要结论，不要那堆对象。先接管 console，输出走 out()。
@@ -64,7 +63,7 @@ async function call(label, url) {
 // 默认群：state.json 里出现过的 oc_ 开头的 chatId
 function guessChatId() {
   try {
-    const st = JSON.parse(readFileSync(STATE, 'utf8'))
+    const st = JSON.parse(readFileSync(STATE_PATH, 'utf8'))
     // 只认群：群里的键是 root:<消息 id>，私聊键是 chat_id 本身
     for (const [k, v] of Object.entries(st.chats || {})) {
       if (k.startsWith('root:') && v?.chatId?.startsWith('oc_')) return v.chatId

@@ -12,10 +12,11 @@
  */
 import * as Lark from '@larksuiteoapi/node-sdk'
 import { readFileSync } from 'node:fs'
+import { CONFIG_PATH } from '../src/config.js'
 import { homedir } from 'node:os'
 
 const CFG = JSON.parse(
-  readFileSync(`${homedir()}/.config/opencode-feishu-bridge/config.json`, 'utf8'),
+  readFileSync(CONFIG_PATH, 'utf8'),
 )
 const client = new Lark.Client({
   appId: CFG.feishu.appId,

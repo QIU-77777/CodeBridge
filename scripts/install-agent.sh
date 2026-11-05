@@ -7,6 +7,7 @@
 # 卸载：./scripts/uninstall-agent.sh
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+. "$ROOT/scripts/lib/config-dir.sh"
 cd "$ROOT"
 
 LABEL_SERVE="ai.qiguang.ocbridge.serve"

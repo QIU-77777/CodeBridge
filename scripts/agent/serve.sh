@@ -10,7 +10,8 @@ if [ -z "$NODE" ]; then
   if [ -x /usr/local/bin/node ]; then NODE=/usr/local/bin/node; else NODE="$(command -v node)"; fi
 fi
 
-CONFIG="$HOME/.config/opencode-feishu-bridge/config.json"
+. "$ROOT/scripts/lib/config-dir.sh"
+CONFIG="$(ocb_config_dir "$ROOT")/config.json"
 URL=$("$NODE" -e "try{console.log(require('$CONFIG').opencode.url)}catch{console.log('http://127.0.0.1:19876')}" 2>/dev/null || echo 'http://127.0.0.1:19876')
 PW=$("$NODE" -e "try{console.log(require('$CONFIG').opencode.password||'')}catch{console.log('')}" 2>/dev/null || echo '')
 PORT=$(printf '%s' "$URL" | sed -E 's#.*:([0-9]+).*#\1#')
