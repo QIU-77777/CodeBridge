@@ -2,15 +2,14 @@
 /**
  * 初始化本地配置。
  *
- * 为什么需要这个脚本：`.config/` 被 `.gitignore` 排除了 —— 那里有 appSecret，
- * 绝不能入库。所以 clone 下来 repo 里**没有**这个目录，新用户手里也没有可照抄的
- * 样板。模板放在仓库根目录的 `config.example.json`（不含任何真实密钥）。
+ * 为什么需要这个脚本：配置目录在 `~/.config/opencode-feishu-bridge/`，位于仓库
+ * 之外，里面有 appSecret，绝不能入库。所以 clone 下来没有一个可照抄的样板。
+ * 模板放在仓库根目录的 `config.example.json`（不含任何真实密钥）。
  *
  * 用法：
  *   npm run init                                  # 交互式向导（终端里默认走这条）
  *   npm run init -- --app-id=cli_xx --app-secret=yy
  *   npm run init -- --no-input                    # CI 里只铺模板，不问问题
- *   npm run init -- --home                        # 写到 ~/.config/opencode-feishu-bridge/
  *   npm run init -- --force                       # 覆盖已存在的（会备份）
  *   npm run init -- --add-allow=ou_xxx            # 往已存在的配置里追加白名单
  *
@@ -20,9 +19,8 @@
  *   3. 把你的 open_id 写进白名单，省掉「先跑起来看日志再回来改」那一圈
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync } from 'node:fs'
-import { join, resolve, dirname } from 'node:path'
+import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { fileURLToPath } from 'node:url'
 import { createInterface } from 'node:readline'
 import { TEMPLATE_PATH } from '../src/config.js'
 
@@ -40,7 +38,6 @@ try {
   Lark = null
 }
 
-const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const TEMPLATE = TEMPLATE_PATH
 
 const args = process.argv.slice(2)
@@ -50,15 +47,12 @@ const val = (name) => {
   return hit ? hit.slice(name.length + 3) : ''
 }
 
-const useHome = has('--home')
 const force = has('--force')
 const noInput = has('--no-input')
 
-const targetDir =
-  process.env.OCB_CONFIG_DIR ||
-  (useHome
-    ? join(homedir(), '.config', 'opencode-feishu-bridge')
-    : join(REPO, '.config', 'opencode-feishu-bridge'))
+// 配置只放一个地方：~/.config/opencode-feishu-bridge。多实例用 OCB_CONFIG_DIR
+// 各指一份（比如 ~/.config/opencode-feishu-bridge-pi），init 也跟着走。
+const targetDir = process.env.OCB_CONFIG_DIR || join(homedir(), '.config', 'opencode-feishu-bridge')
 const target = join(targetDir, 'config.json')
 
 const line = (s = '') => process.stdout.write(s + '\n')
@@ -287,9 +281,4 @@ line('   · 回调配置   card.action.trigger，选「使用长连接接收回�
 line('   · 权限       im:message / im:message:send_as_bot / im:chat:readonly')
 line('   · 发布版本   权限和事件改完必须发版才生效')
 line()
-line(`配置目录优先级：$OCB_CONFIG_DIR > 项目内 ${join(REPO, '.config', 'opencode-feishu-bridge')} > ~/.config/opencode-feishu-bridge`)
-if (!useHome && existsSync(join(homedir(), '.config', 'opencode-feishu-bridge', 'config.json'))) {
-  line()
-  line('⚠️  home 下还有一份旧配置。项目内这份优先，但建议把旧的挪走免得日后看错：')
-  line(`   ${join(homedir(), '.config', 'opencode-feishu-bridge')}`)
-}
+line(`配置目录：$OCB_CONFIG_DIR > ~/.config/opencode-feishu-bridge`)

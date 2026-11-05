@@ -33,8 +33,8 @@ CONFIG="$(ocb_config_dir "$ROOT")/config.json"
 if [ ! -f "$CONFIG" ]; then
   echo "❌ 配置不存在: $CONFIG"
   echo
-  echo "   .config/ 里有 appSecret，没入库，所以刚 clone 下来是空的。"
-  echo "   跑一次初始化，它会把 config.example.json 复制过去："
+  echo "   配置目录在仓库外（~/.config/opencode-feishu-bridge），里面有 appSecret，不能入库。"
+  echo "   跑一次初始化，它会照 config.example.json 铺一份："
   echo
   echo "     npm run init"
   echo

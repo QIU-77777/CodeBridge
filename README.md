@@ -130,21 +130,22 @@ curl -s -u opencode:my-secret-123 http://127.0.0.1:19876/api/info
 | 优先级 | 位置 | 什么时候用 |
 |---|---|---|
 | 1 | `$OCB_CONFIG_DIR` | 一台机器跑多个 agent，每个指一份 |
-| 2 | **`.config/opencode-feishu-bridge/`（项目内）** | 存在 `config.json` 就用它，默认推荐 |
-| 3 | `~/.config/opencode-feishu-bridge/` | 项目里没有配置时的老位置 |
+| 2 | `~/.config/opencode-feishu-bridge/` | 默认位置，所有入口都读它 |
 
-项目内的目录长这样：
+只有这两条，没有「项目内 `.config/`」。配置统一放家目录，理由有三：appSecret
+不落在仓库工作树里；换个目录、换个 clone 启动都读同一份；多实例时几个机器人
+的配置排在一起，一眼看得清。
+
+目录长这样：
 
 ```
-opencode-feishu-bridge/
-├── config.example.json              ← 模板，入库，只有占位符
-└── .config/opencode-feishu-bridge/  ← 首次 npm run init 生成，不入库
-    ├── config.json      ← 你的配置（含 appSecret）
-    ├── state.json       ← 会话绑定、攒到的名字、未收尾的卡片
-    └── bridge.lock      ← 单实例锁
+~/.config/opencode-feishu-bridge/
+├── config.json      ← 你的配置（含 appSecret）
+├── state.json       ← 会话绑定、攒到的名字、未收尾的卡片
+└── bridge.lock      ← 单实例锁
 ```
 
-> ⚠️ **`.config/` 已经在 `.gitignore` 里，永远不要 `git add -f`。** 里面有 `appSecret`，一旦推上去等于把机器人交给所有人。
+> ⚠️ **这个目录在仓库外，`.gitignore` 仍排除 `.config/` 作为第二道防线。** 万一有人把配置放回仓库，这条规则能挡住误入库。永远不要 `git add -f`——appSecret 推上去等于把机器人交给所有人。
 
 这三个文件 clone 下来一个都没有，全都是本机生成的，谁生成、干什么用：
 
@@ -156,17 +157,16 @@ opencode-feishu-bridge/
 
 所以 clone 完只剩一件事要做：`npm run init` 填凭证。其余两个文件你不用管，桥接会自己建。
 
-所以 **clone 下来没有 `.config/` 目录是正常的**，不是漏了文件。模板单独放在仓库根的 `config.example.json`（不含任何真实密钥、可安全入库），用一条命令铺开：
+**配置不在仓库里，clone 下来看不到它是正常的**，不是漏了文件。模板单独放在仓库根的 `config.example.json`（不含任何真实密钥、可安全入库），用一条命令铺开：
 
 ```bash
-npm run init                                        # 铺到项目内（推荐）
-npm run init -- --home                              # 铺到 ~/.config
+npm run init                                        # 铺到 ~/.config/opencode-feishu-bridge
 npm run init -- --app-id=cli_xx --app-secret=yy     # 顺手把凭证填好
 ```
 
 已经存在 `config.json` 时它不会覆盖，只提示；确实要重来加 `--force`，会先备份成 `config.json.bak`。
 
-思路是「结构入库、密钥不入库」：目录结构和每个字段的含义需要有人告诉你，`config.example.json` 承担这件事；而 `appSecret` 和 `state.json` 只属于这台机器，`.config/` 整体排除最省心——不用逐个文件写例外规则，也就没有「哪天加个新文件忘了 ignore」的风险。
+思路是「结构入库、密钥不入库」：目录结构和每个字段的含义需要有人告诉你，`config.example.json` 承担这件事；而 `appSecret` 和 `state.json` 只属于这台机器，一个字节都不进仓库。
 
 三个入口（`npm start`、`scripts/*.sh`、`scripts/probe-*.mjs`）用的是同一套解析规则，不会出现「命令读 A、桥接读 B」的情况。
 
