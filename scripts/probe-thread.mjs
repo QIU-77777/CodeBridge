@@ -1,15 +1,14 @@
 #!/usr/bin/env node
 /**
- * 话题（thread）探针：确认飞书群消息的 thread_id / root_id 行为。
+ * 话题（thread）探针：确认飞书群消息的 thread_id / root_id 行为，并验证桥接的话题内发送。
  *
- *   node scripts/probe-thread.mjs --list              看机器人在哪些群
- *   node scripts/probe-thread.mjs --create 探针群     建群并把白名单用户拉进来
- *   node scripts/probe-thread.mjs --send <chat_id>    发一条文本 + 一条话题串回复卡片
+ *   node scripts/probe-thread.mjs --list                     看机器人在哪些群
+ *   node scripts/probe-thread.mjs --create 探针群            建群并把白名单用户拉进来
+ *   node scripts/probe-thread.mjs --send <chat_id>           发一条文本 + 一条话题串回复卡片
+ *   node scripts/probe-thread.mjs --verify <chat_id> <消息id> 用桥接传输层往该消息所在话题发卡片，回查 thread_id
  *
- * 目的：话题绑定改造前，先确认三件事
- *   1. 普通群里 reply_in_thread 发出去的消息，回查时带什么 thread_id / root_id
- *   2. interactive 卡片能不能当话题的回复（能，才能把执行卡片放进话题）
- *   3. 用户在话题里继续发言时，事件里带的是 thread_id 还是 root_id（需要人配合发消息）
+ * 飞书行为已量完（结论见 docs/design-notes.md 第十二节）。--verify 验的是桥接这边：
+ * sendCard 带 replyTo 时，卡片是否真的落进调用方指定的话题。
  */
 import * as Lark from '@larksuiteoapi/node-sdk'
 import { readFileSync } from 'node:fs'
@@ -128,8 +127,37 @@ if (mode === '--append') {
   console.log('  （thread_id 和上次一样 = 并进原话题；变了 = 另起了一个话题）')
 }
 
-async function describe(messageId) {
+if (mode === '--verify') {
+  const chatId = args[1]
+  const replyTo = args[2]
+  if (!chatId || !replyTo) die(new Error('用法: --verify <chat_id> <话题内任意一条消息的 id>'))
+
+  const { FeishuTransport } = await import('../src/feishu.js')
+  const t = new FeishuTransport(CFG, { logger: { info: () => {}, warn: () => {}, error: console.error } })
+  const card = {
+    schema: '2.0',
+    config: { update_multi: true },
+    header: { template: 'turquoise', title: { tag: 'plain_text', content: '话题内回复验证' } },
+    body: {
+      elements: [
+        { tag: 'markdown', content: `这条卡片由 \`FeishuTransport.sendCard(replyTo)\` 发出，应落在消息 \`${replyTo}\` 所在的话题里。` },
+      ],
+    },
+  }
+  const id = await t.sendCard(chatId, card, { replyTo }).catch(die)
+  console.log('发出 message_id =', id)
+  const m = await getMsg(id)
+  console.log('  回查:', JSON.stringify({ thread_id: m.thread_id ?? null, root_id: m.root_id ?? null, parent_id: m.parent_id ?? null }))
+  if (!m.thread_id) die(new Error('回查没有 thread_id：卡片没有落进话题'))
+  console.log(`✅ 卡片已落进话题 ${m.thread_id}`)
+}
+
+async function getMsg(messageId) {
   const r = await client.im.v1.message.get({ path: { message_id: messageId } }).catch(die)
-  const m = r.data?.items?.[0] || {}
+  return r.data?.items?.[0] || {}
+}
+
+async function describe(messageId) {
+  const m = await getMsg(messageId)
   return JSON.stringify({ thread_id: m.thread_id ?? null, root_id: m.root_id ?? null, parent_id: m.parent_id ?? null, chat_id: m.chat_id })
 }

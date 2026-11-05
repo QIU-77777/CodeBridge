@@ -191,9 +191,6 @@ export class Bridge {
   }
 
   /**
-   * @param {{chatId: string, userId: string, text: string, messageId?: string}} msg
-   */
-  /**
    * 一条消息的寻址上下文。
    *   key      —— 会话绑定的键。私聊就是 chat_id；群里一个话题一个键（root:<话题根消息>）
    *   chatId   —— 发消息的目标会话
@@ -429,6 +426,8 @@ export class Bridge {
     this.store.set(ctx.key, {
       sessionId: session.id,
       directory: session.location?.directory || dir,
+      chatId: ctx.chatId,
+      replyTo: ctx.replyTo,
     })
     return this.t.sendCard(
       ctx.chatId,

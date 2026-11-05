@@ -48,10 +48,10 @@ class TestTransport {
     this.patchCount = 0
     this.patchedIds = []
   }
-  async sendCard(chatId, card) {
+  async sendCard(chatId, card, opts = {}) {
     this.sendCount++
     const id = `t-${++this.seq}`
-    this.cards.push({ id, chatId, card, at: Date.now() })
+    this.cards.push({ id, chatId, card, opts, at: Date.now() })
     return id
   }
   async patchCard(id, card) {
@@ -64,8 +64,8 @@ class TestTransport {
     }
     return true
   }
-  async sendText(chatId, text) {
-    this.texts.push({ chatId, text })
+  async sendText(chatId, text, opts = {}) {
+    this.texts.push({ chatId, text, opts })
     return `t-text-${++this.seq}`
   }
   last() {
@@ -319,6 +319,93 @@ async function main() {
     return transport.texts[transport.texts.length - 1].text
   })
 
+  // 6. 话题内回复（群聊）：一条话题一个绑定，输出全部落进话题
+  console.log('\n[6] 话题内回复（群聊）')
+  const topicKey = 'root:om_topic_root'
+  const topicChat = 'chat-topic-group'
+  const topicMsg = (id) => ({
+    chatId: topicChat,
+    userId: 'u1',
+    messageId: id,
+    chatType: 'group',
+    isGroup: true,
+    rootId: 'om_topic_root',
+    key: topicKey,
+    threadId: 'omt_topic',
+  })
+
+  await check('话题消息：执行卡片带 replyTo', async () => {
+    const before = transport.cards.length
+    const done = bridge.onMessage({ ...topicMsg('om_topic_first'), text: '只回复两个字：好的。不要调用任何工具。' })
+    await sleep(1500) // 卡片先于模型响应发出，不用等整轮跑完
+    const rec = transport.cards.slice(before).find((c) => c.opts?.replyTo === 'om_topic_root')
+    if (!rec) throw new Error('执行卡片没有带 replyTo，会落到群主聊天流')
+    await done
+    return `replyTo=om_topic_root`
+  })
+
+  await check('话题绑定独立记录，chatId 不被键污染', async () => {
+    const b = store.get(topicKey)
+    if (!b?.sessionId) throw new Error('话题没有绑定会话')
+    if (b.chatId !== topicChat) throw new Error(`chatId 应为 ${topicChat}，实际 ${b.chatId}`)
+    return `key=${topicKey} chatId=${b.chatId}`
+  })
+
+  await check('isKnownTopic：绑过的话题免 @', async () => {
+    if (!bridge.isKnownTopic({ key: topicKey })) throw new Error('已绑定的话题未被识别')
+    if (bridge.isKnownTopic({ key: 'root:om_unknown' })) throw new Error('陌生话题被误判为已知')
+    return 'ok'
+  })
+
+  await check('话题内命令也带 replyTo', async () => {
+    const before = transport.cards.length
+    await bridge.onMessage({ ...topicMsg('om_topic_second'), text: '/status' })
+    const rec = transport.cards[before]
+    if (!rec) throw new Error('没有发卡片')
+    if (rec.opts?.replyTo !== 'om_topic_root') throw new Error('命令回复没有进话题')
+    return 'ok'
+  })
+
+  await check('卡片回调按按钮里的 k/rt 回到话题', async () => {
+    const before = transport.cards.length
+    const res = await bridge.onCardAction({
+      chatId: topicChat,
+      userId: 'u1',
+      action: { a: 'sessions', k: topicKey, rt: 'om_topic_root' },
+      messageId: 'om_card_topic',
+    })
+    if (!res?.toast) throw new Error('没有 toast')
+    await sleep(500)
+    const rec = transport.cards[before]
+    if (rec?.opts?.replyTo !== 'om_topic_root') throw new Error('回调结果没有进话题')
+    return 'ok'
+  })
+
+  await check('老卡片回调：按 message_id 反查绑定键', async () => {
+    const run = [...bridge.runs.values()].find((r) => r.meta?.key === topicKey)
+    if (!run?.cardId) throw new Error('找不到话题 run')
+    if (!session?.id) throw new Error('没有可切换的会话')
+    await bridge.onCardAction({
+      chatId: topicChat,
+      userId: 'u1',
+      action: { a: 'switch', s: session.id },
+      messageId: run.cardId,
+    })
+    const b = store.get(topicKey)
+    if (b?.sessionId !== session.id) throw new Error('没有按 run 反查到话题键')
+    if (b?.chatId !== topicChat) throw new Error(`反查后 chatId 应为 ${topicChat}，实际 ${b.chatId}`)
+    return `key=${topicKey}`
+  })
+
+  await check('私聊回调不进话题', async () => {
+    const before = transport.cards.length
+    await bridge.onCardAction({ chatId, userId: 'u1', action: { a: 'sessions' }, messageId: 'om_plain_card' })
+    await sleep(500)
+    const rec = transport.cards[before]
+    if (rec?.opts?.replyTo) throw new Error('私聊回调错误地进了话题')
+    return 'ok'
+  })
+
   bridge.stop()
   store.flush()
 
@@ -326,6 +413,8 @@ async function main() {
   if (session) await oc.deleteSession(session.id).catch(() => {})
   const b = store.get(chatId)
   if (b?.sessionId) await oc.deleteSession(b.sessionId).catch(() => {})
+  const tb = store.get(topicKey)
+  if (tb?.sessionId) await oc.deleteSession(tb.sessionId).catch(() => {})
   if (existsSync(statePath)) rmSync(statePath)
 
   console.log(`\n=== 结果: ${pass} 通过 / ${fail} 失败 ===`)

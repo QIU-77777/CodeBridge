@@ -4,6 +4,27 @@ set -u
 cd "$(dirname "$0")/.." || exit 1
 mkdir -p logs
 
+# 装了 launchd agent 的话，别在这儿再起一份（桥接有单实例锁，起来会互相打架）。
+# agent 自己会常驻、会自启，重启用 kickstart。
+UID_NUM="$(id -u)"
+AGENT_LABELS="ai.qiguang.ocbridge.serve ai.qiguang.ocbridge.app"
+agent_installed() { [ -f "$HOME/Library/LaunchAgents/$1.plist" ]; }
+agent_loaded() { launchctl print "gui/$UID_NUM/$1" >/dev/null 2>&1; }
+
+if agent_installed ai.qiguang.ocbridge.app; then
+  for label in $AGENT_LABELS; do
+    if agent_loaded "$label"; then
+      launchctl kickstart -k "gui/$UID_NUM/$label" >/dev/null 2>&1
+    else
+      launchctl bootstrap "gui/$UID_NUM" "$HOME/Library/LaunchAgents/$label.plist" >/dev/null 2>&1
+    fi
+  done
+  echo "→ 这两个进程由 launchd 托管，已重启"
+  sleep 6
+  ./scripts/status.sh
+  exit 0
+fi
+
 CONFIG="${HOME}/.config/opencode-feishu-bridge/config.json"
 [ -f "$CONFIG" ] || { echo "❌ 配置不存在: $CONFIG"; exit 1; }
 

@@ -181,6 +181,24 @@ OPENCODE_SERVER_PASSWORD="$PW" "$(node scripts/which-opencode.mjs)" serve --port
 
 凡是「两份必须一致的东西」，就不该让人手工保持一致。
 
+### 后来发现 nohup 不够
+
+2026-11-05 20:00 前后，机器人和 serve 一起消失了：日志最后一行是正常的群消息记录，**没有任何堆栈**，`.serve.pid` 里的进程也没了。不是崩，是被外部信号收走的——`nohup` 只挡 SIGHUP，挡不住 shell 退出时对进程组的清理。
+
+所以现在有两条路，脚本自己识别：
+
+```bash
+./scripts/install-agent.sh     # launchd 用户级 agent：登录自启 + 挂了自动拉起
+./scripts/uninstall-agent.sh   # 退回 nohup 模式
+```
+
+两个 agent（`ai.qiguang.ocbridge.serve` / `.app`）各自 `KeepAlive=true`、`ThrottleInterval=10`，日志仍写 `logs/serve.log`、`logs/bridge.log`。`up.sh` / `down.sh` / `status.sh` 都认这套：装了 agent 时 `up.sh` 走 `launchctl kickstart -k`，`down.sh` 走 `bootout`，不会和 nohup 实例抢单实例锁。
+
+两个细节：
+
+- 桥接的 wrapper 会**先等 serve 端口能连上**再 exec。开机时 launchd 同时拉两个，谁先起来不确定，不等的话桥接一启动就报「连不上」然后被 KeepAlive 反复重启，日志刷屏。
+- node 用 `/usr/local/bin/node`（系统盘那份），不用 WorkBuddy 自带的——后者路径里带版本号，工具升级后路径就失效了。
+
 ---
 
 ## 八、用哪个 opencode（版本一致性）
@@ -366,9 +384,13 @@ scripts/probe-card.mjs  卡片 schema 探针
 scripts/probe-thread.mjs 话题探针（建群/发话题/打印 thread_id）
 scripts/demo-card.mjs   发一张验收样式的卡片到飞书
 scripts/e2e-table.mjs   端到端表格渲染验证
-scripts/up.sh           起 serve + 起桥接，nohup 常驻，PID 落盘
+scripts/up.sh           起 serve + 起桥接（有 agent 时走 launchctl，没有则 nohup）
 scripts/down.sh         按 PID 停止两个进程
 scripts/status.sh       看状态：serve、桥接、桌面 App、最近日志
+scripts/install-agent.sh    装成 launchd 用户级 agent（自启 + 自动拉起）
+scripts/uninstall-agent.sh  卸载 agent，退回 nohup
+scripts/agent/serve.sh      agent 用的 serve 启动壳（读配置、等端口）
+scripts/agent/bridge.sh     agent 用的桥接启动壳（等 serve 就绪再连）
 ```
 
 ---

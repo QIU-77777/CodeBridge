@@ -55,7 +55,8 @@ export class FeishuTransport {
     const m = data?.message
     if (!m) return
     if (m.message_type !== 'text') {
-      await this.sendText(m.chat_id, `暂不支持 ${m.message_type} 类型消息，请发送文本。`)
+      const replyTo = m.chat_type === 'group' ? m.root_id || m.message_id : null
+      await this.sendText(m.chat_id, `暂不支持 ${m.message_type} 类型消息，请发送文本。`, { replyTo })
       return
     }
     let text = ''

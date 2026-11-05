@@ -16,7 +16,19 @@ fi
 
 echo
 echo "=== 桥接进程"
-if [ -f .bridge.pid ] && kill -0 "$(cat .bridge.pid)" 2>/dev/null; then
+UID_NUM="$(id -u)"
+if [ -f "$HOME/Library/LaunchAgents/ai.qiguang.ocbridge.app.plist" ]; then
+  if launchctl print "gui/$UID_NUM/ai.qiguang.ocbridge.app" >/dev/null 2>&1; then
+    BPID=$(pgrep -f "node .*src/index.js" | head -1)
+    if [ -n "$BPID" ]; then
+      echo "   ✅ 运行中  pid=$BPID  已跑 $(ps -o etime= -p "$BPID" | tr -d ' ')  （launchd 托管）"
+    else
+      echo "   ⏳ launchd 已加载但进程不在，通常几秒内会被拉起；看 logs/bridge.log"
+    fi
+  else
+    echo "   ⏸️  launchd 里是暂停状态（启动：./scripts/up.sh）"
+  fi
+elif [ -f .bridge.pid ] && kill -0 "$(cat .bridge.pid)" 2>/dev/null; then
   BPID=$(cat .bridge.pid)
   echo "   ✅ 运行中  pid=$BPID  已跑 $(ps -o etime= -p "$BPID" | tr -d ' ')"
 else

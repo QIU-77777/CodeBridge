@@ -18,6 +18,7 @@
 | 权限审批 | opencode 要读 `.env`、动敏感文件时，飞书弹卡片，点允许一次/总是/拒绝 |
 | 模型切换 | `/model` `/agent` 在线换，不用重启 |
 | 多项目 | `/cd` 换目录，每个目录一份独立会话列表 |
+| 话题群 | 群里一条话题一个会话，回复落在话题里，话题之间并行 |
 | 群里并行 | 群里每 @ 一次就在下面开一条话题，一条话题一个会话，多条话题同时跑 |
 | 免公网 | 走长连接，不需要公网 IP、不需要内网穿透 |
 
@@ -171,13 +172,24 @@ npm run doctor
 
 ### 5. 启动
 
+推荐装成系统服务（登录自启、挂了自动拉起、不依赖任何终端）：
+
 ```bash
-./scripts/up.sh       # 启动：同时拉起 opencode serve + 桥接，后台常驻，写 pid 文件
-./scripts/status.sh   # 看状态：谁在跑、跑了多久、最近日志
+./scripts/install-agent.sh     # 装一次，之后开机就在跑
+./scripts/status.sh            # 看状态：谁在跑、跑了多久、最近日志
+./scripts/up.sh                # 重启（作用于 launchd 里的服务）
+./scripts/down.sh              # 暂停（下次 up.sh 或下次登录会再起）
+./scripts/uninstall-agent.sh   # 彻底卸掉
+```
+
+不想装服务也行，老办法照旧：
+
+```bash
+./scripts/up.sh       # 启动：同时拉起 serve + 桥接，nohup 后台常驻，写 pid 文件
 ./scripts/down.sh     # 停止：两个一起停
 ```
 
-三个都可以重复跑：`up.sh` 在已运行时只提示「已在运行」，`down.sh` 在没有进程时也不报错。
+`up.sh` / `down.sh` 会自动识别有没有装 agent，两种模式都能用。
 
 `up.sh` 会读配置里的 `password` 用同样的密码起 serve，不用手动对齐两边。
 
@@ -193,7 +205,7 @@ npm start
 >
 > 反过来要注意：升级桌面版之后，新版本的 CLI 在**新目录**里，正在跑的旧进程不会自己换。`./scripts/down.sh && ./scripts/up.sh` 一次即可。
 
-> **重启电脑不会自动起。** 因为用的是 `nohup`，不写进系统启动项。常见做法是手动跑一次 `./scripts/up.sh`；想要开机自启可以配一个 launchd 用户级 agent。
+> **为什么建议用 `install-agent.sh`。** `nohup` 起的进程还挂在某个 shell 的进程组里，那个 shell 退出时可能被一起收掉——表现就是「用着用着机器人不说话了，日志里连报错都没有」。装成 launchd agent 之后，进程归 launchd 管：登录自动起、被杀自动起（实测 kill -9 后 10 秒内恢复），关终端、退出 WorkBuddy 都不影响。
 
 > **不要同时跑两个桥接进程。** 有单实例锁（`~/.config/opencode-feishu-bridge/bridge.lock`），第二个会直接报错退出——否则同一条消息会被回两遍。
 
@@ -306,6 +318,7 @@ npm start
 | 卡片不更新 | `streamIntervalMs` 设太低被限流，调回 1800 |
 | 卡片一直停在「执行中」 | 事件流断了但进程还活着。看 `logs/bridge.log` 有没有「事件流断开」；`idleTimeoutMs` 到期会自动转失败 |
 | 同一条消息回两遍 | 跑了两个桥接实例。`./scripts/down.sh` 全停再 `./scripts/up.sh` |
+| 机器人突然不说话了，日志里也没报错 | 进程被外部杀了（nohup 起的常见）。`./scripts/status.sh` 看是不是没了；装 `install-agent.sh` 之后不需要管这个 |
 | 群里 @ 了但机器人不理会 | 群没开话题权限？看 `logs/bridge.log` 有没有 `[group]` 那行：真收到事件了才是绑定问题，没这行就是事件没进来 |
 | 想并行但提示「已经有 N 个任务在跑」 | 到 `behavior.maxParallel` 上限了。本机跑得动可以调到 3–4，不建议更高 |
 
