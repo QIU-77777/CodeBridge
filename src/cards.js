@@ -138,13 +138,10 @@ function shortDir(dir) {
   return home && dir.startsWith(home) ? '~' + dir.slice(home.length) : dir
 }
 
-/**
- * 金额。一次对话通常是几厘钱，四位小数才看得出差别；
- * 真跑到一块钱以上再用四位就是噪音了。
- */
+/** 金额统一两位小数：卡片上只要看得出量级，细节去 opencode 里看 */
 export function fmtCost(cost) {
   if (typeof cost !== 'number' || !Number.isFinite(cost) || cost < 0) return ''
-  return cost < 1 ? `$${cost.toFixed(4)}` : `$${cost.toFixed(2)}`
+  return `$${cost.toFixed(2)}`
 }
 
 /**
@@ -271,7 +268,11 @@ export function sessionsCard({ sessions, currentId, directory, page = 0, pageSiz
     const isCurrent = s.id === currentId
     const mark = isCurrent ? '▶ ' : ''
     const title = s.title || '(无标题)'
-    const metaLine = [fmtAgo(s.time?.updated || s.time?.created), s.model?.id || '', s.cost ? `$${s.cost.toFixed(3)}` : '']
+    const metaLine = [
+      fmtAgo(s.time?.updated || s.time?.created),
+      s.model?.id || '',
+      s.cost ? fmtCost(s.cost) : '',
+    ]
       .filter(Boolean)
       .join(' · ')
 
@@ -336,7 +337,7 @@ export function statusCard({ session, binding, directory, server, k = '', rt = '
     if (session.tokens) {
       lines.push(`**累计 tokens** in ${session.tokens.input} / out ${session.tokens.output}`)
     }
-    if (session.cost) lines.push(`**累计成本** $${session.cost.toFixed(4)}`)
+    if (session.cost) lines.push(`**累计成本** ${fmtCost(session.cost)}`)
   }
   return textCard('📊 状态', lines.join('\n'), 'indigo', [
     button('会话列表', { a: 'sessions', ...nav }, 'default'),
