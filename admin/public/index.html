@@ -1,0 +1,838 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CodeBridge 管理后台</title>
+<style>
+  /* 设计说明（按桌面 taste-skill 规范落地，适配本地工具）：
+     - 功能栏居于左侧：固定侧边栏（产品标 + 导航 + 状态小结），主区宽幅页头。
+     - 排版：几何无衬线栈（Outfit 优先，缺失时回落系统字体；不引外网字体，离线可用），
+       数据列 tabular-nums，标识符与日志用等宽字体；标题保持两行以内。
+     - 组件：终端日志面板（深色）、掩码密钥字段、状态点系统（圆点加文字标签，不用 emoji）。
+     - 悬停物理：可点击元素 160ms 底色与缩放过渡；不做滚动动画（工具界面，避免干扰）。
+     - 栅格：卡片区 grid-flow-dense，不留空格；按钮文字对比度拉满。
+     - 禁用：emoji、SECTION 01 式廉价标签、外链图片。 */
+  :root {
+    --bg: #f6f7f9;
+    --surface: #ffffff;
+    --line: #e5e8ee;
+    --line-soft: #eef0f4;
+    --text: #191d24;
+    --dim: #66707f;
+    --faint: #9aa3b2;
+    --accent: #2f54eb;
+    --accent-strong: #1d39c4;
+    --accent-soft: #eef2ff;
+    --green: #0c7a43;
+    --green-soft: #e7f6ee;
+    --amber: #9a6206;
+    --amber-soft: #fdf3e2;
+    --red: #c0261c;
+    --red-soft: #fdecea;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: "Outfit", -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    --radius: 12px;
+    --shadow: 0 1px 2px rgb(20 28 45 / 4%), 0 8px 24px rgb(20 28 45 / 5%);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background:
+      radial-gradient(1100px 520px at 85% -12%, #e9efff 0%, rgba(233, 239, 255, 0) 60%),
+      var(--bg);
+    color: var(--text);
+    font: 14px/1.6 var(--sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  .app { display: grid; grid-template-columns: 236px minmax(0, 1fr); min-height: 100vh; }
+
+  /* ---------- 左侧功能栏 ---------- */
+  .sidebar {
+    position: sticky; top: 0; align-self: start; height: 100vh;
+    display: flex; flex-direction: column;
+    background: var(--surface);
+    border-right: 1px solid var(--line);
+    padding: 22px 14px 16px;
+  }
+  .brand { padding: 0 10px 18px; border-bottom: 1px solid var(--line-soft); }
+  .brand .mark { font-size: 17px; font-weight: 700; letter-spacing: 0.2px; }
+  .brand .mark em { font-style: normal; color: var(--accent); }
+  .brand .sub { margin-top: 2px; font-size: 12px; color: var(--dim); }
+  .side-nav { display: flex; flex-direction: column; gap: 2px; margin-top: 14px; }
+  .side-nav button {
+    display: flex; align-items: center; gap: 10px;
+    border: 0; background: none; cursor: pointer;
+    padding: 9px 10px; border-radius: 9px;
+    font: 600 13.5px/1.2 var(--sans); color: var(--dim);
+    transition: background 160ms ease, color 160ms ease, transform 160ms ease;
+  }
+  .side-nav button svg { width: 17px; height: 17px; flex: none; }
+  .side-nav button:hover { background: var(--line-soft); color: var(--text); }
+  .side-nav button.on { background: var(--accent-soft); color: var(--accent-strong); }
+  .side-foot { margin-top: auto; padding: 12px 10px 2px; border-top: 1px solid var(--line-soft); font-size: 12px; color: var(--dim); }
+  .side-foot .row { display: flex; align-items: center; gap: 7px; padding: 3px 0; }
+  .side-foot .mono { font-family: var(--mono); font-size: 11.5px; }
+
+  /* ---------- 主区 ---------- */
+  .main { min-width: 0; display: flex; flex-direction: column; }
+  .topbar {
+    position: sticky; top: 0; z-index: 5;
+    display: flex; align-items: center; gap: 14px;
+    padding: 14px 28px;
+    background: rgb(255 255 255 / 82%);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--line);
+  }
+  .topbar h1 { margin: 0; font-size: 17px; font-weight: 700; letter-spacing: 0.2px; }
+  .topbar .meta { color: var(--dim); font-size: 12.5px; }
+  .topbar .spacer { flex: 1; }
+  .content { padding: 26px 28px 64px; max-width: 1240px; width: 100%; }
+
+  /* ---------- 卡片与表格 ---------- */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 20px 22px;
+    margin-bottom: 18px;
+  }
+  .card:last-child { margin-bottom: 0; }
+  .card h2 { margin: 0 0 4px; font-size: 15px; font-weight: 700; }
+  .card .lede { margin: 0 0 14px; font-size: 12.5px; color: var(--dim); }
+  .card h3 { margin: 20px 0 10px; font-size: 12px; font-weight: 700; color: var(--faint); letter-spacing: 0.4px; }
+  .scroll-x { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+  th { color: var(--faint); font-weight: 600; white-space: nowrap; font-size: 12px; letter-spacing: 0.3px; }
+  tbody tr { transition: background 160ms ease; }
+  tbody tr:hover { background: #fafbfd; }
+  tbody tr:last-child td { border-bottom: 0; }
+  .mono { font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .num { font-variant-numeric: tabular-nums; }
+  .dim { color: var(--dim); }
+  .faint { color: var(--faint); }
+  .grow { flex: 1; }
+  code { font-family: var(--mono); font-size: 0.92em; background: var(--line-soft); border-radius: 5px; padding: 1px 5px; }
+
+  /* ---------- 状态点与徽章 ---------- */
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .dot.green { background: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
+  .dot.amber { background: var(--amber); box-shadow: 0 0 0 3px var(--amber-soft); }
+  .dot.red { background: var(--red); box-shadow: 0 0 0 3px var(--red-soft); }
+  .dot.gray { background: var(--faint); box-shadow: 0 0 0 3px var(--line-soft); }
+  .dot.blue { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .badge { display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px 2px 7px; border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+  .badge.green { background: var(--green-soft); color: var(--green); }
+  .badge.amber { background: var(--amber-soft); color: var(--amber); }
+  .badge.red { background: var(--red-soft); color: var(--red); }
+  .badge.gray { background: var(--line-soft); color: var(--dim); }
+  .badge.blue { background: var(--accent-soft); color: var(--accent-strong); }
+
+  /* ---------- 按钮与表单 ---------- */
+  button { font: inherit; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    border: 1px solid var(--line); background: var(--surface); color: var(--text);
+    border-radius: 8px; padding: 6px 13px; font-size: 13px; font-weight: 600; cursor: pointer;
+    transition: background 160ms ease, border-color 160ms ease, transform 160ms ease;
+  }
+  .btn:hover { border-color: #c9d0dd; background: #fafbfd; }
+  .btn:active { transform: scale(0.98); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.primary:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
+  .btn.danger { color: var(--red); }
+  .btn.danger:hover { background: var(--red-soft); border-color: #f3c6c2; }
+  .btn:disabled { opacity: 0.5; cursor: default; }
+  select, input[type=text], input[type=password], input[type=number] {
+    font: inherit; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px;
+    background: #fff; color: var(--text); transition: border-color 160ms ease, box-shadow 160ms ease;
+  }
+  select:focus, input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  input[type=text], input[type=password], input[type=number] { width: 100%; }
+  input[type=password] { font-family: var(--mono); letter-spacing: 1px; }
+  label.fld { display: block; margin: 10px 0; }
+  label.fld > span { display: block; font-size: 12px; color: var(--dim); margin-bottom: 4px; }
+  label.chk { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 7px 0; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 22px; }
+  .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0 22px; grid-auto-flow: dense; }
+  @media (max-width: 980px) { .grid2, .grid3 { grid-template-columns: 1fr; } }
+  .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }
+  .hint { font-size: 12px; color: var(--dim); }
+  .err { color: var(--red); font-size: 13px; white-space: pre-wrap; }
+  .ok { color: var(--green); font-weight: 600; }
+  .kv { display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: 6px 14px; font-size: 13px; margin: 0; }
+  .kv dt { color: var(--dim); }
+  .kv dd { margin: 0; word-break: break-all; }
+
+  /* ---------- 终端日志面板 ---------- */
+  .term { border-radius: 10px; overflow: hidden; border: 1px solid #0d1526; background: #0f1722; }
+  .term-bar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: #131c2e; border-bottom: 1px solid #1c2942; }
+  .term-bar .lights { display: flex; gap: 5px; }
+  .term-bar .lights i { width: 9px; height: 9px; border-radius: 50%; background: #2a3a5c; }
+  .term-bar .name { font-family: var(--mono); font-size: 11.5px; color: #8fa3c4; }
+  .term-bar .state { margin-left: auto; font-size: 11.5px; color: #8fa3c4; display: flex; align-items: center; gap: 6px; }
+  .term pre {
+    margin: 0; padding: 12px 14px; max-height: 460px; overflow: auto;
+    font-family: var(--mono); font-size: 12px; line-height: 1.55;
+    color: #c8d6ee; white-space: pre-wrap; word-break: break-all;
+  }
+  pre.out { background: #f8f9fb; color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; overflow: auto; max-height: 240px; font-family: var(--mono); font-size: 12px; white-space: pre-wrap; word-break: break-all; }
+
+  /* ---------- 体检结果 ---------- */
+  .check { display: flex; align-items: baseline; gap: 8px; padding: 3px 0; font-size: 13px; }
+  .check .tag { font-size: 11px; font-weight: 700; letter-spacing: 0.4px; width: 34px; flex: none; }
+  .check.ok .tag { color: var(--green); }
+  .check.warn .tag { color: var(--amber); }
+  .check.bad .tag { color: var(--red); }
+
+  .hidden { display: none; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  @media (max-width: 760px) {
+    .app { grid-template-columns: 1fr; }
+    .sidebar { position: static; height: auto; flex-direction: row; align-items: center; gap: 10px; overflow-x: auto; }
+    .brand { border-bottom: 0; padding: 0 8px 0 0; }
+    .side-nav { flex-direction: row; margin-top: 0; }
+    .side-foot { display: none; }
+    .content { padding: 18px 14px 48px; }
+    .topbar { padding: 12px 14px; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- 左侧功能栏 -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="mark">Code<em>Bridge</em></div>
+      <div class="sub">管理后台</div>
+    </div>
+    <nav class="side-nav" id="tabs">
+      <button data-tab="overview" class="on">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
+        总览
+      </button>
+      <button data-tab="config">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1.11-1.56 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.65 8.9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1.03-1.56V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9v0a1.7 1.7 0 0 0 1.56 1.03H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.51 1.03z"/></svg>
+        配置
+      </button>
+      <button data-tab="feishu">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.5 8.5 0 0 1-12.4 7.55L3 21l1.95-5.6A8.5 8.5 0 1 1 21 11.5z"/><path d="M8.5 11h7M8.5 14h4.5"/></svg>
+        飞书应用
+      </button>
+      <button data-tab="sessions">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 21h8M12 18v3M7 9l2.5 2.5L13 8"/></svg>
+        会话与后端
+      </button>
+      <button data-tab="logs">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v14H4z"/><path d="M8 9l3 3-3 3M13 15h4"/></svg>
+        日志与体检
+      </button>
+    </nav>
+    <div class="side-foot">
+      <div class="row"><span class="dot blue"></span><span id="head-meta">加载中…</span></div>
+      <div class="row mono" id="head-host">127.0.0.1:19877</div>
+    </div>
+  </aside>
+
+  <!-- 主区 -->
+  <div class="main">
+    <header class="topbar">
+      <h1 id="page-title">总览</h1>
+      <span class="meta" id="page-sub">本机实例一览</span>
+      <span class="spacer"></span>
+      <button class="btn" id="btn-refresh">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/></svg>
+        刷新
+      </button>
+    </header>
+    <main class="content">
+      <!-- 总览 -->
+      <section id="tab-overview">
+        <div class="card">
+          <h2>实例总览</h2>
+          <p class="lede">一个实例 = 一份配置目录 + 一个进程 + 一个飞书应用。起停转调仓库既有脚本，单实例锁语义不变。</p>
+          <div class="scroll-x">
+          <table id="ov-table">
+            <thead><tr>
+              <th>实例</th><th>配置目录</th><th>后端</th><th>飞书应用</th><th>状态</th>
+              <th>pid / 时长</th><th>serve</th><th>会话 / 进行中</th><th>操作</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+          </div>
+          <div id="ov-error" class="err"></div>
+        </div>
+        <div class="card hidden" id="ov-action-card">
+          <h2>最近一次操作输出</h2>
+          <pre class="out" id="ov-action-out"></pre>
+        </div>
+      </section>
+
+      <!-- 配置 -->
+      <section id="tab-config" class="hidden">
+        <div class="card">
+          <div class="toolbar">
+            <span class="dim">实例</span>
+            <select id="cfg-instance" style="min-width:240px"></select>
+            <span class="spacer"></span>
+            <button class="btn primary" id="cfg-save">保存配置</button>
+          </div>
+          <div id="cfg-msg"></div>
+          <div class="grid2">
+            <div>
+              <h3>飞书应用</h3>
+              <label class="fld"><span>appId（cli_ 开头）</span><input type="text" id="c-appId"></label>
+              <label class="fld"><span>appSecret（留空保持不变）</span><input type="password" id="c-appSecret" placeholder="已填写时显示掩码"></label>
+              <label class="fld"><span>domain</span>
+                <select id="c-domain"><option value="feishu">feishu</option><option value="lark">lark</option></select>
+              </label>
+              <label class="fld"><span>botOpenId（机器人自己的 open_id，多机器人同群必填）</span><input type="text" id="c-botOpenId"></label>
+              <label class="chk"><input type="checkbox" id="c-requireMention"> 群聊必须 @ 本机器人才响应</label>
+            </div>
+            <div>
+              <h3>opencode 连接</h3>
+              <label class="fld"><span>serve 地址</span><input type="text" id="c-ocUrl"></label>
+              <label class="fld"><span>serve 密码（留空保持不变）</span><input type="password" id="c-ocPassword" placeholder="已填写时显示掩码"></label>
+              <label class="fld"><span>默认工作目录</span><input type="text" id="c-defaultDirectory"></label>
+              <label class="fld"><span>默认模型（providerID/modelID）</span><input type="text" id="c-defaultModel"></label>
+            </div>
+          </div>
+          <h3>behavior</h3>
+          <div class="grid3">
+            <label class="fld"><span>streamIntervalMs（不低于 1200）</span><input type="number" id="c-streamIntervalMs"></label>
+            <label class="fld"><span>maxBodyChars</span><input type="number" id="c-maxBodyChars"></label>
+            <label class="fld"><span>idleTimeoutMs</span><input type="number" id="c-idleTimeoutMs"></label>
+            <label class="fld"><span>maxParallel（0 不限）</span><input type="number" id="c-maxParallel"></label>
+            <label class="chk"><input type="checkbox" id="c-showReasoning"> showReasoning</label>
+            <label class="chk"><input type="checkbox" id="c-showTools"> showTools</label>
+          </div>
+          <h3>backend</h3>
+          <div class="grid3">
+            <label class="fld"><span>type</span>
+              <select id="c-backendType"><option value="opencode">opencode（流式）</option><option value="pi">pi（一次性）</option></select>
+            </label>
+            <label class="fld"><span>pi.bin</span><input type="text" id="c-piBin"></label>
+            <label class="fld"><span>pi.model（留空用 pi 默认）</span><input type="text" id="c-piModel"></label>
+            <label class="fld"><span>pi.timeoutMs</span><input type="number" id="c-piTimeout"></label>
+            <label class="fld"><span>pi.extraArgs（逗号分隔）</span><input type="text" id="c-piExtra"></label>
+          </div>
+          <p class="hint">保存前自动备份为 config.json.bak，临时文件加重命名落盘。密钥字段留空表示保持原值。修改后需重启实例生效。</p>
+        </div>
+      </section>
+
+      <!-- 飞书应用 -->
+      <section id="tab-feishu" class="hidden">
+        <div class="card">
+          <div class="toolbar">
+            <span class="dim">实例</span>
+            <select id="fs-instance" style="min-width:240px"></select>
+            <span class="spacer"></span>
+            <button class="btn" id="fs-verify">校验凭证</button>
+          </div>
+          <div id="fs-verify-msg" style="margin-bottom:12px"></div>
+          <dl class="kv" id="fs-kv"></dl>
+        </div>
+        <div class="card">
+          <h2>白名单（allowlist）</h2>
+          <p class="lede">空数组等于任何人私聊机器人都能操作本机。填 open_id。</p>
+          <table id="fs-allow"><thead><tr><th>open_id</th><th>名字</th><th></th></tr></thead><tbody></tbody></table>
+          <div class="row" style="margin-top:12px">
+            <input type="text" id="fs-allow-add" placeholder="ou_..." class="grow">
+            <button class="btn" id="fs-allow-btn">加入白名单</button>
+          </div>
+        </div>
+        <div class="card">
+          <h2>名字对照（feishu.names）</h2>
+          <p class="lede">飞书没有 open_id 反查名字的接口，这里声明后，来源标注里直接显示名字。</p>
+          <table id="fs-names"><thead><tr><th>open_id</th><th>名字</th></tr></thead><tbody></tbody></table>
+        </div>
+      </section>
+
+      <!-- 会话与后端 -->
+      <section id="tab-sessions" class="hidden">
+        <div class="card">
+          <div class="toolbar">
+            <span class="dim">实例</span>
+            <select id="ss-instance" style="min-width:240px"></select>
+            <span class="spacer"></span>
+            <button class="btn" id="ss-refresh">刷新</button>
+          </div>
+          <div class="grid2">
+            <div>
+              <h3>后端健康</h3>
+              <dl class="kv" id="ss-backend"></dl>
+            </div>
+            <div>
+              <h3>状态文件概要</h3>
+              <dl class="kv" id="ss-summary"></dl>
+            </div>
+          </div>
+          <h3>会话列表（opencode）</h3>
+          <div class="scroll-x">
+          <table id="ss-sessions"><thead><tr><th>标题</th><th>会话 id</th><th>目录</th><th>模型</th><th>最近更新</th></tr></thead><tbody></tbody></table>
+          </div>
+          <h3>模型列表</h3>
+          <div id="ss-models" class="mono dim" style="max-height:160px;overflow:auto"></div>
+          <h3>进行中的卡片（state.json inflight）</h3>
+          <table id="ss-inflight"><thead><tr><th>会话 id</th><th>卡片</th><th>目录</th><th>开始于</th></tr></thead><tbody></tbody></table>
+        </div>
+      </section>
+
+      <!-- 日志与体检 -->
+      <section id="tab-logs" class="hidden">
+        <div class="card">
+          <div class="toolbar">
+            <span class="dim">实例</span>
+            <select id="lg-instance" style="min-width:240px"></select>
+            <span class="dim">文件</span>
+            <select id="lg-file"><option value="bridge">bridge.log</option><option value="serve">serve.log</option></select>
+            <span class="spacer"></span>
+            <button class="btn" id="lg-follow">暂停跟随</button>
+            <button class="btn primary" id="lg-doctor">运行体检</button>
+          </div>
+          <div class="term">
+            <div class="term-bar">
+              <span class="lights"><i></i><i></i><i></i></span>
+              <span class="name" id="lg-term-name">bridge.log</span>
+              <span class="state"><span class="dot green" id="lg-follow-dot"></span><span id="lg-follow-text">跟随中</span></span>
+            </div>
+            <pre id="lg-pre">（加载中）</pre>
+          </div>
+          <p class="hint" style="margin-top:10px">按字节偏移增量拉取，两秒一轮。日志文件在仓库 logs/ 目录下。</p>
+        </div>
+        <div class="card hidden" id="lg-doctor-card">
+          <h2>体检结果</h2>
+          <div id="lg-doctor-body"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+
+<script>
+// ---------- 基础设施 ----------
+const $ = (id) => document.getElementById(id)
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
+const fmtTime = (t) => (t ? new Date(t).toLocaleString('zh-CN', { hour12: false }) : '—')
+const short = (s, n = 26) => (s && s.length > n ? s.slice(0, n) + '…' : s || '')
+
+async function api(path, opts = {}) {
+  const method = (opts.method || 'GET').toUpperCase()
+  const headers = { ...(opts.headers || {}) }
+  if (method !== 'GET' && method !== 'HEAD') {
+    // 服务端要求写操作带自定义头，挡掉跨站表单；内容类型固定 JSON
+    headers['X-OCB-Admin'] = '1'
+    if (!headers['Content-Type']) headers['Content-Type'] = 'application/json'
+  }
+  const res = await fetch(path, { ...opts, method, headers })
+  const json = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`)
+  return json
+}
+
+const state = {
+  instances: [],
+  tab: 'overview',
+  fsRaw: null,
+  log: { since: 0, follow: true, timer: null, name: '', file: 'bridge' },
+}
+
+// 页签标题。左侧功能栏与页头顶部各司其职，不重复堆标签
+const TAB_META = {
+  overview: ['总览', '本机实例一览'],
+  config: ['配置', '编辑实例的 config.json'],
+  feishu: ['飞书应用', '凭证、白名单与名字对照'],
+  sessions: ['会话与后端', 'serve 健康、会话与模型'],
+  logs: ['日志与体检', '日志跟随与 doctor'],
+}
+
+// ---------- 页签 ----------
+document.querySelectorAll('#tabs button').forEach((btn) => {
+  btn.addEventListener('click', () => switchTab(btn.dataset.tab))
+})
+
+function switchTab(tab) {
+  state.tab = tab
+  document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === tab))
+  for (const t of ['overview', 'config', 'feishu', 'sessions', 'logs']) {
+    $('tab-' + t).classList.toggle('hidden', t !== tab)
+  }
+  const meta = TAB_META[tab]
+  if (meta) {
+    $('page-title').textContent = meta[0]
+    $('page-sub').textContent = meta[1]
+  }
+  if (tab === 'config') loadConfigTab()
+  if (tab === 'feishu') loadFeishuTab()
+  if (tab === 'sessions') loadSessionsTab()
+  if (tab === 'logs') loadLogsTab()
+}
+
+// ---------- 实例选择器 ----------
+function fillSelect(sel, keep) {
+  const prev = keep && sel.value
+  sel.innerHTML = state.instances.map((i) => `<option value="${esc(i.name)}">${esc(i.name)}（${esc(short(i.dir, 40))}）</option>`).join('')
+  if (prev && state.instances.some((i) => i.name === prev)) sel.value = prev
+  else if (state.instances.length) sel.value = state.instances[0].name
+}
+
+async function loadInstances() {
+  const json = await api('/api/instances')
+  state.instances = json.instances
+  for (const id of ['cfg-instance', 'fs-instance', 'ss-instance', 'lg-instance']) fillSelect($(id), true)
+  $('head-meta').textContent = `${state.instances.length} 个实例`
+  $('head-host').textContent = location.host
+}
+
+// ---------- 总览 ----------
+function statusBadge(p) {
+  if (p.running) return '<span class="badge green"><span class="dot green"></span>运行中</span>'
+  if (p.via === 'launchd') return '<span class="badge amber"><span class="dot amber"></span>launchd 已装未跑</span>'
+  return '<span class="badge gray"><span class="dot gray"></span>未运行</span>'
+}
+
+async function loadOverview() {
+  const json = await api('/api/instances')
+  state.instances = json.instances
+  for (const id of ['cfg-instance', 'fs-instance', 'ss-instance', 'lg-instance']) fillSelect($(id), true)
+  $('head-meta').textContent = `${state.instances.length} 个实例`
+  $('head-host').textContent = location.host
+  const rows = json.instances.map((i) => {
+    const serve = !i.serve.applicable ? '<span class="faint">不适用</span>'
+      : i.serve.ok ? `<span class="badge green"><span class="dot green"></span>v${esc(i.serve.version || '?')}</span>`
+      : '<span class="badge red"><span class="dot red"></span>无响应</span>'
+    const pi = !i.pi.applicable ? '' : i.pi.ok ? '<span class="badge green"><span class="dot green"></span>CLI 可用</span>' : `<span class="badge red" title="${esc(i.pi.error || '')}"><span class="dot red"></span>CLI 异常</span>`
+    const busy = i.summary?.inflight ? `<span class="badge blue"><span class="dot blue"></span>${i.summary.inflight} 张进行中</span>` : ''
+    const managed = i.managed ? '' : '<br><span class="badge gray" title="没有安装 launchd 常驻服务">未安装常驻服务</span>'
+    // 起停只对装了 plist 的实例开放：没装的实例走 down.sh 会误杀本机所有桥接进程
+    const actions = i.managed
+      ? `<div class="row">
+          <button class="btn" onclick="doAction('${esc(i.name)}','start')">启动</button>
+          <button class="btn" onclick="doAction('${esc(i.name)}','restart')">重启</button>
+          <button class="btn danger" onclick="doAction('${esc(i.name)}','stop')">停止</button>
+        </div>`
+      : `<span class="hint">安装常驻服务：<code>./scripts/install-agent.sh --instance ${esc(i.name)} --config-dir ${esc(i.dir)}</code></span>`
+    return `<tr>
+      <td><b>${esc(i.name)}</b><br><span class="dim mono">${esc(short(i.dir, 46))}</span>${managed}</td>
+      <td class="mono">${esc(i.backend)}</td>
+      <td class="mono">${esc(i.appId || '—')}${i.botOpenId ? `<br><span class="dim mono">${esc(short(i.botOpenId, 22))}</span>` : ''}</td>
+      <td>${statusBadge(i.process)} ${busy}</td>
+      <td class="mono">${i.process.pid ? esc(i.process.pid) : '—'}<br><span class="dim">${esc(i.process.uptime || '')}</span></td>
+      <td>${serve}${pi ? '<br>' + pi : ''}</td>
+      <td class="mono num">${i.summary?.chats ?? 0} / ${i.summary?.inflight ?? 0}</td>
+      <td>${actions}</td>
+    </tr>`
+  }).join('')
+  document.querySelector('#ov-table tbody').innerHTML = rows || '<tr><td colspan="9" class="dim">没有发现实例</td></tr>'
+  const bad = json.instances.filter((i) => i.configError || i.stateError)
+  $('ov-error').textContent = bad.map((i) => `${i.name}: ${i.configError || i.stateError}`).join('\n')
+}
+
+async function doAction(name, action) {
+  if (action === 'stop' && !confirm(`确定停止实例 ${name}？`)) return
+  if (action === 'restart' && !confirm(`确定重启实例 ${name}？进行中的任务会被中断。`)) return
+  $('ov-action-out').textContent = `${action} ${name} …`
+  $('ov-action-card').classList.remove('hidden')
+  try {
+    const json = await api(`/api/instances/${encodeURIComponent(name)}/action`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action }),
+    })
+    $('ov-action-out').textContent = json.output || '（无输出）'
+    await loadOverview()
+  } catch (err) {
+    $('ov-action-out').textContent = '失败: ' + err.message
+  }
+}
+
+// ---------- 配置 ----------
+function formToConfig() {
+  const num = (id) => { const v = $(id).value.trim(); return v === '' ? undefined : Number(v) }
+  const cfg = {
+    feishu: {
+      appId: $('c-appId').value.trim(),
+      domain: $('c-domain').value,
+      requireMention: $('c-requireMention').checked,
+      botOpenId: $('c-botOpenId').value.trim(),
+    },
+    opencode: {
+      url: $('c-ocUrl').value.trim(),
+      defaultDirectory: $('c-defaultDirectory').value.trim(),
+      defaultModel: $('c-defaultModel').value.trim(),
+    },
+    behavior: {
+      streamIntervalMs: num('c-streamIntervalMs'),
+      maxBodyChars: num('c-maxBodyChars'),
+      idleTimeoutMs: num('c-idleTimeoutMs'),
+      maxParallel: num('c-maxParallel'),
+      showReasoning: $('c-showReasoning').checked,
+      showTools: $('c-showTools').checked,
+    },
+    backend: {
+      type: $('c-backendType').value,
+      pi: {
+        bin: $('c-piBin').value.trim(),
+        model: $('c-piModel').value.trim(),
+        timeoutMs: num('c-piTimeout'),
+        extraArgs: $('c-piExtra').value.split(',').map((s) => s.trim()).filter(Boolean),
+      },
+    },
+  }
+  // 密钥只在用户真的输入了新值时才出现在请求体里；留空 = 保持原值
+  if ($('c-appSecret').value) cfg.feishu.appSecret = $('c-appSecret').value
+  if ($('c-ocPassword').value) cfg.opencode.password = $('c-ocPassword').value
+  return cfg
+}
+
+async function loadConfigTab() {
+  const name = $('cfg-instance').value
+  if (!name) return
+  $('cfg-msg').textContent = ''
+  try {
+    const json = await api(`/api/instances/${encodeURIComponent(name)}`)
+    if (json.configError) { $('cfg-msg').innerHTML = `<span class="err">配置读取失败: ${esc(json.configError)}</span>`; return }
+    const c = json.config
+    $('c-appId').value = c.feishu?.appId || ''
+    $('c-appSecret').value = ''
+    $('c-appSecret').placeholder = c.feishu?.appSecret === '********' ? '已填写（留空保持不变）' : '未填写'
+    $('c-domain').value = c.feishu?.domain || 'feishu'
+    $('c-botOpenId').value = c.feishu?.botOpenId || ''
+    $('c-requireMention').checked = c.feishu?.requireMention !== false
+    $('c-ocUrl').value = c.opencode?.url || ''
+    $('c-ocPassword').value = ''
+    $('c-ocPassword').placeholder = c.opencode?.password === '********' ? '已填写（留空保持不变）' : '未填写'
+    $('c-defaultDirectory').value = c.opencode?.defaultDirectory || ''
+    $('c-defaultModel').value = c.opencode?.defaultModel || ''
+    $('c-streamIntervalMs').value = c.behavior?.streamIntervalMs ?? 1800
+    $('c-maxBodyChars').value = c.behavior?.maxBodyChars ?? 6000
+    $('c-idleTimeoutMs').value = c.behavior?.idleTimeoutMs ?? 900000
+    $('c-maxParallel').value = c.behavior?.maxParallel ?? 2
+    $('c-showReasoning').checked = !!c.behavior?.showReasoning
+    $('c-showTools').checked = !!c.behavior?.showTools
+    $('c-backendType').value = c.backend?.type || 'opencode'
+    $('c-piBin').value = c.backend?.pi?.bin || 'pi'
+    $('c-piModel').value = c.backend?.pi?.model || ''
+    $('c-piTimeout').value = c.backend?.pi?.timeoutMs ?? 600000
+    $('c-piExtra').value = (c.backend?.pi?.extraArgs || []).join(',')
+  } catch (err) {
+    $('cfg-msg').innerHTML = `<span class="err">${esc(err.message)}</span>`
+  }
+}
+
+async function saveConfig() {
+  const name = $('cfg-instance').value
+  try {
+    const json = await api(`/api/instances/${encodeURIComponent(name)}/config`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(formToConfig()),
+    })
+    $('cfg-msg').innerHTML = `<span class="ok">已保存（备份 ${esc(json.backup)}）。重启实例后生效。</span>`
+    await loadConfigTab()
+  } catch (err) {
+    $('cfg-msg').innerHTML = `<span class="err">保存失败: ${esc(err.message)}</span>`
+  }
+}
+
+// ---------- 飞书应用 ----------
+async function loadFeishuTab() {
+  const name = $('fs-instance').value
+  if (!name) return
+  try {
+    const json = await api(`/api/instances/${encodeURIComponent(name)}`)
+    state.fsRaw = json
+    const c = json.config || {}
+    $('fs-kv').innerHTML = `
+      <dt>appId</dt><dd class="mono">${esc(c.feishu?.appId || '—')}</dd>
+      <dt>botOpenId</dt><dd class="mono">${esc(c.feishu?.botOpenId || '—（启动时自动向飞书取）')}</dd>
+      <dt>domain</dt><dd>${esc(c.feishu?.domain || 'feishu')}</dd>
+      <dt>requireMention</dt><dd>${c.feishu?.requireMention === false ? '否（@ 谁都算）' : '是（只认 @ 本机器人）'}</dd>
+      <dt>appSecret</dt><dd>${c.feishu?.appSecret === '********' ? '已填写（不明示）' : '未填写'}</dd>`
+    const names = c.feishu?.names || {}
+    $('fs-names').querySelector('tbody').innerHTML = Object.entries(names).map(([k, v]) =>
+      `<tr><td class="mono">${esc(k)}</td><td>${esc(v)}</td></tr>`).join('') || '<tr><td colspan="2" class="dim">空</td></tr>'
+    await loadAllowlist(name, c.feishu?.allowlist || [], names)
+  } catch (err) {
+    $('fs-kv').innerHTML = `<dt class="err">错误</dt><dd class="err">${esc(err.message)}</dd>`
+  }
+}
+
+async function loadAllowlist(name, list, names) {
+  names = names || {}
+  $('fs-allow').querySelector('tbody').innerHTML = list.map((id) =>
+    `<tr><td class="mono">${esc(id)}</td><td>${esc(names[id] || '')}</td>
+     <td><button class="btn danger" onclick="removeAllow('${esc(id)}')">移除</button></td></tr>`).join('')
+    || '<tr><td colspan="3" class="dim">空（不限制任何人）</td></tr>'
+}
+
+async function addAllow() {
+  const name = $('fs-instance').value
+  const openId = $('fs-allow-add').value.trim()
+  if (!openId) return
+  try {
+    const json = await api(`/api/instances/${encodeURIComponent(name)}/allowlist`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ op: 'add', openId }),
+    })
+    $('fs-allow-add').value = ''
+    await loadAllowlist(name, json.allowlist, state.fsRaw?.config?.feishu?.names || {})
+  } catch (err) { alert('加入失败: ' + err.message) }
+}
+
+async function removeAllow(openId) {
+  const name = $('fs-instance').value
+  try {
+    const json = await api(`/api/instances/${encodeURIComponent(name)}/allowlist`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ op: 'remove', openId }),
+    })
+    await loadAllowlist(name, json.allowlist, state.fsRaw?.config?.feishu?.names || {})
+  } catch (err) { alert('移除失败: ' + err.message) }
+}
+
+async function verifyFeishu() {
+  const name = $('fs-instance').value
+  $('fs-verify-msg').textContent = '校验中…'
+  try {
+    const json = await api(`/api/instances/${encodeURIComponent(name)}/feishu-verify`)
+    if (json.skipped) $('fs-verify-msg').innerHTML = `<span class="dim">${esc(json.error)}</span>`
+    else if (json.ok) $('fs-verify-msg').innerHTML = `<span class="row"><span class="badge green"><span class="dot green"></span>凭证有效</span><span class="dim">机器人 ${esc(json.botName || '?')}，open_id ${esc(json.openId)}</span></span>`
+    else $('fs-verify-msg').innerHTML = `<span class="row"><span class="badge red"><span class="dot red"></span>凭证无效</span><span class="err">${esc(json.error)}</span></span>`
+  } catch (err) {
+    $('fs-verify-msg').innerHTML = `<span class="err">${esc(err.message)}</span>`
+  }
+}
+
+// ---------- 会话与后端 ----------
+async function loadSessionsTab() {
+  const name = $('ss-instance').value
+  if (!name) return
+  try {
+    const [detail, sessions, models] = await Promise.all([
+      api(`/api/instances/${encodeURIComponent(name)}`),
+      api(`/api/instances/${encodeURIComponent(name)}/sessions`).catch(() => ({ applicable: false })),
+      api(`/api/instances/${encodeURIComponent(name)}/models`).catch(() => ({ applicable: false })),
+    ])
+    const be = detail.backend === 'pi'
+      ? `<dt>类型</dt><dd>pi（一次性子进程）</dd>
+         <dt>CLI 可用性</dt><dd>${detail.pi?.ok ? `<span class="row"><span class="dot green"></span><span class="ok">可用 ${esc(detail.pi.version || '')}</span></span>` : `<span class="row"><span class="dot red"></span><span class="err">${esc(detail.pi?.error || '异常')}</span></span>`}</dd>`
+      : `<dt>类型</dt><dd>opencode（常驻 HTTP + SSE）</dd>
+         <dt>serve 健康</dt><dd>${detail.serve?.ok ? `<span class="row"><span class="dot green"></span><span class="ok">v${esc(detail.serve.version || '?')}，pid ${esc(detail.serve.pid)}</span></span>` : `<span class="row"><span class="dot red"></span><span class="err">${esc(detail.serve?.error || '无响应')}</span></span>`}</dd>
+         <dt>serve 地址</dt><dd class="mono">${esc(detail.config?.opencode?.url || '')}</dd>`
+    $('ss-backend').innerHTML = be
+    $('ss-summary').innerHTML = `
+      <dt>绑定会话数</dt><dd class="num">${detail.summary?.chats ?? 0}</dd>
+      <dt>进行中卡片</dt><dd class="num">${detail.summary?.inflight ?? 0}</dd>
+      <dt>攒到的名字</dt><dd class="num">${detail.summary?.names ?? 0}</dd>`
+    $('ss-sessions').querySelector('tbody').innerHTML = sessions.applicable
+      ? (sessions.sessions || []).map((s) => `<tr>
+          <td>${esc(s.title || '（无标题）')}</td><td class="mono">${esc(s.id)}</td>
+          <td class="mono">${esc(short(s.directory, 44))}</td><td class="mono">${esc(s.model)}</td>
+          <td class="mono">${fmtTime(s.updatedAt)}</td></tr>`).join('') || '<tr><td colspan="5" class="dim">没有会话</td></tr>'
+      : '<tr><td colspan="5" class="dim">pi 后端没有会话概念</td></tr>'
+    if (sessions.error) $('ss-sessions').querySelector('tbody').innerHTML = `<tr><td colspan="5" class="err">${esc(sessions.error)}</td></tr>`
+    $('ss-models').textContent = models.applicable
+      ? (models.models || []).join('\n') || '（列表为空）'
+      : '（pi 后端不适用）'
+    const inflight = Object.entries(detail.state?.inflight || {})
+    $('ss-inflight').querySelector('tbody').innerHTML = inflight.map(([sid, v]) => `<tr>
+      <td class="mono">${esc(sid)}</td><td class="mono">${esc(v.cardId || '')}</td>
+      <td class="mono">${esc(short(v.directory, 40))}</td><td class="mono">${fmtTime(v.startedAt)}</td></tr>`).join('')
+      || '<tr><td colspan="4" class="dim">没有进行中的卡片</td></tr>'
+  } catch (err) {
+    $('ss-backend').innerHTML = `<dt class="err">错误</dt><dd class="err">${esc(err.message)}</dd>`
+  }
+}
+
+// ---------- 日志与体检 ----------
+async function loadLogsTab() {
+  state.log.name = $('lg-instance').value
+  state.log.file = $('lg-file').value
+  state.log.since = 0
+  $('lg-term-name').textContent = state.log.file + '.log'
+  $('lg-pre').textContent = ''
+  stopFollow()
+  if (state.log.name) startFollow()
+}
+
+async function pollLog() {
+  if (!state.log.name) return
+  try {
+    const json = await api(`/api/instances/${encodeURIComponent(state.log.name)}/logs?file=${state.log.file}&since=${state.log.since}`)
+    if (json.error) { $('lg-pre').textContent = json.error; return }
+    if (json.chunk) {
+      $('lg-pre').textContent += json.chunk
+      // 只保留尾部，避免长时间跟随把页面撑爆
+      if ($('lg-pre').textContent.length > 200_000) $('lg-pre').textContent = $('lg-pre').textContent.slice(-200_000)
+      $('lg-pre').scrollTop = $('lg-pre').scrollHeight
+    }
+    if (!json.exists && json.since === 0) $('lg-pre').textContent = '（日志文件不存在）'
+    state.log.since = json.size
+  } catch (err) {
+    $('lg-pre').textContent = '读取失败: ' + err.message
+  }
+}
+
+function startFollow() {
+  state.log.follow = true
+  $('lg-follow').textContent = '暂停跟随'
+  $('lg-follow-dot').className = 'dot green'
+  $('lg-follow-text').textContent = '跟随中'
+  pollLog()
+  state.log.timer = setInterval(pollLog, 2000)
+}
+
+function stopFollow() {
+  state.log.follow = false
+  $('lg-follow').textContent = '继续跟随'
+  $('lg-follow-dot').className = 'dot gray'
+  $('lg-follow-text').textContent = '已暂停'
+  if (state.log.timer) { clearInterval(state.log.timer); state.log.timer = null }
+}
+
+async function runDoctor() {
+  const name = $('lg-instance').value
+  $('lg-doctor-card').classList.remove('hidden')
+  $('lg-doctor-body').textContent = '体检中（可能要用几十秒）…'
+  try {
+    const json = await api(`/api/instances/${encodeURIComponent(name)}/doctor`)
+    const label = { ok: 'OK', warn: 'WARN', bad: 'FAIL' }
+    const html = json.sections.map((sec) => `
+      <h3>${esc(sec.name)}</h3>
+      ${sec.checks.map((c) => `<div class="check ${c.level}"><span class="tag">${label[c.level] || c.level}</span><span>${esc(c.text)}</span></div>`).join('') || '<div class="dim">（无检查项）</div>'}`).join('')
+    $('lg-doctor-body').innerHTML = html || '<div class="dim">没有解析到检查项</div>'
+  } catch (err) {
+    $('lg-doctor-body').innerHTML = `<span class="err">${esc(err.message)}</span>`
+  }
+}
+
+// ---------- 事件绑定与自动刷新 ----------
+$('btn-refresh').addEventListener('click', () => {
+  if (state.tab === 'overview') loadOverview()
+  if (state.tab === 'config') loadConfigTab()
+  if (state.tab === 'feishu') loadFeishuTab()
+  if (state.tab === 'sessions') loadSessionsTab()
+})
+$('cfg-instance').addEventListener('change', loadConfigTab)
+$('cfg-save').addEventListener('click', saveConfig)
+$('fs-instance').addEventListener('change', loadFeishuTab)
+$('fs-verify').addEventListener('click', verifyFeishu)
+$('fs-allow-btn').addEventListener('click', addAllow)
+$('ss-instance').addEventListener('change', loadSessionsTab)
+$('ss-refresh').addEventListener('click', loadSessionsTab)
+$('lg-instance').addEventListener('change', loadLogsTab)
+$('lg-file').addEventListener('change', loadLogsTab)
+$('lg-follow').addEventListener('click', () => (state.log.follow ? stopFollow() : startFollow()))
+$('lg-doctor').addEventListener('click', runDoctor)
+
+// 总览十秒一轮，会话页十五秒一轮；切走页签后由 switchTab 负责重取
+setInterval(() => { if (state.tab === 'overview') loadOverview() }, 10_000)
+setInterval(() => { if (state.tab === 'sessions') loadSessionsTab() }, 15_000)
+
+loadInstances().then(loadOverview)
+</script>
+</body>
+</html>
