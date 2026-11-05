@@ -1,4 +1,13 @@
 {
+  "backend": {
+    "type": "opencode",
+    "pi": {
+      "bin": "pi",
+      "model": "",
+      "timeoutMs": 600000,
+      "extraArgs": []
+    }
+  },
   "feishu": {
     "appId": "cli_xxxxxxxxxxxxxxxx",
     "appSecret": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",

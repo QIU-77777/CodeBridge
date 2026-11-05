@@ -1,9 +1,9 @@
 # opencode ⇄ 飞书 桥接
 
-把本机运行的 [opencode](https://opencode.ai) 接到飞书机器人上。在飞书里发一句话，本机 opencode 在你的项目目录里干活，过程和结果流式推回一张飞书卡片。
+把本机运行的 [opencode](https://opencode.ai) 接到飞书机器人上。在飞书里发一句话，本机 opencode 在你的项目目录里干活，过程和结果流式推回一张飞书卡片。后端可替换，也能把 `pi` 这类一次性 CLI 接成另一个机器人。
 
-适合：opencode 装在自己电脑上，想在外面用手机派活、看结论的人。
-不适合：需要多人协作或云端执行沙箱的场景。
+适合：agent 装在自己电脑上，想在外面用手机派活、看结论的人；以及想让多个本机 agent 在同一个飞书群里分工协作的人。
+不适合：需要云端执行沙箱的场景。
 
 ---
 
@@ -20,6 +20,7 @@
 | 多项目 | `/cd` 换目录，每个目录一份独立会话列表 |
 | 群里并行 | 群里每 @ 它一次就在下面开一条话题，一条话题一个会话，多条话题同时跑；只响应 @ 它自己的消息 |
 | 免公网 | 走长连接，不需要公网 IP、不需要内网穿透 |
+| 可换后端 | `backend.type` 选 `opencode`（流式）或 `pi`（一次性子进程跑完发一张结果卡片）；同一套卡片、中止、僵尸卡收尾逻辑 |
 
 ---
 
@@ -471,10 +472,57 @@ npm run probe:names <chat_id>
 | `behavior.maxBodyChars` | 卡片正文最大字符数，超出保留尾部 | `6000` |
 | `behavior.idleTimeoutMs` | 多久没收到事件就判定卡死并收尾卡片；设 0 关闭 | `900000`（15 分钟） |
 | `behavior.maxParallel` | 同时最多跑几个任务（群里每话题一个会话，彼此并行）；0 = 不限 | `2` |
+| `backend.type` | `opencode`（默认，常驻 HTTP + SSE）或 `pi`（一次性子进程） | `opencode` |
+| `backend.pi.bin` | pi CLI 路径，留空用 PATH 里的 `pi` | `pi` |
+| `backend.pi.model` | 传给 `--model`，留空用 pi 自己的默认 | `""` |
+| `backend.pi.timeoutMs` | 单次执行超时 | `600000` |
+| `backend.pi.extraArgs` | 额外启动参数，如 `["--no-extensions"]` | `[]` |
 
-环境变量可覆盖同名项：`FEISHU_APP_ID` `FEISHU_APP_SECRET` `OPENCODE_URL` `OPENCODE_SERVER_PASSWORD` `BRIDGE_DEFAULT_DIR` `BRIDGE_DEFAULT_MODEL` `BRIDGE_ALLOWLIST`（逗号分隔）。
+环境变量可覆盖同名项：`FEISHU_APP_ID` `FEISHU_APP_SECRET` `OPENCODE_URL` `OPENCODE_SERVER_PASSWORD` `BRIDGE_DEFAULT_DIR` `BRIDGE_DEFAULT_MODEL` `BRIDGE_ALLOWLIST`（逗号分隔）。多实例相关的 `OCB_CONFIG_DIR` `OCB_INSTANCE` `OCB_BACKEND` `OCB_PI_BIN` `OCB_PI_MODEL` 见下一节。
 
 `OPENCODE_BIN` 单独一条：指定 `up.sh` 用哪个 opencode 可执行文件，不填就按「桌面版自带 CLI → PATH」的顺序找。
+
+---
+
+## 多后端与多机器人
+
+一个进程只服务一个机器人。想让三个 agent 同群协作，就是**三个飞书应用 + 三份配置 + 三个进程**，各自只认「白名单用户 @ 我本人」的消息。
+
+### 把 pi 接成第二个机器人
+
+1. 飞书开放平台新建一个应用，拿到它自己的 `appId` / `appSecret` / `botOpenId`，权限和事件订阅照「创建飞书应用」一节再来一遍；
+2. 复制一份配置到新目录，改这些字段：
+
+```json
+{
+  "backend": { "type": "pi", "pi": { "bin": "pi", "model": "", "timeoutMs": 600000, "extraArgs": [] } },
+  "feishu": { "appId": "cli_<新应用>", "appSecret": "...", "botOpenId": "ou_<新机器人>", "allowlist": [], "names": {} }
+}
+```
+
+3. 装成常驻服务（**只有 opencode 那个实例需要 `opencode serve`**，pi 实例会自动跳过）：
+
+```bash
+./scripts/install-agent.sh --instance pi --config-dir "$HOME/.config/opencode-feishu-bridge-pi"
+OCB_INSTANCE=pi npm run status
+OCB_INSTANCE=pi npm run up      # 之后重启、查看都要带同一个 OCB_INSTANCE
+```
+
+`OCB_CONFIG_DIR` 决定读哪份配置，`OCB_INSTANCE` 决定 launchd 服务名。缺省实例的服务名保持原样，老部署不用改任何东西。`bridge.lock` / `state.json` / `pi-sessions` 全在各自配置目录下，多个实例互不干扰。
+
+### 一次性模式下什么变了
+
+`pi -p --mode json` 跑完才出结果，所以卡片是「执行中 → 跑完一次性更新成结果」两张状态，中途不刷新正文。除此之外和 opencode 后端一致：分割线、`in / out / $金额｜@我 并发送 /help`、中止按钮、僵尸卡收尾都在。
+
+没有的：工具调用轨迹、思考过程、交互式权限卡片、`/agent`（pi 没有 opencode 的 agent 概念）。`/sessions` 列的是该实例的 pi 会话文件，`--session-id` 保证同一话题里能续聊。
+
+### 已知风险
+
+**机器人之间互 @ 目前没有轮次护栏。** 群里已经出现过两个机器人互相 @ 连聊好几轮的情况，现在靠模型自己判断「不用回了」才停。三个 agent 一起跑之前建议先补上「同一话题连续 N 轮机器人→机器人就停，人类发言重置」的闸门。
+
+另外：卡片正文里写 `@名字` 只是字面字符，不产生飞书提醒；要叫醒另一个 agent 必须发真正的 `<at user_id="ou_...">`。
+
+设计取舍、pi 输出格式实测、后续 dsh 的接法见 [docs/pi-backend.md](docs/pi-backend.md)。
 
 ---
 

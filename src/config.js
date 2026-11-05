@@ -32,6 +32,21 @@ export const STATE_PATH = join(CONFIG_DIR, 'state.json')
 export const TEMPLATE_PATH = join(REPO, 'config.example.json')
 
 const DEFAULTS = {
+  backend: {
+    // opencode = 常驻 HTTP + SSE 流式；pi = 一次性子进程，跑完发一张结果卡片。
+    // 每起一个机器人就复制一份 config.json，把 type 和 appId 一起换掉。
+    type: 'opencode',
+    pi: {
+      // CLI 路径。留空用 PATH 里的 pi，也可以用绝对路径或 $OCB_PI_BIN
+      bin: 'pi',
+      // 传给 --model 的值；留空用 pi 自己配置的默认模型
+      model: '',
+      // 单次执行超时（毫秒）
+      timeoutMs: 10 * 60_000,
+      // 额外启动参数，例如 ["--no-extensions"]
+      extraArgs: [],
+    },
+  },
   feishu: {
     appId: '',
     appSecret: '',
@@ -104,6 +119,9 @@ export function loadConfig() {
   const cfg = deepMerge(DEFAULTS, fileCfg)
 
   // 环境变量优先于文件
+  if (process.env.OCB_BACKEND) cfg.backend.type = process.env.OCB_BACKEND
+  if (process.env.OCB_PI_BIN) cfg.backend.pi.bin = process.env.OCB_PI_BIN
+  if (process.env.OCB_PI_MODEL) cfg.backend.pi.model = process.env.OCB_PI_MODEL
   if (process.env.FEISHU_APP_ID) cfg.feishu.appId = process.env.FEISHU_APP_ID
   if (process.env.FEISHU_APP_SECRET) cfg.feishu.appSecret = process.env.FEISHU_APP_SECRET
   if (process.env.FEISHU_DOMAIN) cfg.feishu.domain = process.env.FEISHU_DOMAIN

@@ -3,9 +3,11 @@
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+. "$ROOT/scripts/lib/config-dir.sh"
 
 UID_NUM="$(id -u)"
-for label in ai.qiguang.ocbridge.serve ai.qiguang.ocbridge.app; do
+for label in "$(ocb_label app)" "$(ocb_label serve)"; do
+  [ -f "$HOME/Library/LaunchAgents/$label.plist" ] || continue
   launchctl bootout "gui/$UID_NUM/$label" 2>/dev/null && echo "已卸载 $label" || echo "$label 未在运行"
   rm -f "$HOME/Library/LaunchAgents/$label.plist"
 done
