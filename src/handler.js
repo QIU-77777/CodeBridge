@@ -718,18 +718,6 @@ export class Bridge {
     return null
   }
 
-  /** 群里这条话题是否已经服务过（用于话题内免 @） */
-  /**
-   * 这个话题我是不是已经服务过？
-   *
-   * 判「有没有绑定记录」而不是「有没有会话」：`/cd` 会把 sessionId 清成 undefined
-   * （等着下一条消息自动建会话），若按 sessionId 判，切完目录这个话题就退回「未知」，
-   * 之后每句话又得重新 @ 一次 —— 跟 /cd 自己那句「直接发消息自动创建」是矛盾的。
-   */
-  isKnownTopic({ key }) {
-    return Boolean(this.store.get(key))
-  }
-
   resolveDir(input) {
     let p = input.trim()
     if (p.startsWith('~')) p = homedir() + p.slice(1)

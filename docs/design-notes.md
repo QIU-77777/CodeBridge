@@ -354,7 +354,7 @@ sqlite3 ~/.local/share/opencode/opencode.db "
 |---|---|---|
 | 组件级 | `scripts/probe-card.mjs` | 平台收不收这种结构 |
 | 行为探针 | `scripts/probe-thread.mjs` | 飞书话题的 `thread_id` / `root_id` 到底是什么 |
-| 单元级 | `scripts/test-cards.mjs`（61 项） | Markdown 解析、卡片结构、大小、看门狗、错误提示、二进制选择、话题绑定、并行上限 |
+| 单元级 | `scripts/test-cards.mjs`（72 项） | Markdown 解析、卡片结构、大小、看门狗、错误提示、二进制选择、话题绑定、并行上限、@ 判定 |
 | 集成级 | `scripts/selftest.mjs`（23 项） | 真实建会话、真实 prompt、流式聚合、命令、回调、白名单 |
 | 端到端 | `scripts/e2e-table.mjs` | 真实模型输出 → 真实事件流 → 真实卡片 |
 
@@ -377,7 +377,7 @@ src/index.js     入口（含 --dry 模式、单实例锁）
 src/which-opencode.js  选哪个 opencode 二进制（桌面版 CLI 优先）
 
 scripts/selftest.mjs    集成自测（23 项）
-scripts/test-cards.mjs  卡片、markdown、看门狗、错误提示、话题绑定测试（61 项；--live 多 3 项）
+scripts/test-cards.mjs  卡片、markdown、看门狗、错误提示、话题绑定、@ 判定测试（72 项；--live 多 3 项）
 scripts/doctor.mjs      环境体检（含版本一致性检查）
 scripts/which-opencode.mjs  打印选中的二进制，供 up.sh 调用
 scripts/probe-card.mjs  卡片 schema 探针
@@ -444,9 +444,21 @@ key = root:<root_id || message_id>
 | 串行 | 6.75s | 4.60s | 11.34s |
 | 并行 | 3.37s | 3.07s | 3.37s |
 
-### 顺手放松的一条规则
+### @ 判定：从「有人被 @」到「@ 的是我」
 
-群里默认要求 @ 机器人才响应。但话题里已经绑过会话了，还说一句话就点一次机器人没法用，所以：**这条话题已经绑过会话就不再要求 @**。
+最初只判 `mentions.length > 0`。单机器人单用户的群里这没问题，但只要出现第二个机器人就立刻崩：**飞书会把 `im.message.receive_v1` 推给群里每一个机器人**，于是用户 @A 的时候，A 和 B 会拿着同一个事件一起抢答。
+
+中途还试过一条「放松」的规则——话题里已经绑过会话就不再要求 @。理由是「每句话都点一次机器人没法用」。这条规则在多人协作时是错的：它让「话题」变成了一个隐式订阅，谁在里头说话都会触发一次完整 run，五个 agent 同群就是五倍的噪声。所以后来撤掉了。
+
+现在的判定：
+
+1. 启动时 `GET /open-apis/bot/v3/info` 取自己的 `open_id`（也可以写 `feishu.botOpenId` 跳过这次请求），缓存。
+2. 群消息进来，在 `mentions[]` 里找 `id.open_id === self.open_id`。找不到就 `return`，连日志都不多写一行（只在「@ 了别人」时记 `[skip]`，纯聊天不记，否则多人群里每句话都刷屏）。
+3. 抹占位符时只抹自己那一项。`@_user_2` 这种别人的占位符还原成 `@姓名`，因为模型需要知道这句话在跟谁说话——多 agent 协作时尤其重要。
+
+取不到 `open_id` 会退化成老的「@ 谁都算」行为，并在启动日志里告警。多机器人同群时这是必然抢答的配置，所以宁可吵一点也要说出来。
+
+代价是：话题里也没法省掉 @ 了。这是刻意的取舍——**「谁会被唤醒」必须是显式的**，否则多个 agent 共处一群时没人能预测谁响应。
 
 ### 状态里两个 id 不能混
 

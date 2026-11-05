@@ -351,9 +351,43 @@ async function main() {
     return `key=${topicKey} chatId=${b.chatId}`
   })
 
-  await check('isKnownTopic：绑过的话题免 @', async () => {
-    if (!bridge.isKnownTopic({ key: topicKey })) throw new Error('已绑定的话题未被识别')
-    if (bridge.isKnownTopic({ key: 'root:om_unknown' })) throw new Error('陌生话题被误判为已知')
+  await check('只响应 @ 我本人：@ 别人不触发', async () => {
+    const { FeishuTransport } = await import('../src/feishu.js')
+    const got = []
+    const t = new FeishuTransport(
+      { feishu: { appId: 'cli_x', appSecret: 'sec_x', requireMention: true } },
+      {
+        onMessage: async (m) => got.push(m),
+        onCardAction: async () => {},
+        logger: { info() {}, warn() {}, error() {} },
+      },
+    )
+    t.resolveSelf = async () => ({ open_id: 'ou_me', name: 'Lil_O' })
+    const ev = (text, mentions, extra = {}) => ({
+      message: {
+        message_type: 'text',
+        chat_type: 'group',
+        chat_id: 'oc_g',
+        message_id: 'om_' + Math.random().toString(36).slice(2),
+        content: JSON.stringify({ text }),
+        mentions,
+        ...extra,
+      },
+      sender: { sender_id: { open_id: 'ou_u1' } },
+    })
+
+    await t.handleImMessage(ev('@_user_1 你看下', [{ key: '@_user_1', id: { open_id: 'ou_other_bot' }, name: '小助' }]))
+    if (got.length !== 0) throw new Error('@ 别的机器人也触发了，多机器人同群会抢答')
+
+    await t.handleImMessage(ev('大家早', []))
+    if (got.length !== 0) throw new Error('没有任何 @ 也触发了')
+
+    await t.handleImMessage(ev('接着聊', [], { root_id: 'om_root', thread_id: 'omt_1' }))
+    if (got.length !== 0) throw new Error('话题里不 @ 也触发了')
+
+    await t.handleImMessage(ev('@_user_1 你好', [{ key: '@_user_1', id: { open_id: 'ou_me' }, name: 'Lil_O' }]))
+    if (got.length !== 1 || got[0].text !== '你好') throw new Error('@ 我本人没触发，或占位符没抹干净')
+
     return 'ok'
   })
 

@@ -194,8 +194,6 @@ ${created ? '   已为你生成模板，请填入 appId / appSecret。\n' : '   
   const ft = new FeishuTransport(cfg, {
     onMessage: (msg) => bridge.onMessage(msg),
     onCardAction: (ctx) => bridge.onCardAction(ctx),
-    // 群里已经服务过的话题：不用再 @ 机器人，否则每句话都要点一次
-    onTopicKnown: (x) => bridge.isKnownTopic(x),
   })
   bridge.t = ft
 

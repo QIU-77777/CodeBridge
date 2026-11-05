@@ -5,13 +5,14 @@ import * as Lark from '@larksuiteoapi/node-sdk'
  * 长连接模式不需要公网 IP、不需要内网穿透。
  */
 export class FeishuTransport {
-  constructor(config, { onMessage, onCardAction, onTopicKnown, logger = console }) {
+  constructor(config, { onMessage, onCardAction, logger = console }) {
     this.cfg = config.feishu
     this.log = logger
     this.onMessage = onMessage
     this.onCardAction = onCardAction
-    /** 话题里已经绑过会话就返回 true（用于话题内免 @） */
-    this.onTopicKnown = onTopicKnown
+
+    /** 机器人自己的身份，start() 时取一次并缓存 */
+    this.self = null
 
     this.client = new Lark.Client({
       appId: this.cfg.appId,
@@ -21,7 +22,43 @@ export class FeishuTransport {
     })
   }
 
+  /**
+   * 拿机器人自己的 open_id / 名字。
+   *
+   * 为什么必须知道「我是谁」：一个群里可以同时躺着好几个机器人，飞书会把
+   * im.message.receive_v1 推给**每一个**在群里的机器人。只判断「mentions 非空」
+   * 的话，用户 @A 时 A 和 B 会一起抢答。要靠 open_id 精确比对，才能做到
+   * 「只响应 @ 我的」。
+   *
+   * 配置里写了 feishu.botOpenId 就直接用，省掉一次网络请求（也方便接口取不到时兜底）。
+   */
+  async resolveSelf() {
+    if (this.self) return this.self
+    if (this.cfg.botOpenId) {
+      this.self = { open_id: this.cfg.botOpenId, name: this.cfg.botName || '我' }
+      return this.self
+    }
+    try {
+      const res = await this.client.request({ method: 'GET', url: '/open-apis/bot/v3/info' })
+      const bot = res?.bot || res?.data?.bot || {}
+      if (!bot.open_id) throw new Error('返回里没有 open_id')
+      this.self = { open_id: bot.open_id, name: bot.app_name || '我' }
+      this.log.info(`机器人身份: ${this.self.name} (${this.self.open_id})`)
+    } catch (err) {
+      // 拿不到就退化成「@ 了谁都算」，多机器人同群时会抢答，必须让用户看见
+      this.self = { open_id: null, name: this.cfg.botName || '我' }
+      this.log.warn(
+        `拿不到机器人自身 open_id（${err.message}），已退化为「@ 到任何人都会响应」。` +
+          '多机器人同群请把 feishu.botOpenId 写进配置，否则会互相抢答。',
+      )
+    }
+    return this.self
+  }
+
   async start() {
+    // 先把自己是谁搞清楚，再开始收消息，避免头几条按「@ 谁都算」误判
+    await this.resolveSelf()
+
     const dispatcher = new Lark.EventDispatcher({}).register({
       'im.message.receive_v1': async (data) => {
         // 飞书要求 3 秒内响应，这里立即返回，真正的处理异步跑
@@ -54,19 +91,56 @@ export class FeishuTransport {
   async handleImMessage(data) {
     const m = data?.message
     if (!m) return
+
+    const isGroup = m.chat_type === 'group'
+    const self = await this.resolveSelf()
+    const mentions = Array.isArray(m.mentions) ? m.mentions : []
+
+    /**
+     * 只认「@ 我本人」。
+     *
+     * 一个群里可以同时躺着好几个机器人，飞书会把 im.message.receive_v1 推给
+     * **每一个**在群里的机器人。只判断「mentions 非空」的话，用户 @A 的时候
+     * B 也会跟着抢答 —— 所以必须按 open_id 精确比对，@ 的是别人就跟我无关。
+     *
+     * 闸门放在最前面，连「暂不支持图片」这类提示也一并挡住：多 agent 同群时，
+     * 别人发张图不该收到五个机器人的催稿。
+     */
+    const selfMention = self.open_id
+      ? mentions.find((x) => x?.id?.open_id === self.open_id)
+      : mentions[0] // 退化：拿不到自身 open_id 时按「@ 了任何一个人」算
+
+    if (isGroup && this.cfg.requireMention && !selfMention) {
+      // 只在「@ 了别人」时记一行。纯聊天不记，否则多人群里每句话都刷日志。
+      if (mentions.length > 0) {
+        this.log.info(
+          `[skip] @ 的不是我 names=${mentions.map((x) => x?.name).filter(Boolean).join(',')} msg=${m.message_id}`,
+        )
+      }
+      return
+    }
+
     if (m.message_type !== 'text') {
-      const replyTo = m.chat_type === 'group' ? m.root_id || m.message_id : null
+      const replyTo = isGroup ? m.root_id || m.message_id : null
       await this.sendText(m.chat_id, `暂不支持 ${m.message_type} 类型消息，请发送文本。`, { replyTo })
       return
     }
-    let text = ''
+
+    let raw = ''
     try {
-      text = JSON.parse(m.content || '{}').text || ''
+      raw = JSON.parse(m.content || '{}').text || ''
     } catch {
-      text = ''
+      raw = ''
     }
-    // 去掉 @机器人 占位符（@_user_1 形式）
-    text = text.replace(/@_user_\d+/g, '').trim()
+
+    // 只抹掉 @我自己 的占位符；@别人 保留成 @名字。
+    // 否则模型既不知道被 @ 的是谁，也不知道这句话是冲谁说的。
+    let text = raw
+    for (const mt of mentions) {
+      if (!mt?.key) continue
+      text = text.split(mt.key).join(mt === selfMention ? '' : `@${mt.name || '某人'}`)
+    }
+    text = text.trim()
     if (!text) return
 
     /**
@@ -75,18 +149,9 @@ export class FeishuTransport {
      *   - 主聊天流里新 @ 的消息：root_id 为空，它自己就成为新话题的根
      * 两种情况的键用同一个公式，所以开完话题不需要再改绑定。
      */
-    const isGroup = m.chat_type === 'group'
     const rootId = isGroup ? m.root_id || m.message_id : null
     const key = isGroup ? `root:${rootId}` : m.chat_id
     const threadId = m.thread_id || null
-
-    // 群聊要求 @ 机器人
-    if (isGroup && this.cfg.requireMention) {
-      const mentioned = Array.isArray(m.mentions) && m.mentions.length > 0
-      // 已经服务过的话题里继续说话，不用再 @ 一次 —— 否则每句话都要点一次机器人，没法用
-      const known = !mentioned && this.onTopicKnown?.({ key })
-      if (!mentioned && !known) return
-    }
 
     // 群消息记一行原始上下文：话题绑定要看 thread_id / root_id，
     // 出了问题先看这行，不用再去翻飞书后台的事件原始包。

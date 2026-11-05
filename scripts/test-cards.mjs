@@ -351,22 +351,94 @@ if (process.argv.includes('--live')) {
   ok(created === 0, '被拒的那条没有去 opencode 建空会话', `createSession 调用 ${created} 次`)
 }
 
-// ---------- 6.2 /cd 清空会话后，这个话题仍算「已知」，不用重新 @ ----------
+// ---------- 6.2 只响应 @ 我本人（多机器人同群的前提） ----------
 {
-  const { Bridge } = await import('../src/handler.js')
-  const bindings = new Map([
-    ['root:om_t', { key: 'root:om_t', chatId: 'oc_g', replyTo: 'om_t', directory: '/tmp/w', sessionId: undefined }],
-  ])
-  const b = new Bridge({
-    oc: {},
-    store: { get: (k) => bindings.get(k), set() {} },
-    config: { behavior: {} },
-    transport: {},
-    logger: { info() {}, warn() {}, error() {} },
-  })
+  const { FeishuTransport } = await import('../src/feishu.js')
+  const got = []
+  const t = new FeishuTransport(
+    { feishu: { appId: 'cli_x', appSecret: 'sec_x', requireMention: true } },
+    {
+      onMessage: async (m) => got.push(m),
+      onCardAction: async () => {},
+      logger: { info() {}, warn() {}, error() {} },
+    },
+  )
+  t.resolveSelf = async () => ({ open_id: 'ou_me', name: 'Lil_O' })
 
-  ok(b.isKnownTopic({ key: 'root:om_t' }) === true, '/cd 之后（有绑定无会话）仍算已知话题，不用再 @')
-  ok(b.isKnownTopic({ key: 'root:om_other' }) === false, '没服务过的话题仍然要求 @')
+  let seq = 0
+  const ev = (text, mentions, extra = {}) => ({
+    message: {
+      message_type: 'text',
+      chat_type: 'group',
+      chat_id: 'oc_g',
+      message_id: 'om_' + ++seq,
+      content: JSON.stringify({ text }),
+      mentions,
+      ...extra,
+    },
+    sender: { sender_id: { open_id: 'ou_u1' } },
+  })
+  const me = [{ key: '@_user_1', id: { open_id: 'ou_me' }, name: 'Lil_O' }]
+
+  await t.handleImMessage(
+    ev('@_user_1 你看下', [{ key: '@_user_1', id: { open_id: 'ou_other_bot' }, name: '小助' }]),
+  )
+  ok(got.length === 0, '@ 别的机器人 → 不处理（否则多机器人同群会抢答）')
+
+  await t.handleImMessage(ev('大家早', []))
+  ok(got.length === 0, '完全没有 @ → 不处理')
+
+  await t.handleImMessage(ev('接着聊', [], { root_id: 'om_root', thread_id: 'omt_1' }))
+  ok(got.length === 0, '话题里也必须 @，不再免 @')
+
+  await t.handleImMessage(ev('@_user_1 你好', me))
+  ok(got.length === 1 && got[0].text === '你好', '@ 我本人 → 处理，且自己的占位符被抹掉')
+
+  await t.handleImMessage(
+    ev('@_user_1 你看下 @_user_2', [
+      ...me,
+      { key: '@_user_2', id: { open_id: 'ou_u2' }, name: '张三' },
+    ]),
+  )
+  ok(got.length === 2 && got[1].text === '你看下 @张三', '@ 了我和别人 → 别人保留成 @名字，模型知道在跟谁说话')
+
+  await t.handleImMessage(
+    ev('hi', [], { chat_type: 'p2p', chat_id: 'oc_dm' }),
+  )
+  ok(got.length === 3, '私聊不受影响，不需要 @')
+}
+
+// ---------- 6.3 拿不到自身 open_id 时退化为「@ 谁都算」（并在启动时告警） ----------
+{
+  const { FeishuTransport } = await import('../src/feishu.js')
+  const got = []
+  const warns = []
+  const t = new FeishuTransport(
+    { feishu: { appId: 'cli_x', appSecret: 'sec_x', requireMention: true } },
+    {
+      onMessage: async (m) => got.push(m),
+      onCardAction: async () => {},
+      logger: { info() {}, warn: (m) => warns.push(m), error() {} },
+    },
+  )
+  t.client = { request: async () => { throw new Error('no permission') } }
+  const self = await t.resolveSelf()
+
+  ok(self.open_id === null, '取不到 open_id 时降级为 null，不抛异常挡住启动')
+  ok(warns.some((w) => /botOpenId/.test(w)), '降级时明确提示去配 feishu.botOpenId')
+
+  await t.handleImMessage({
+    message: {
+      message_type: 'text',
+      chat_type: 'group',
+      chat_id: 'oc_g',
+      message_id: 'om_deg',
+      content: JSON.stringify({ text: '@_user_1 hi' }),
+      mentions: [{ key: '@_user_1', id: { open_id: 'ou_x' }, name: 'X' }],
+    },
+    sender: { sender_id: { open_id: 'ou_u1' } },
+  })
+  ok(got.length === 1, '降级后 @ 任何人都会响应（已知风险）')
 }
 
 // ---------- 7. 按钮要带上话题上下文 ----------

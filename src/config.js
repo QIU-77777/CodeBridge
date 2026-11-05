@@ -13,8 +13,11 @@ const DEFAULTS = {
     domain: 'feishu',
     // 白名单：填 open_id 或 user_id。空数组 = 不限制（不建议）
     allowlist: [],
-    // 群聊是否需要 @机器人才响应
+    // 群聊是否必须 @ 本机器人 才响应（@ 别的机器人 / 别人不会被触发）
     requireMention: true,
+    // 机器人自己的 open_id。留空则启动时调 /open-apis/bot/v3/info 自动取；
+    // 多机器人同群时建议显式填上，避免接口取不到时退化成「@ 谁都算」而互相抢答
+    botOpenId: '',
   },
   opencode: {
     url: 'http://127.0.0.1:19876',
@@ -96,6 +99,7 @@ export function writeExampleConfig() {
       domain: 'feishu',
       allowlist: [],
       requireMention: true,
+      botOpenId: '',
     },
     opencode: {
       url: 'http://127.0.0.1:19876',
