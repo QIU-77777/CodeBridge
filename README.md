@@ -138,6 +138,16 @@ opencode-feishu-bridge/
 
 > ⚠️ **`.config/` 已经在 `.gitignore` 里，永远不要 `git add -f`。** 里面有 `appSecret`，一旦推上去等于把机器人交给所有人。
 
+这三个文件 clone 下来一个都没有，全都是本机生成的，谁生成、干什么用：
+
+| 文件 | 谁生成 | 什么时候 | 为什么不能入库 |
+|---|---|---|---|
+| `config.json` | `npm run init`（漏了的话首次 `npm start` 也会生成） | 初始化时 | 含 `appSecret` |
+| `state.json` | 桥接自己，第一次有会话绑定时写 | 用完第一次对话 | 里面的 `sessionId` 指向**本机** opencode 的会话，攒到的名字是**本应用**下的 `open_id`，换台机器/换个应用全是废数据 |
+| `bridge.lock` | 桥接自己，启动时写、退出时删 | 每次启动 | 里面只有一个 pid。入库后新机器上可能撞上一个活着的 pid，直接被判成「已有实例在跑」而拒绝启动 |
+
+所以 clone 完只剩一件事要做：`npm run init` 填凭证。其余两个文件你不用管，桥接会自己建。
+
 所以 **clone 下来没有 `.config/` 目录是正常的**，不是漏了文件。模板单独放在仓库根的 `config.example.json`（不含任何真实密钥、可安全入库），用一条命令铺开：
 
 ```bash
