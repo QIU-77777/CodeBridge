@@ -92,7 +92,7 @@ async function main() {
   })
   if (!health) {
     console.log('\n⛔ opencode serve 没起来，后面全部跳过。')
-    console.log('   启动: opencode serve --port 19876 --hostname 127.0.0.1')
+    console.log('   启动: ./scripts/up.sh（会自动选本地 CLI 并起 serve）')
     process.exit(1)
   }
 

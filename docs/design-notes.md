@@ -166,8 +166,11 @@ const replyNew = (toast, card) => {
 
 ```bash
 PW=$(node -e "console.log(require('$HOME/.config/opencode-feishu-bridge/config.json').opencode.password)")
-OPENCODE_SERVER_PASSWORD="$PW" opencode serve --port 19876
+OPENCODE_SERVER_PASSWORD="$PW" "$(node scripts/which-opencode.mjs)" serve --port 19876
 ```
+
+`"$(node scripts/which-opencode.mjs)"` 拿到的和 `up.sh` 用的是同一份二进制，
+不要手敲 `opencode`——PATH 里那个可能是别的版本。
 
 凡是「两份必须一致的东西」，就不该让人手工保持一致。
 

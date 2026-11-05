@@ -19,6 +19,7 @@ for name in bridge serve; do
 done
 
 # 兜底：按命令行特征清理
+# 注意：桌面版自带的是 opencode-cli，PATH 里的是 opencode，两个都要覆盖
 pkill -f "node src/index.js" 2>/dev/null && echo "已清理残留桥接进程"
-pkill -f "opencode serve --port" 2>/dev/null && echo "已清理残留 serve 进程"
+pkill -f "(opencode|opencode-cli) serve --port" 2>/dev/null && echo "已清理残留 serve 进程"
 exit 0
