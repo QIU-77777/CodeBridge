@@ -6,7 +6,7 @@
 import * as Lark from '@larksuiteoapi/node-sdk'
 import { loadConfig } from '../src/config.js'
 import { mdToElements, mdToText } from '../src/md.js'
-import { runCard, textCard, sessionsCard, permissionCard, statusCard, helpCard } from '../src/cards.js'
+import { runCard, textCard, sessionsCard, permissionCard, statusCard, helpCard, fmtCost } from '../src/cards.js'
 import { RunState } from '../src/render.js'
 
 let pass = 0
@@ -111,10 +111,66 @@ ok(size < 30_000, `runCard 序列化 < 30KB（${size} 字节）`)
   ok(group.includes('/help'), '群里：卡片带 /help 提示')
   ok(group.includes('@我'), '群里：提示里写明要先 @，否则用户会直接打字')
   ok(dm.includes('/help') && !dm.includes('@我'), '私聊：只写发送 /help，不提 @')
+  ok(group.indexOf('/help') > group.indexOf('会话列表'), '帮助提示排在按钮之后')
+}
+
+// 三段式：前缀 ─── 正文 ─── 后缀
+{
+  const els = runCard(st, { directory: '/Users/x/proj' }).body.elements
+  const hrs = els.filter((e) => e.tag === 'hr').length
+  const prefixAt = els.findIndex((e) => JSON.stringify(e).includes('**目录**'))
+  const firstHr = els.findIndex((e) => e.tag === 'hr')
+  const btnAt = els.findIndex((e) => e.tag === 'column_set' || e.tag === 'button')
+  const lastHr = els.map((e) => e.tag).lastIndexOf('hr')
+  ok(hrs === 2, `前缀/正文/后缀之间各一条分割线（实际 ${hrs} 条）`)
+  ok(prefixAt === 0 && firstHr === 1, '分割线紧跟在前缀之后')
+  ok(lastHr < btnAt, '正文与按钮之间也有分割线')
+
+  // 没有前缀时不硬塞分割线
+  const noDir = runCard(st, {}).body.elements
+  ok(noDir[0].tag !== 'hr', '没有前缀时不以分割线开头')
+}
+
+// 后缀一行：用量 ｜ 帮助
+{
+  const last = (card) => JSON.stringify(card.body.elements.at(-1))
+  const line = last(runCard(st, { directory: '/tmp', isGroup: true }))
+  ok(line.includes('in 1200') && line.includes('out 340'), '后缀带 in/out')
+  ok(line.includes('$0.0123'), '后缀带金额')
+  ok(line.includes('｜') && line.includes('/help'), '用量和帮助在同一行，用 ｜ 隔开')
   ok(
-    group.indexOf('/help') > group.indexOf('"tag":"action"'),
-    '帮助提示排在按钮之后',
+    line.indexOf('out 340') < line.indexOf('$0.0123') && line.indexOf('$0.0123') < line.indexOf('｜'),
+    '顺序是 in · out · 金额 ｜ 帮助',
   )
+}
+
+// 金额为 0（套餐型 provider）也要显示，不能整段消失
+{
+  const zero = new RunState('ses_zero')
+  zero.status = 'done'
+  zero.text = 'ok'
+  zero.cost = 0
+  zero.tokens = { input: 66636, output: 9509 }
+  const line = JSON.stringify(runCard(zero, { directory: '/tmp' }).body.elements.at(-1))
+  ok(line.includes('$0.0000'), 'cost=0 时显示 $0.0000，而不是把金额藏掉')
+  ok(line.includes('in 66636') && line.includes('out 9509'), 'cost=0 不影响 in/out 显示')
+
+  // 完全没用量也没金额时，不显示空的金额位
+  const bare = new RunState('ses_bare')
+  bare.status = 'done'
+  bare.text = 'ok'
+  const bareLine = JSON.stringify(runCard(bare, { directory: '/tmp' }).body.elements.at(-1))
+  ok(!bareLine.includes('$'), '没有用量时不显示金额')
+}
+
+// 金额格式随量级变化
+{
+  ok(fmtCost(0) === '$0.0000', 'fmtCost(0)')
+  ok(fmtCost(0.00042) === '$0.0004', 'fmtCost 分币级保留 4 位')
+  ok(fmtCost(0.0123) === '$0.0123', 'fmtCost 分币级')
+  ok(fmtCost(0.1234) === '$0.1234', 'fmtCost 元以下一律 4 位')
+  ok(fmtCost(12.3456) === '$12.35', 'fmtCost 元级保留 2 位')
+  ok(fmtCost(undefined) === '' && fmtCost(NaN) === '', 'fmtCost 非法值返回空')
 }
 
 

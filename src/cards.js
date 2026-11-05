@@ -139,6 +139,15 @@ function shortDir(dir) {
 }
 
 /**
+ * 金额。一次对话通常是几厘钱，四位小数才看得出差别；
+ * 真跑到一块钱以上再用四位就是噪音了。
+ */
+export function fmtCost(cost) {
+  if (typeof cost !== 'number' || !Number.isFinite(cost) || cost < 0) return ''
+  return cost < 1 ? `$${cost.toFixed(4)}` : `$${cost.toFixed(2)}`
+}
+
+/**
  * 运行中的会话卡片。同一个 message 反复 patch 更新。
  * @param {object} state RunState
  * @param {{directory?:string, model?:string, title?:string, maxBodyChars?:number,
@@ -155,7 +164,11 @@ export function runCard(state, meta = {}) {
 
   const elements = []
 
+  // 卡片分三段：前缀（目录/模型/耗时）│ 正文 │ 后缀（按钮 + 用量/帮助）。
+  // 正文是整块 markdown，段落一多就跟元信息糊在一起，用分割线切开更清楚。
+  let hasPrefix = false
   if (meta.directory) {
+    hasPrefix = true
     elements.push(
       div(
         `**目录** ${shortDir(meta.directory)}` +
@@ -164,6 +177,7 @@ export function runCard(state, meta = {}) {
           (state.steps > 1 ? `　**步数** ${state.steps}` : ''),
       ),
     )
+    elements.push(hr())
   }
 
   // 正文：走分段解析，表格 → table 组件、代码块 → markdown 组件
@@ -192,6 +206,9 @@ export function runCard(state, meta = {}) {
     if (hint) elements.push(note(`💡 ${hint}`))
   }
 
+  // 后缀起点。正文再长也别跟按钮贴在一起。
+  if (hasPrefix || bodyEls.length) elements.push(hr())
+
   const footer = []
   const nav = navOf({ k: meta.key, rt: meta.rootId })
   if (state.status === 'running') footer.push(button('中止', { a: 'abort', s: state.sessionId, ...nav }, 'danger'))
@@ -199,17 +216,23 @@ export function runCard(state, meta = {}) {
   footer.push(button('会话列表', { a: 'sessions', ...nav }, 'default'))
   elements.push(buttonRow(footer))
 
-  // 按钮只覆盖三个高频动作，/model /cd /switch 这些不看 /help 是发现不了的。
-  // 群里要写清楚还得先 @ 一下，否则用户以为直接打字就行。
-  elements.push(
-    note(meta.isGroup ? '需要帮助？@我 并发送 `/help` 查看全部命令' : '需要帮助？发送 `/help` 查看全部命令'),
-  )
-
+  /**
+   * 用量 + 帮助合成一行。
+   *
+   * 金额以前用 `if (state.cost)` 判断，cost 为 0 时整段消失——而套餐型 provider
+   * （stepfun 这类）在 /api/model 里把价格全填 0，于是「金额不见了」。现在只要有
+   * 用量就显示，0 也照显示 $0.0000：那是真实价格，不是没取到。
+   */
   const usage = []
   if (state.tokens?.input) usage.push(`in ${state.tokens.input}`)
   if (state.tokens?.output) usage.push(`out ${state.tokens.output}`)
-  if (state.cost) usage.push(`$${state.cost.toFixed(4)}`)
-  if (usage.length) elements.push(note(usage.join(' · ')))
+  const costText = fmtCost(state.cost)
+  if (costText && (usage.length || state.cost > 0)) usage.push(costText)
+
+  // 按钮只覆盖三个高频动作，/model /cd /switch 这些不看 /help 是发现不了的。
+  // 群里要写清楚还得先 @ 一下，否则用户以为直接打字就行。
+  const help = meta.isGroup ? '@我 并发送 `/help` 查看全部命令' : '发送 `/help` 查看全部命令'
+  elements.push(note(usage.length ? `${usage.join(' · ')}　｜　${help}` : help))
 
   // 状态写进标题：光靠一个 emoji 看不出「还在跑」还是「已经停了」，
   // 尤其是流式过程中卡片本来就在一直变，用户需要一个明确的状态词。
