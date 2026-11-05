@@ -24,8 +24,21 @@ import { join, resolve, dirname } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { createInterface } from 'node:readline'
-import * as Lark from '@larksuiteoapi/node-sdk'
 import { TEMPLATE_PATH } from '../src/config.js'
+
+/**
+ * 飞书 SDK 延迟加载。
+ *
+ * 这个脚本经常在 `npm install` 之前被调用（clone 下来第一步就是配凭证），
+ * 顶层 import 会让它直接 ERR_MODULE_NOT_FOUND 崩掉，用户看到的是一屏堆栈。
+ * 缺依赖时降级成「跳过凭证验证，其余照常」，把 npm install 的提示留给输出。
+ */
+let Lark = null
+try {
+  Lark = await import('@larksuiteoapi/node-sdk')
+} catch {
+  Lark = null
+}
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const TEMPLATE = TEMPLATE_PATH
@@ -99,6 +112,14 @@ const wizard = !noInput && (has('--wizard') || (isTTY && !appId && !appSecret))
 
 /** 安静地打飞书接口：SDK 失败时会把整个 axios error 倒到 console，这里只要结论 */
 async function verifyCreds(id, secret) {
+  if (!Lark) {
+    return {
+      ok: false,
+      skipped: true,
+      reason: '本机还没装依赖，跳过验证',
+      hint: '先 npm install，再 npm run init -- --force 就能验证',
+    }
+  }
   const mute = ['log', 'error', 'warn', 'info', 'debug']
   const saved = {}
   for (const k of mute) {
@@ -188,8 +209,14 @@ if (wizard) {
   if (appId && appSecret) {
     process.stdout.write('验证凭证… ')
     botInfo = await verifyCreds(appId, appSecret)
-    line(botInfo.ok ? `✅ ${botInfo.name}` : `❌ ${botInfo.reason}`)
-    if (!botInfo.ok) {
+    if (botInfo.skipped) {
+      line(`⚠️ ${botInfo.reason}`)
+      if (botInfo.hint) line(`   ${botInfo.hint}`)
+    } else if (botInfo.ok) {
+      line(`✅ ${botInfo.name}`)
+      if (botInfo.openId) line(`   机器人 open_id ${botInfo.openId}（自动填进 feishu.botOpenId）`)
+    } else {
+      line(`❌ ${botInfo.reason}`)
       if (botInfo.hint) line(`   ${botInfo.hint}`)
       const go = await ask('仍然保存这份配置吗？(y/N)', { def: 'N' })
       if (!/^y/i.test(go)) {
@@ -197,8 +224,6 @@ if (wizard) {
         line('已放弃，什么都没写。')
         process.exit(1)
       }
-    } else if (botInfo.openId) {
-      line(`   机器人 open_id ${botInfo.openId}（自动填进 feishu.botOpenId）`)
     }
     line()
   }
@@ -248,8 +273,13 @@ if (!cfg.feishu.allowlist?.length) {
   line()
 }
 line('接下来：')
-line(`  1. 体检   npm run doctor`)
-line(`  2. 启动   npm run up`)
+let step = 1
+if (!Lark) {
+  line(`  ${step++}. 装依赖   npm install`)
+  line('             （刚才跳过了凭证验证，装完可以 npm run init -- --force 再验一次）')
+}
+line(`  ${step++}. 体检   npm run doctor`)
+line(`  ${step++}. 启动   npm run up`)
 line()
 line('飞书后台这四项漏一个都会「静默不响应」：')
 line('   · 事件订阅   im.message.receive_v1，订阅方式选「使用长连接接收事件」')
