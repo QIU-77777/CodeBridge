@@ -89,11 +89,13 @@ export class OpencodeClient {
   }
 
   async renameSession(id, title) {
+    // 实测：这个 PATCH 成功时返回 204 No Content，没有响应体，
+    // 所以 request() 会返回 null —— 不能再解 r.data，否则改名成功但桥接抛错。
     const r = await this.request(`/api/session/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       body: { title },
     })
-    return r.data
+    return r?.data ?? null
   }
 
   async switchModel(id, model) {

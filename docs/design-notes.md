@@ -233,7 +233,7 @@ sqlite3 ~/.local/share/opencode/opencode.db "
 | 层 | 手段 | 覆盖 |
 |---|---|---|
 | 组件级 | `scripts/probe-card.mjs` | 平台收不收这种结构 |
-| 单元级 | `scripts/test-cards.mjs`（36 项） | Markdown 解析、卡片结构、大小、看门狗 |
+| 单元级 | `scripts/test-cards.mjs`（37 项） | Markdown 解析、卡片结构、大小、看门狗 |
 | 集成级 | `scripts/selftest.mjs`（23 项） | 真实建会话、真实 prompt、流式聚合、命令、回调、白名单 |
 | 端到端 | `scripts/e2e-table.mjs` | 真实模型输出 → 真实事件流 → 真实卡片 |
 
@@ -255,7 +255,7 @@ src/feishu.js    飞书长连接与消息收发
 src/index.js     入口（含 --dry 模式、单实例锁）
 
 scripts/selftest.mjs    集成自测（23 项）
-scripts/test-cards.mjs  卡片、markdown、看门狗、错误提示测试（36 项；--live 多 3 项）
+scripts/test-cards.mjs  卡片、markdown、看门狗、错误提示测试（37 项；--live 多 3 项）
 scripts/doctor.mjs      环境体检
 scripts/probe-card.mjs  卡片 schema 探针
 scripts/demo-card.mjs   发一张验收样式的卡片到飞书

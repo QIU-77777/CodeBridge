@@ -124,6 +124,20 @@ ok(size < 30_000, `runCard 序列化 < 30KB（${size} 字节）`)
   ok(!mk('some totally unknown failure').includes('💡'), '未知错误不加臆测提示')
 }
 
+// opencode 客户端：PATCH 改名成功时返回 204 空体，不能被当成对象解引用
+{
+  const { OpencodeClient } = await import('../src/oc.js')
+  const orig = globalThis.fetch
+  globalThis.fetch = async () => new Response(null, { status: 204 })
+  try {
+    const cli = new OpencodeClient({ url: 'http://127.0.0.1:1' })
+    const r = await cli.renameSession('ses_x', '新标题')
+    ok(r === null, 'renameSession 兼容 204 空响应（不再抛 Cannot read properties of null）', String(r))
+  } finally {
+    globalThis.fetch = orig
+  }
+}
+
 for (const [name, card] of Object.entries({
   textCard: textCard('标题', '正文 **加粗**'),
   sessionsCard: sessionsCard({
