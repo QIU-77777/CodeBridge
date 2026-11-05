@@ -317,6 +317,58 @@ if (process.argv.includes('--live')) {
   ok(b.runs.get('ses_busy').state.status === 'running', '被拒绝的请求没有顶掉正在跑的任务')
 }
 
+// ---------- 6.1 被上限拒掉时，不能让 opencode 里多出一个空会话 ----------
+{
+  const { Bridge } = await import('../src/handler.js')
+  const sent = []
+  let created = 0
+  const b = new Bridge({
+    oc: {
+      getSession: async () => ({ id: 'ses_old', location: { directory: '/tmp' } }),
+      createSession: async () => {
+        created++
+        return { id: 'ses_new', location: { directory: '/tmp' } }
+      },
+    },
+    // 话题还没建会话（等价于刚 /cd 清空绑定的状态）
+    store: { get: () => ({ directory: '/tmp', chatId: 'oc_g', replyTo: 'om_9' }), set() {} },
+    config: { behavior: { maxParallel: 1 }, opencode: { defaultDirectory: '/tmp' } },
+    transport: {
+      sendText: async (chatId, text, opt) => sent.push({ chatId, text, opt }),
+      sendCard: async () => 'card_x',
+    },
+    logger: { info() {}, warn() {}, error() {} },
+  })
+
+  const busy = new RunState('ses_busy')
+  busy.status = 'running'
+  b.runs.set('ses_busy', { state: busy, cardId: 'c0', meta: {} })
+
+  const msg = { chatId: 'oc_g', chatType: 'group', messageId: 'om_9', text: '干活' }
+  await b.runPrompt(msg, b.ctxOf(msg))
+
+  ok(/上限/.test(sent[0]?.text || ''), '上限满时仍然拒绝')
+  ok(created === 0, '被拒的那条没有去 opencode 建空会话', `createSession 调用 ${created} 次`)
+}
+
+// ---------- 6.2 /cd 清空会话后，这个话题仍算「已知」，不用重新 @ ----------
+{
+  const { Bridge } = await import('../src/handler.js')
+  const bindings = new Map([
+    ['root:om_t', { key: 'root:om_t', chatId: 'oc_g', replyTo: 'om_t', directory: '/tmp/w', sessionId: undefined }],
+  ])
+  const b = new Bridge({
+    oc: {},
+    store: { get: (k) => bindings.get(k), set() {} },
+    config: { behavior: {} },
+    transport: {},
+    logger: { info() {}, warn() {}, error() {} },
+  })
+
+  ok(b.isKnownTopic({ key: 'root:om_t' }) === true, '/cd 之后（有绑定无会话）仍算已知话题，不用再 @')
+  ok(b.isKnownTopic({ key: 'root:om_other' }) === false, '没服务过的话题仍然要求 @')
+}
+
 // ---------- 7. 按钮要带上话题上下文 ----------
 {
   const st = new RunState('ses_a')

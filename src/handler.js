@@ -229,23 +229,12 @@ export class Bridge {
     let binding = this.store.get(ctx.key)
     const directory = binding?.directory || this.cfg.opencode.defaultDirectory
 
-    // 没有绑定或不存在的会话 -> 自动建一个
-    let session
-    try {
-      if (binding?.sessionId) {
-        session = await this.oc.getSession(binding.sessionId)
-      }
-    } catch {
-      this.log.warn(`绑定会话 ${binding?.sessionId} 已不存在，重建`)
-      binding = null
-    }
-    if (!session) {
-      session = await this.createAndBind(ctx, directory)
-    }
-
+    // 两个闸门都必须在「建会话」之前判断：createAndBind 是会真去 opencode 里建一个会话的，
+    // 先建再拒，后台就会留一串没有任何消息的空会话。
+    //
     // 一个会话同时只跑一个任务。否则新 run 会覆盖旧的，旧卡片永远停在「执行中」
-    const running = this.runs.get(session.id)
-    if (running && running.state.status === 'running') {
+    const busy = binding?.sessionId ? this.runs.get(binding.sessionId) : null
+    if (busy?.state?.status === 'running') {
       return this.t.sendText(ctx.chatId, '这条话题的上一条还在执行中，等它结束，或者先发 /stop 中止。', {
         replyTo: ctx.replyTo,
       })
@@ -259,6 +248,20 @@ export class Bridge {
         `现在已经有 ${cap} 个任务在跑（上限 behavior.maxParallel=${cap}），等一个结束再发。`,
         { replyTo: ctx.replyTo },
       )
+    }
+
+    // 没有绑定或不存在的会话 -> 自动建一个
+    let session
+    try {
+      if (binding?.sessionId) {
+        session = await this.oc.getSession(binding.sessionId)
+      }
+    } catch {
+      this.log.warn(`绑定会话 ${binding?.sessionId} 已不存在，重建`)
+      binding = null
+    }
+    if (!session) {
+      session = await this.createAndBind(ctx, directory)
     }
 
     const raw = msg.text || ''
@@ -716,9 +719,15 @@ export class Bridge {
   }
 
   /** 群里这条话题是否已经服务过（用于话题内免 @） */
+  /**
+   * 这个话题我是不是已经服务过？
+   *
+   * 判「有没有绑定记录」而不是「有没有会话」：`/cd` 会把 sessionId 清成 undefined
+   * （等着下一条消息自动建会话），若按 sessionId 判，切完目录这个话题就退回「未知」，
+   * 之后每句话又得重新 @ 一次 —— 跟 /cd 自己那句「直接发消息自动创建」是矛盾的。
+   */
   isKnownTopic({ key }) {
-    const b = this.store.get(key)
-    return Boolean(b?.sessionId)
+    return Boolean(this.store.get(key))
   }
 
   resolveDir(input) {
