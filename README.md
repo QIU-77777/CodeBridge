@@ -42,24 +42,39 @@
 
 ## 快速开始
 
-需要 Node.js 20+ 和已经装好的 opencode。
+需要 Node.js 20+，以及装好的 **OpenCode 桌面版**（<https://opencode.ai>）。桥接会用桌面版自带的那份 CLI，不需要另外 `npm i -g opencode`。
 
-### 1. 启动 opencode serve
+> 为什么用桌面版自带的：桌面版和它的 CLI 是同一个版本、写同一个数据库。混用两个版本会出现「新版本写入、旧版本读不出来」，表现为某些会话突然发不出消息。详见 [docs/design-notes.md](docs/design-notes.md#八用哪个-opencode版本一致性)。
 
-opencode v2 的 serve 默认生成随机密码，重启就变。固定它，省得每次改配置：
+### 1. 确认用哪份 opencode
+
+serve 由 `./scripts/up.sh` 自动拉起（第 5 步），它会按这个顺序挑二进制：
+
+```
+OPENCODE_BIN 环境变量  →  桌面版自带 CLI  →  PATH 里的 opencode
+```
+
+看一眼会选中哪个：
 
 ```bash
-# 在哪个目录起，serve 的默认项目就是哪个
-# 桥接不受这个限制：创建会话时可以指定任意目录
-cd ~/你的项目
-OPENCODE_SERVER_PASSWORD='my-secret-123' opencode serve --port 19876 --hostname 127.0.0.1
+node scripts/which-opencode.mjs --json
+```
+
+如果你的 opencode 不在上述位置，用 `OPENCODE_BIN=/path/to/opencode` 指定即可。
+
+想手动起 serve 也可以（调试用，注意密码要和配置里一致）：
+
+```bash
+# "$(node scripts/which-opencode.mjs)" 拿到的就是 up.sh 会用的那份
+OPENCODE_SERVER_PASSWORD='my-secret-123' \
+  "$(node scripts/which-opencode.mjs)" serve --port 19876 --hostname 127.0.0.1
 ```
 
 验证：
 
 ```bash
 curl -s -u opencode:my-secret-123 http://127.0.0.1:19876/api/info
-# {"version":"2.0.32","pid":12345,...}
+# {"version":"2.2.5","pid":12345,...}
 ```
 
 > 端口要和配置里的 `opencode.url` 对上，用 4096 也行，改配置即可。
@@ -245,6 +260,8 @@ npm start
 | `behavior.idleTimeoutMs` | 多久没收到事件就判定卡死并收尾卡片；设 0 关闭 | `900000`（15 分钟） |
 
 环境变量可覆盖同名项：`FEISHU_APP_ID` `FEISHU_APP_SECRET` `OPENCODE_URL` `OPENCODE_SERVER_PASSWORD` `BRIDGE_DEFAULT_DIR` `BRIDGE_DEFAULT_MODEL` `BRIDGE_ALLOWLIST`（逗号分隔）。
+
+`OPENCODE_BIN` 单独一条：指定 `up.sh` 用哪个 opencode 可执行文件，不填就按「桌面版自带 CLI → PATH」的顺序找。
 
 ---
 

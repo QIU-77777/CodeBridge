@@ -7,6 +7,7 @@ import { existsSync } from 'node:fs'
 import { loadConfig, CONFIG_PATH, STATE_PATH } from '../src/config.js'
 import { OpencodeClient } from '../src/oc.js'
 import { Store } from '../src/store.js'
+import { resolveOpencode, SOURCE_LABEL } from '../src/which-opencode.js'
 
 const line = (s = '') => console.log(s)
 const okMark = '✅'
@@ -72,12 +73,27 @@ async function main() {
 
   // 3. opencode
   line('\n[opencode serve]')
+  const picked = resolveOpencode()
+  if (picked) {
+    line(`   ${okMark} 将用 ${SOURCE_LABEL[picked.source]} v${picked.version || '?'}`)
+    line(`      ${picked.bin}`)
+  } else {
+    problem('没找到 opencode（桌面版没装、PATH 里也没有）')
+    line('      装桌面版 OpenCode.app，或用 OPENCODE_BIN 指定一个')
+  }
+
   const oc = new OpencodeClient({ url: cfg.opencode.url, password: cfg.opencode.password, logger: { warn: () => {} } })
   let healthy = false
   try {
     const h = await oc.health()
     healthy = true
     line(`   ${okMark} ${cfg.opencode.url} v${h.version} pid=${h.pid}`)
+    // 两个版本共用一个数据库会出 schema 漂移，版本一致是这里最该守住的一条
+    if (picked?.version && h.version && picked.version !== h.version) {
+      line(`   ${warnMark} serve 的 v${h.version} 和本地 CLI 的 v${picked.version} 不一致`)
+      line('      两个版本写同一个 ~/.local/share/opencode/opencode.db，容易新旧互不兼容')
+      line('      建议 ./scripts/down.sh 后用 ./scripts/up.sh 重起，让它用同一份二进制')
+    }
   } catch (err) {
     if (err.status === 401) {
       problem(`连上了但认证失败：检查 opencode.password 是否与启动 serve 时的 OPENCODE_SERVER_PASSWORD 一致`)
@@ -85,7 +101,7 @@ async function main() {
       line(`      serve 启动时会打印 "server password xxx"，或自己指定 OPENCODE_SERVER_PASSWORD`)
     } else {
       problem(`连不上 ${cfg.opencode.url}: ${err.message}`)
-      line(`      启动: OPENCODE_SERVER_PASSWORD=你的密码 opencode serve --port 19876 --hostname 127.0.0.1`)
+      line(`      启动: ./scripts/up.sh（会自动选本地 CLI 并设好密码）`)
     }
   }
 

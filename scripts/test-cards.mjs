@@ -138,6 +138,42 @@ ok(size < 30_000, `runCard 序列化 < 30KB（${size} 字节）`)
   }
 }
 
+// 二进制选择：桌面版 CLI 优先，且要认版本号最大的那个（桌面版升级后目录名会变）
+{
+  const { mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const { resolveOpencode, parseVersion } = await import('../src/which-opencode.js')
+
+  ok(parseVersion('2.10.1-arm64')[1] === 10, 'parseVersion 正确解析多位数次版本', String(parseVersion('2.10.1-arm64')))
+
+  const dir = mkdtempSync(join(tmpdir(), 'oc-pick-'))
+  const fake = (name, script) => {
+    mkdirSync(join(dir, name), { recursive: true })
+    const p = join(dir, name, 'opencode-cli')
+    writeFileSync(p, `#!/bin/sh\n${script}\n`)
+    chmodSync(p, 0o755)
+    return p
+  }
+  try {
+    fake('2.9.0-arm64', 'echo opencode v2.9.0')
+    const newest = fake('2.10.1-arm64', 'echo opencode v2.10.1')
+    fake('2.2.5-arm64', 'echo opencode v2.2.5')
+
+    const picked = resolveOpencode({ PATH: '/nonexistent' }, dir)
+    ok(picked?.bin === newest, '多个版本目录时选版本号最大的（2.10.1 > 2.9.0）', picked?.bin)
+    ok(picked?.source === 'desktop', '来源标记为 desktop')
+    ok(picked?.version === '2.10.1', '能读出二进制自报的版本', picked?.version)
+
+    const byEnv = resolveOpencode({ OPENCODE_BIN: newest, PATH: '/nonexistent' }, dir)
+    ok(byEnv?.source === 'env', 'OPENCODE_BIN 优先级最高')
+
+    ok(resolveOpencode({ PATH: '/nonexistent' }, join(dir, 'nope')) === null, '找不到时返回 null（不静默 fallback）')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
 for (const [name, card] of Object.entries({
   textCard: textCard('标题', '正文 **加粗**'),
   sessionsCard: sessionsCard({

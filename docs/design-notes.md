@@ -173,7 +173,60 @@ OPENCODE_SERVER_PASSWORD="$PW" opencode serve --port 19876
 
 ---
 
-## 八、其他开发向排障
+## 八、用哪个 opencode（版本一致性）
+
+机器上可能同时有两套 opencode：
+
+| 来源 | 路径 | 谁在用 |
+|---|---|---|
+| 桌面版自带 CLI | `~/Library/Application Support/ai.opencode.desktop/cli/<版本>-arm64/opencode-cli` | 桌面 App 自己 `serve --service`，跑在随机端口 |
+| npm 全局 | `~/.npm-global/bin/opencode` | `npm i -g @opencode/cli` 装的，PATH 里那个 |
+
+**它们写同一个数据库**：`~/.local/share/opencode/opencode.db`。用 `lsof` 能看到两个进程打开同一个 inode。
+
+版本不一致时的故障不是「接口报错」，而是「数据读不出来」：新版本加了必填字段，旧版本写的行就解不出。2026-11 就踩过一次——compaction 记录缺 `recent`，整批会话发不出消息，错误却在桥接的卡片上，看着像桥接的锅（详见上一节的诊断步骤）。
+
+### 决策：优先用桌面版自带的 CLI
+
+1. 桌面版和它的 CLI 是同一份代码，写出来的行一定读得回来
+2. 桌面版升级时 CLI 跟着换，不会留下一个孤儿版本慢慢漂
+3. 手机上派活的会话，桌面上直接能看到、能接着聊——因为确实是同一个库同一个服务端版本
+
+不直接用桌面 App 那个 `serve --service` 实例：它用私有 token 认证，桥接不该去猜。桥接自己起一份，用配置里的密码。
+
+### 实现
+
+`src/which-opencode.js` 负责选二进制，优先级：
+
+```
+OPENCODE_BIN 环境变量  →  桌面版自带 CLI（版本号倒序取最新）  →  PATH 里的 opencode
+```
+
+桌面版升级后目录名里的版本号会变（`2.2.5-arm64` → `2.2.6-arm64`），所以按 `2.x.y` 数值倒序探测目录，不写死路径。`up.sh` 和 `doctor` 共用这一个模块，不用两边各写一份 shell 判断。
+
+### 守卫：不一致要喊出来
+
+`up.sh` 和 `npm run doctor` 都会比对「正在跑的 serve 版本」和「本地 CLI 版本」，不一致就告警。
+
+不自动重启：重启 serve 会打断正在跑的任务，这种事不该在启动脚本里悄悄做。
+
+### 升级流程
+
+```bash
+./scripts/down.sh
+cp -p ~/.local/share/opencode/opencode.db{,.bak-$(date +%Y%m%d-%H%M%S)}
+# 升级桌面版 / npm 包
+./scripts/up.sh          # 打印选中的二进制和版本
+npm run doctor           # 版本是否一致、模型是否还在
+node scripts/test-cards.mjs
+# 飞书里发一条测试消息
+```
+
+实测 2.0.32 → 2.2.5 这一跳，桥接用到的接口（`/api/session`、`/prompt`、`/model`、`/event` SSE 等）请求体和事件名都没变，升级后不需要改代码。
+
+---
+
+## 九、其他开发向排障
 
 | 现象 | 原因 |
 |---|---|
@@ -228,12 +281,12 @@ sqlite3 ~/.local/share/opencode/opencode.db "
 
 ---
 
-## 九、验证体系
+## 十、验证体系
 
 | 层 | 手段 | 覆盖 |
 |---|---|---|
 | 组件级 | `scripts/probe-card.mjs` | 平台收不收这种结构 |
-| 单元级 | `scripts/test-cards.mjs`（37 项） | Markdown 解析、卡片结构、大小、看门狗 |
+| 单元级 | `scripts/test-cards.mjs`（43 项） | Markdown 解析、卡片结构、大小、看门狗、错误提示、二进制选择 |
 | 集成级 | `scripts/selftest.mjs`（23 项） | 真实建会话、真实 prompt、流式聚合、命令、回调、白名单 |
 | 端到端 | `scripts/e2e-table.mjs` | 真实模型输出 → 真实事件流 → 真实卡片 |
 
@@ -241,7 +294,7 @@ sqlite3 ~/.local/share/opencode/opencode.db "
 
 ---
 
-## 十、文件
+## 十一、文件
 
 ```
 src/config.js    配置加载（文件 + 环境变量）
@@ -253,10 +306,12 @@ src/cards.js     飞书卡片模板（card 2.0）
 src/handler.js   命令分发、消息处理、卡片回调、看门狗
 src/feishu.js    飞书长连接与消息收发
 src/index.js     入口（含 --dry 模式、单实例锁）
+src/which-opencode.js  选哪个 opencode 二进制（桌面版 CLI 优先）
 
 scripts/selftest.mjs    集成自测（23 项）
-scripts/test-cards.mjs  卡片、markdown、看门狗、错误提示测试（37 项；--live 多 3 项）
-scripts/doctor.mjs      环境体检
+scripts/test-cards.mjs  卡片、markdown、看门狗、错误提示测试（43 项；--live 多 3 项）
+scripts/doctor.mjs      环境体检（含版本一致性检查）
+scripts/which-opencode.mjs  打印选中的二进制，供 up.sh 调用
 scripts/probe-card.mjs  卡片 schema 探针
 scripts/demo-card.mjs   发一张验收样式的卡片到飞书
 scripts/e2e-table.mjs   端到端表格渲染验证
@@ -266,7 +321,7 @@ scripts/down.sh         按 PID 停止两个进程
 
 ---
 
-## 十一、后续方向
+## 十二、后续方向
 
 优先级按「补短板 / 提体验 / 扩形态」排，不按有趣程度排。
 
