@@ -28,7 +28,17 @@ if agent_installed ai.qiguang.ocbridge.app; then
 fi
 
 CONFIG="$(ocb_config_dir "$ROOT")/config.json"
-[ -f "$CONFIG" ] || { echo "❌ 配置不存在: $CONFIG"; exit 1; }
+if [ ! -f "$CONFIG" ]; then
+  echo "❌ 配置不存在: $CONFIG"
+  echo
+  echo "   .config/ 里有 appSecret，没入库，所以刚 clone 下来是空的。"
+  echo "   跑一次初始化，它会把 config.example.json 复制过去："
+  echo
+  echo "     npm run init"
+  echo
+  echo "   然后填上 feishu.appId / feishu.appSecret，再回来 npm run up。"
+  exit 1
+fi
 
 read_cfg() {
   node -e "const c=JSON.parse(require('fs').readFileSync('$CONFIG','utf8'));const v=$1;console.log(v===undefined?'':v)" 2>/dev/null

@@ -28,6 +28,8 @@ function resolveConfigDir() {
 export const CONFIG_DIR = resolveConfigDir()
 export const CONFIG_PATH = join(CONFIG_DIR, 'config.json')
 export const STATE_PATH = join(CONFIG_DIR, 'state.json')
+/** 入库的模板，只有占位符；首次运行照它生成 config.json */
+export const TEMPLATE_PATH = join(REPO, 'config.example.json')
 
 const DEFAULTS = {
   feishu: {
@@ -116,33 +118,24 @@ export function loadConfig() {
   return cfg
 }
 
+/**
+ * 首次运行铺一份配置。
+ *
+ * 模板只有一份（仓库根的 config.example.json），不在这里再写一遍 —— 两份
+ * 迟早会漂移，改了一处忘了另一处。所以这里直接读模板，只补上能替用户定下来的值。
+ */
 export function writeExampleConfig() {
   ensureConfigDir()
   if (existsSync(CONFIG_PATH)) return false
-  const example = {
-    feishu: {
-      appId: 'cli_xxxxxxxxxxxxxxxx',
-      appSecret: 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
-      domain: 'feishu',
-      allowlist: [],
-      requireMention: true,
-      botOpenId: '',
-      names: {},
-    },
-    opencode: {
-      url: 'http://127.0.0.1:19876',
-      password: '',
-      defaultDirectory: process.env.HOME || '/',
-      defaultModel: '',
-    },
-    behavior: {
-      streamIntervalMs: 1800,
-      showReasoning: false,
-      showTools: false,
-      maxBodyChars: 6000,
-      idleTimeoutMs: 900000,
-      maxParallel: 2,
-    },
+  if (!existsSync(TEMPLATE_PATH)) {
+    throw new Error(
+      `找不到配置模板 ${TEMPLATE_PATH}。它应该在仓库里，重新 clone 或手动新建一份 config.json。`,
+    )
+  }
+  const example = JSON.parse(readFileSync(TEMPLATE_PATH, 'utf8'))
+  // 默认目录留空没意义，直接用 home
+  if (!example.opencode?.defaultDirectory) {
+    example.opencode = { ...example.opencode, defaultDirectory: homedir() }
   }
   writeFileSync(CONFIG_PATH, JSON.stringify(example, null, 2), 'utf8')
   return true
