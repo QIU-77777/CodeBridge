@@ -50,6 +50,10 @@ const card = runCard(st, {
   title: '渲染验收 · 卡片 2.0',
   maxBodyChars: 6000,
   showTools: false,
+  // 这张是发到群里的（PROBE_CHAT 是 oc_ 开头的群），后缀要用群版文案，
+  // 不然验收时会看到「发送 /help」而以为线上也长这样。
+  isGroup: true,
+  ...(process.env.PROBE_ROOT ? { key: `root:${process.env.PROBE_ROOT}`, rootId: process.env.PROBE_ROOT } : {}),
 })
 
 const id = await transport.sendCard(chatId, card)
