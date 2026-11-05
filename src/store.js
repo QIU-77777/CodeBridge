@@ -74,6 +74,31 @@ export class Store {
     this.scheduleSave()
   }
 
+  /**
+   * 正在跑的卡片。只存「还没收尾」的那几条。
+   *
+   * 为什么不存整个 run：run 里的状态每 1.8 秒变一次，落盘没意义；真正会丢的
+   * 是「飞书上还有一张卡片没人管」这件事。进程重启后拿它把卡片标成已中断，
+   * 否则卡片会永远停在「正在等待模型响应… 耗时 8s」。
+   */
+  setInflight(sessionId, info) {
+    if (!sessionId || !info?.cardId) return
+    const m = this.data.inflight || (this.data.inflight = {})
+    m[sessionId] = { ...info, startedAt: info.startedAt || Date.now() }
+    this.scheduleSave()
+  }
+
+  clearInflight(sessionId) {
+    const m = this.data.inflight
+    if (!m || !m[sessionId]) return
+    delete m[sessionId]
+    this.scheduleSave()
+  }
+
+  inflightList() {
+    return Object.entries(this.data.inflight || {}).map(([sessionId, v]) => ({ sessionId, ...v }))
+  }
+
   /** 找出所有绑定了某个 session 的 chat，用于事件回推 */
   chatsBySession(sessionId) {
     return this.all().filter((c) => c.sessionId === sessionId)

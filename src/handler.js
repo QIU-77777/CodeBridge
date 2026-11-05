@@ -59,6 +59,49 @@ export class Bridge {
       this.watchdog = setInterval(() => this.checkIdle(idleMs), 60_000)
       this.watchdog.unref?.()
     }
+
+    // 上一个进程可能死在半路，飞书上留着没收尾的卡片，先统一标注掉
+    await this.reconcileInflight()
+  }
+
+  /**
+   * 把上次进程遗留的「执行中」卡片标成已中断。
+   *
+   * run 状态只活在内存里，进程一换就没了，但飞书上那张卡片还在，会永远停在
+   * 「正在等待模型响应… 耗时 8s」。启动时拿 state.json 里的 inflight 记录补一刀。
+   * 失败不影响启动 —— 卡片大不了继续僵尸，不能因为一条旧卡片起不来服务。
+   */
+  async reconcileInflight() {
+    const list = this.store.inflightList?.() || []
+    if (!list.length) return
+    for (const it of list) {
+      if (it.cardId) {
+        const st = new RunState(it.sessionId)
+        st.status = 'aborted'
+        st.startedAt = it.startedAt || Date.now()
+        st.updatedAt = Date.now()
+        st.text =
+          '这次执行被中断了：桥接进程在它跑完之前退出过（改代码重启 `npm run up` 也会）。\n\n' +
+          '需要的话把刚才那句重发一次。'
+        try {
+          await this.t.patchCard(
+            it.cardId,
+            runCard(st, {
+              directory: it.directory,
+              model: it.model,
+              title: it.title,
+              key: it.key,
+              rootId: it.replyTo,
+              isGroup: it.isGroup,
+            }),
+          )
+          this.log.info(`已把上次遗留的执行卡片标为中断: ${it.cardId}`)
+        } catch (err) {
+          this.log.warn?.(`收尾遗留卡片失败 ${it.cardId}: ${err.message}`)
+        }
+      }
+      this.store.clearInflight?.(it.sessionId)
+    }
   }
 
   /** 扫描所有运行中的 run，把长时间没有事件的标成失败并收尾卡片 */
@@ -166,6 +209,8 @@ export class Bridge {
       this.log.warn?.(`卡片更新失败: ${err.message}`)
     }
     if (['done', 'failed', 'aborted'].includes(run.state.status)) {
+      // 卡片已经收尾，把「还有人在跑」的记录抹掉，重启时就不会误标成已中断
+      this.store.clearInflight?.(sid)
       // 结束后再保留一小段时间便于清理
       setTimeout(() => this.runs.delete(sid), 60_000)
     }
@@ -302,6 +347,18 @@ export class Bridge {
       const cardId = await this.t.sendCard(ctx.chatId, runCard(state, meta), { replyTo: ctx.replyTo })
       run.cardId = cardId
       run.lastFlush = Date.now()
+      // 卡片一发出去就落盘：进程要是这时候被杀，下次启动才知道该收尾哪张卡
+      this.store.setInflight?.(session.id, {
+        cardId,
+        chatId: ctx.chatId,
+        replyTo: ctx.replyTo,
+        key: ctx.key,
+        directory: meta.directory,
+        model: meta.model,
+        title: meta.title,
+        isGroup: meta.isGroup,
+        startedAt: state.startedAt,
+      })
     } catch (err) {
       this.log.error('发送执行卡片失败: ' + err.message)
     }

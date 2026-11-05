@@ -211,7 +211,9 @@ export function runCard(state, meta = {}) {
   if (state.cost) usage.push(`$${state.cost.toFixed(4)}`)
   if (usage.length) elements.push(note(usage.join(' · ')))
 
-  return card(`${st.icon} ${meta.title || 'opencode'}`, st.template, elements)
+  // 状态写进标题：光靠一个 emoji 看不出「还在跑」还是「已经停了」，
+  // 尤其是流式过程中卡片本来就在一直变，用户需要一个明确的状态词。
+  return card(`${st.icon} ${st.label} · ${meta.title || 'opencode'}`, st.template, elements)
 }
 
 export function textCard(title, body, template = 'blue', buttons = []) {

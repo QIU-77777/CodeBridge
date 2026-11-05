@@ -708,6 +708,56 @@ if (process.argv.includes('--live')) {
   ok(warns.filter((w) => /members:read/.test(w)).length === 1, '只警告一次，并说明缺哪个权限')
 }
 
+// ---------- 6.9 进程重启后，遗留的执行卡片要收尾 ----------
+{
+  const { Store } = await import('../src/store.js')
+  const { Bridge } = await import('../src/handler.js')
+  const { unlinkSync } = await import('node:fs')
+  const path = '/tmp/ocb-inflight-test-' + Date.now() + '.json'
+
+  const st = new Store(path)
+  st.setInflight('ses_z', { cardId: 'om_card', chatId: 'oc_g', replyTo: 'om_1', key: 'root:om_1', directory: '/tmp' })
+  st.flush()
+  const st2 = new Store(path)
+  ok(st2.inflightList().length === 1, 'inflight 记录落盘，重启后还在')
+  ok(st2.inflightList()[0].cardId === 'om_card', '记录里带着卡片 id')
+
+  const calls = []
+  const cleared = []
+  const b = new Bridge({
+    oc: {},
+    store: {
+      ...st2,
+      get: () => null,
+      set() {},
+      inflightList: () => st2.inflightList(),
+      clearInflight: (sid) => cleared.push(sid),
+    },
+    config: { behavior: {} },
+    transport: { patchCard: async (id, card) => calls.push({ id, card }) },
+    logger: { info() {}, warn() {}, error() {} },
+  })
+  await b.reconcileInflight()
+
+  ok(calls.length === 1 && calls[0].id === 'om_card', '启动时把遗留卡片 patch 成已中止')
+  const body = JSON.stringify(calls[0]?.card || {})
+  ok(/中断/.test(body), '卡片上写清楚是被中断，不是还在跑', '')
+  ok(/已中止/.test(body), '状态标签是「已中止」')
+  ok(cleared.includes('ses_z'), '收尾后清掉 inflight 记录，下次不再重复处理')
+
+  const b2 = new Bridge({
+    oc: {},
+    store: { get: () => null, set() {}, inflightList: () => [], clearInflight() {} },
+    config: { behavior: {} },
+    transport: { patchCard: async () => { throw new Error('不该被调用') } },
+    logger: { info() {}, warn() {}, error() {} },
+  })
+  await b2.reconcileInflight()
+  ok(true, '没有遗留时什么都不做')
+
+  unlinkSync(path)
+}
+
 // ---------- 7. 按钮要带上话题上下文 ----------
 {
   const st = new RunState('ses_a')
