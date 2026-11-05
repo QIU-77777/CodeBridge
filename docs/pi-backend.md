@@ -163,7 +163,7 @@ cwd: <directory>                                          # 话题绑定的项�
 | `/status` | 正常，服务器信息显示 `pi` CLI 版本 |
 | `/stop`、中止按钮 | 正常，kill 子进程 |
 | `/rename`、`/del` | 正常，作用于本地会话文件 |
-| `/model` | 列出 `backend.pi.model` / 本机 `pi --list-models`；切换改配置内的会话模型 |
+| `/model` | 列出 `backend.pi.model` 指定的模型和历史会话里用过的模型；不调用 `pi --list-models`，两者都空时列表为空，需先在配置里指定 `backend.pi.model`。切换改会话内模型 |
 | `/agent` | 明确回「pi 后端没有 opencode 的 agent 概念」 |
 | 权限卡片回调 | 不会发生；收到旧卡片的 `perm` 动作时只回一个 info toast |
 

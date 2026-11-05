@@ -3,8 +3,8 @@
  * pi 后端离线测试。
  *
  * 不连飞书、不跑真模型：用一个 node 子进程冒充 pi，输出与 pi --mode json
- * 同形状的 JSONL。这样能真实验证子进程生命周期（退出码、SIGTERM、超时），
- * 又不会消耗额度或依赖本机装没装 pi。
+ * 同形状的 JSONL。这样能真实验证子进程生命周期（退出码、SIGTERM、超时、
+ * 孤儿进程与进程组清理），又不会消耗额度或依赖本机装没装 pi。
  *
  * 用法: npm run test:pi
  */
@@ -33,7 +33,7 @@ function section(name) {
   console.log(`\n[${name}]`)
 }
 
-/** 冒充 pi 的脚本：按环境变量决定输出正常结果 / 失败 / 挂住 */
+/** 冒充 pi 的脚本：按环境变量决定输出正常结果 / 失败 / 挂住 / 留孤儿进程 */
 const FAKE_PI = `
 const mode = process.env.OCB_TEST_PI_MODE || 'normal'
 if (mode === 'version') { console.log('pi 1.2.3'); process.exit(0) }
@@ -45,7 +45,17 @@ emit({ type: 'session', id: 'fake', cwd: process.cwd() })
 emit({ type: 'agent_start' })
 emit({ type: 'message_update', usage, assistantMessageEvent: { type: 'text_start', contentIndex: 0 } })
 emit({ type: 'message_update', usage, assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'HEL' } })
-if (mode === 'hang') { setInterval(() => {}, 1000); process.stdout.write(''); }
+if (mode === 'hang') { setInterval(() => {}, 1000); process.stdout.write('') }
+else if (mode === 'orphan') {
+  // 模拟 pi 的 bash 工具留下的长驻子进程：继承 stdout/stderr，不随父进程退出，
+  // 存活 OCB_TEST_ORPHAN_LIFE_MS 毫秒后写一个标记文件，用来验证它到底有没有被杀掉
+  const { spawn } = require('node:child_process')
+  const life = Number(process.env.OCB_TEST_ORPHAN_LIFE_MS) || 3000
+  spawn(process.execPath, ['-e', 'setTimeout(() => require("node:fs").writeFileSync(process.env.OCB_TEST_ORPHAN_MARKER, "survived"), ' + life + ')'],
+    { stdio: ['ignore', 'inherit', 'inherit'] })
+  setInterval(() => {}, 1000)
+  process.stdout.write('')
+}
 else {
   emit({ type: 'message_update', usage, assistantMessageEvent: { type: 'text_end', contentIndex: 0, content: 'HELLO' } })
   emit({ type: 'message_end', message: { role: 'assistant',
@@ -57,11 +67,12 @@ else {
 `
 
 let currentMode = 'normal'
+let forceMode = null
 const calls = []
 /** 把 (bin, args, opts) 换成「跑 FAKE_PI 的 node 子进程」 */
 function fakeSpawn(bin, args, opts = {}) {
   calls.push({ bin, args, opts })
-  const mode = args.includes('--version') ? 'version' : currentMode
+  const mode = forceMode || (args.includes('--version') ? 'version' : currentMode)
   return spawn(process.execPath, ['-e', FAKE_PI], {
     ...opts,
     env: { ...(opts.env || process.env), OCB_TEST_PI_MODE: mode },
@@ -228,6 +239,59 @@ const main = async () => {
     ok(timed.ok === false, '超时返回失败')
     ok(collect(events, s.id).status === 'failed', '超时 → RunState failed')
     ok(String(events.at(-1).data.error.message).includes('分钟'), '超时文案说明可调 timeoutMs')
+  }
+
+  section('孤儿进程不再拖住收尾')
+  {
+    // 评审实测复现：pi 的 bash 工具留下长驻子进程，持有继承来的 stdout/stderr。
+    // 修复前收尾听 close，要等孤儿退出，中断后 29 秒才发 interrupted。
+    const b = makeBackend()
+    const s = await b.createSession({ title: '孤儿进程', directory: root })
+    const marker = join(root, 'orphan-marker-a')
+    process.env.OCB_TEST_ORPHAN_MARKER = marker
+
+    currentMode = 'orphan'
+    let events = []
+    b.subscribe((ev) => events.push(ev), () => {})
+    const t0 = Date.now()
+    const pending = b.prompt(s.id, '挂着')
+    await new Promise((r) => setTimeout(r, 150))
+    ok(await b.interrupt(s.id), 'interrupt 找得到在跑的子进程')
+    await pending
+    const elapsed = Date.now() - t0
+    ok(elapsed < 1500, `有孤儿进程时中断也秒级收尾（实际 ${elapsed}ms，修复前要等孤儿退出）`)
+    ok(collect(events, s.id).status === 'aborted', '主动中止 → aborted')
+    ok(events.at(-1).type === 'session.execution.interrupted', '发出 execution.interrupted')
+    // 进程组一起杀掉：孤儿进程到点也不会写标记文件
+    await new Promise((r) => setTimeout(r, 3000))
+    ok(!existsSync(marker), 'kill 的是整个进程组，孤儿进程没有活下来')
+    delete process.env.OCB_TEST_ORPHAN_MARKER
+
+    // 超时路径同样 kill 进程组、同样秒级收尾（cfg.timeoutMs = 800）
+    const marker2 = join(root, 'orphan-marker-b')
+    process.env.OCB_TEST_ORPHAN_MARKER = marker2
+    events = []
+    b.subscribe((ev) => events.push(ev), () => {})
+    const t1 = Date.now()
+    const timed = await b.prompt(s.id, '超时')
+    ok(timed.ok === false, '超时返回失败')
+    ok(Date.now() - t1 < 2500, `有孤儿进程时超时也秒级收尾（实际 ${Date.now() - t1}ms）`)
+    ok(collect(events, s.id).status === 'failed', '超时 → RunState failed')
+    await new Promise((r) => setTimeout(r, 2500))
+    ok(!existsSync(marker2), '超时也 kill 整个进程组')
+    delete process.env.OCB_TEST_ORPHAN_MARKER
+
+    // _runOnce（health 检查走的同一条路）也不再被孤儿进程拖住：
+    // 孤儿比 5 秒超时活得久，修复前 health 要等孤儿退出才返回
+    forceMode = 'orphan'
+    process.env.OCB_TEST_ORPHAN_LIFE_MS = '10000'
+    const b2 = makeBackend()
+    const t2 = Date.now()
+    const h = await b2.health()
+    ok(h.ok === true, 'health 仍然返回 ok')
+    ok(Date.now() - t2 < 8000, `health 不再被孤儿进程拖过 5 秒超时（实际 ${Date.now() - t2}ms）`)
+    forceMode = null
+    delete process.env.OCB_TEST_ORPHAN_LIFE_MS
   }
 
   section('卡片按后端能力降级')
