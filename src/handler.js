@@ -746,8 +746,47 @@ export class Bridge {
           )
         }
         case 'abort': {
-          await this.oc.interrupt(a.s)
-          return { toast: { type: 'success', content: '已发送中止请求' } }
+          const stopped = await this.oc.interrupt(a.s)
+          /**
+           * 不能只发中断就完事。
+           *
+           * 以前这里只 `await interrupt` + 一个 toast，卡片靠 opencode 回吐的
+           * abort 事件来更新。但会话已经结束、或桥接重启过之后，那个事件永远
+           * 不会来了 —— 用户点了「中止」，toast 说成功，卡片上却还写着「正在
+           * 等待模型响应…」，完全没法判断到底停没停。所以这里自己动手改卡片。
+           */
+          const run = this.runs.get(a.s)
+          if (run) {
+            run.state.status = 'aborted'
+            run.state.updatedAt = Date.now()
+            this.flushRun(a.s)
+            return { toast: { type: 'success', content: '已中止' } }
+          }
+          if (messageId) {
+            // 内存里已经没有这个 run 了，说明是上个进程留下的僵尸卡片
+            const st = new RunState(a.s || 'ses_unknown')
+            st.status = 'aborted'
+            st.startedAt = Date.now()
+            st.updatedAt = Date.now()
+            st.text =
+              '这条执行已经中断了（桥接进程重启过，或它早就结束了），没有正在跑的任务。\n\n' +
+              '重新发一句就能开新的。'
+            const binding = this.store.get(key)
+            await this.t
+              .patchCard(
+                messageId,
+                runCard(st, {
+                  directory: binding?.directory,
+                  title: '飞书',
+                  key,
+                  rootId: replyTo,
+                  isGroup: Boolean(replyTo),
+                }),
+              )
+              .catch((e) => this.log.warn?.(`中止后更新卡片失败: ${e.message}`))
+            return { toast: { type: 'info', content: stopped ? '已中止' : '这条早就不在跑了' } }
+          }
+          return { toast: { type: 'success', content: '已中止' } }
         }
         case 'perm': {
           await this.oc.replyPermission(a.s, a.r, a.d)

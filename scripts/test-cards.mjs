@@ -758,6 +758,65 @@ if (process.argv.includes('--live')) {
   unlinkSync(path)
 }
 
+// ---------- 6.10 中止按钮必须给卡片一个交代 ----------
+{
+  const { Bridge } = await import('../src/handler.js')
+  const { RunState } = await import('../src/render.js')
+  const patches = []
+
+  const mk = (withRun) => {
+    const b = new Bridge({
+      oc: { interrupt: async () => true },
+      store: { get: () => ({ directory: '/tmp', chatId: 'oc_g', replyTo: 'om_1' }), set() {}, clearInflight() {} },
+      config: { behavior: { streamIntervalMs: 0 }, feishu: { allowlist: [] } },
+      transport: { patchCard: async (id, card) => patches.push({ id, card }), sendCard: async () => 'x' },
+      logger: { info() {}, warn() {}, error() {} },
+    })
+    if (withRun) {
+      const st = new RunState('ses_a')
+      st.status = 'running'
+      st.startedAt = Date.now() - 8000
+      st.updatedAt = Date.now()
+      b.runs.set('ses_a', {
+        state: st,
+        cardId: 'card_a',
+        chatId: 'oc_g',
+        replyTo: 'om_1',
+        timer: null,
+        lastFlush: 0,
+        meta: { directory: '/tmp', title: '飞书', key: 'root:om_1', rootId: 'om_1', isGroup: true },
+      })
+    }
+    return b
+  }
+
+  const live = mk(true)
+  const r1 = await live.onCardAction({
+    chatId: 'oc_g',
+    userId: 'ou_u',
+    messageId: 'card_a',
+    action: { a: 'abort', s: 'ses_a', k: 'root:om_1', rt: 'om_1' },
+  })
+  await new Promise((r) => setTimeout(r, 30))
+  ok(r1?.toast?.content === '已中止', '有正在跑的 run 时，toast 说已中止')
+  ok(patches.length === 1 && patches[0].id === 'card_a', '立刻把卡片刷成终态，不等 opencode 事件')
+  ok(/已中止/.test(JSON.stringify(patches[0].card)), '卡片状态确实是已中止')
+
+  // 僵尸卡片：内存里没有 run，但按钮还挂着
+  patches.length = 0
+  const zombie = mk(false)
+  const r2 = await zombie.onCardAction({
+    chatId: 'oc_g',
+    userId: 'ou_u',
+    messageId: 'card_zombie',
+    action: { a: 'abort', s: 'ses_gone', k: 'root:om_1', rt: 'om_1' },
+  })
+  await new Promise((r) => setTimeout(r, 30))
+  ok(patches.length === 1 && patches[0].id === 'card_zombie', '僵尸卡片点中止也会原地改写，不再纹丝不动')
+  ok(/中断/.test(JSON.stringify(patches[0]?.card || {})), '僵尸卡片上写明已经中断、没有正在跑的任务')
+  ok(/早就不在跑|已中止/.test(r2?.toast?.content || ''), 'toast 不再谎报「已发送中止请求」', r2?.toast?.content)
+}
+
 // ---------- 7. 按钮要带上话题上下文 ----------
 {
   const st = new RunState('ses_a')
