@@ -1,5 +1,6 @@
-import { readFileSync, writeFileSync, renameSync, existsSync } from 'node:fs'
-import { STATE_PATH, ensureConfigDir } from './config.js'
+import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from 'node:fs'
+import { dirname } from 'node:path'
+import { STATE_PATH } from './config.js'
 
 const VERSION = 1
 
@@ -18,7 +19,9 @@ export class Store {
   }
 
   load() {
-    ensureConfigDir()
+    // 建 this.path 自己的目录，不是全局 CONFIG_DIR：测试和多实例都会传自定义路径，
+    // 用全局目录会在 path 落在别处时写不进去（ENOENT）。
+    mkdirSync(dirname(this.path), { recursive: true })
     if (!existsSync(this.path)) return
     try {
       const raw = JSON.parse(readFileSync(this.path, 'utf8'))
@@ -115,7 +118,7 @@ export class Store {
 
   flush() {
     if (!this.dirty) return
-    ensureConfigDir()
+    mkdirSync(dirname(this.path), { recursive: true })
     const tmp = this.path + '.tmp'
     writeFileSync(tmp, JSON.stringify(this.data, null, 2), 'utf8')
     renameSync(tmp, this.path)
