@@ -165,9 +165,40 @@ npm run init -- --app-id=cli_xx --app-secret=yy     # 顺手把凭证填好
 ### 3. 填配置
 
 ```bash
-npm run init          # 从 config.example.json 生成一份到 .config/opencode-feishu-bridge/
-open .config/opencode-feishu-bridge/config.json
+npm run init
 ```
+
+在终端里跑会进交互向导，问四个问题：
+
+```
+App ID: cli_aa265fc890b99bc0
+App Secret: ****
+验证凭证… ✅ Lil_O
+   机器人 open_id ou_26dd…（自动填进 feishu.botOpenId）
+你自己的 open_id（可留空，留空则谁私聊机器人都能用）: ou_4c8f…
+默认工作目录: /Users/you
+```
+
+三件手工做很烦的事它替你做了：
+
+- **输完立刻验证凭证**。填错当场报 `code=10003` 并提示「App ID 和 App Secret 别贴反」，不用等第一次发消息才发现。
+- **自动填 `feishu.botOpenId`**。多机器人同群时靠它分辨「@ 的是不是我」，取不到就会退化成「@ 谁都算」，互相抢答。
+- **顺手写白名单**。省掉「先跑起来、看日志、再回来改 JSON」那一圈。
+
+不想交互（CI、脚本），用参数：
+
+```bash
+npm run init -- --app-id=cli_xx --app-secret=yy   # 只问剩下的
+npm run init -- --no-input                        # 只铺模板，什么都不问
+```
+
+拿到 open_id 时配置往往已经存在了，为加一个 id 重跑向导太蠢，所以单独给了个命令：
+
+```bash
+npm run init -- --add-allow=ou_你的openid
+```
+
+生成的 `config.json` 长这样（也可以直接编辑它）：
 
 ```json
 {
@@ -176,7 +207,8 @@ open .config/opencode-feishu-bridge/config.json
     "appSecret": "你的 App Secret",
     "domain": "feishu",
     "allowlist": ["ou_你的open_id"],
-    "requireMention": true
+    "requireMention": true,
+    "botOpenId": "ou_机器人自己的open_id"
   },
   "opencode": {
     "url": "http://127.0.0.1:19876",
@@ -207,7 +239,13 @@ open .config/opencode-feishu-bridge/config.json
 
   `npm run doctor` 会校验你填的这个在不在列表里。
 
-- **`allowlist` 强烈建议填**。空数组等于谁私聊机器人都能操作本机的 shell 和文件。填自己的 `open_id`，获取方法：先留空跑起来，给机器人发条消息，控制台日志里会打印「拒绝非白名单用户」，从里面拿到 id。
+- **`allowlist` 强烈建议填**。空数组等于谁私聊机器人都能操作本机的 shell 和文件。填自己的 `open_id`，获取方法：先留空跑起来，给机器人发条消息，控制台日志里会打印「拒绝非白名单用户」，从里面拿到 id，然后用一条命令加进去——不用再去编辑 JSON：
+
+  ```bash
+  npm run init -- --add-allow=ou_你的openid
+  ```
+
+  向导里也可以直接填，就不用跑这两步。
 
 ### 4. 体检
 
