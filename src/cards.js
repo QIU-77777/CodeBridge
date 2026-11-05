@@ -231,7 +231,7 @@ export function runCard(state, meta = {}) {
   footer.push(button('会话列表', { a: 'sessions', ...nav }, 'default'))
   elements.push(buttonRow(footer))
 
-  elements.push(note(usage.length ? `${usage.join(' · ')}　｜　${help}` : help))
+  elements.push(note(usage.length ? `${usage.join(' · ')}｜${help}` : help))
 
   // 状态写进标题：光靠一个 emoji 看不出「还在跑」还是「已经停了」，
   // 尤其是流式过程中卡片本来就在一直变，用户需要一个明确的状态词。

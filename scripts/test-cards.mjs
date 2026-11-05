@@ -144,6 +144,7 @@ ok(size < 30_000, `runCard 序列化 < 30KB（${size} 字节）`)
   ok(line.includes('in 1200') && line.includes('out 340'), '后缀带 in/out')
   ok(line.includes('$0.0123'), '后缀带金额')
   ok(line.includes('｜') && line.includes('/help'), '用量和帮助在同一行，用 ｜ 隔开')
+  ok(line.includes('$0.0123｜@我'), '｜ 前后不留空格')
   ok(
     line.indexOf('out 340') < line.indexOf('$0.0123') && line.indexOf('$0.0123') < line.indexOf('｜'),
     '顺序是 in · out · 金额 ｜ 帮助',
