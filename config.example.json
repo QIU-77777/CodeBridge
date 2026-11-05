@@ -1,0 +1,25 @@
+{
+  "feishu": {
+    "appId": "cli_xxxxxxxxxxxxxxxx",
+    "appSecret": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "domain": "feishu",
+    "allowlist": [],
+    "requireMention": true,
+    "botOpenId": "",
+    "names": {}
+  },
+  "opencode": {
+    "url": "http://127.0.0.1:19876",
+    "password": "",
+    "defaultDirectory": "",
+    "defaultModel": ""
+  },
+  "behavior": {
+    "streamIntervalMs": 1800,
+    "showReasoning": false,
+    "showTools": false,
+    "maxBodyChars": 6000,
+    "idleTimeoutMs": 900000,
+    "maxParallel": 2
+  }
+}

@@ -18,7 +18,6 @@
 | 权限审批 | opencode 要读 `.env`、动敏感文件时，飞书弹卡片，点允许一次/总是/拒绝 |
 | 模型切换 | `/model` `/agent` 在线换，不用重启 |
 | 多项目 | `/cd` 换目录，每个目录一份独立会话列表 |
-| 话题群 | 群里一条话题一个会话，回复落在话题里，话题之间并行 |
 | 群里并行 | 群里每 @ 它一次就在下面开一条话题，一条话题一个会话，多条话题同时跑；只响应 @ 它自己的消息 |
 | 免公网 | 走长连接，不需要公网 IP、不需要内网穿透 |
 
@@ -130,7 +129,8 @@ curl -s -u opencode:my-secret-123 http://127.0.0.1:19876/api/info
 
 ```
 opencode-feishu-bridge/
-└── .config/opencode-feishu-bridge/
+├── config.example.json              ← 模板，入库，只有占位符
+└── .config/opencode-feishu-bridge/  ← 首次 npm run init 生成，不入库
     ├── config.json      ← 你的配置（含 appSecret）
     ├── state.json       ← 会话绑定、攒到的名字、未收尾的卡片
     └── bridge.lock      ← 单实例锁
@@ -138,11 +138,24 @@ opencode-feishu-bridge/
 
 > ⚠️ **`.config/` 已经在 `.gitignore` 里，永远不要 `git add -f`。** 里面有 `appSecret`，一旦推上去等于把机器人交给所有人。
 
+所以 **clone 下来没有 `.config/` 目录是正常的**，不是漏了文件。模板单独放在仓库根的 `config.example.json`（不含任何真实密钥、可安全入库），用一条命令铺开：
+
+```bash
+npm run init                                        # 铺到项目内（推荐）
+npm run init -- --home                              # 铺到 ~/.config
+npm run init -- --app-id=cli_xx --app-secret=yy     # 顺手把凭证填好
+```
+
+已经存在 `config.json` 时它不会覆盖，只提示；确实要重来加 `--force`，会先备份成 `config.json.bak`。
+
+思路是「结构入库、密钥不入库」：目录结构和每个字段的含义需要有人告诉你，`config.example.json` 承担这件事；而 `appSecret` 和 `state.json` 只属于这台机器，`.config/` 整体排除最省心——不用逐个文件写例外规则，也就没有「哪天加个新文件忘了 ignore」的风险。
+
 三个入口（`npm start`、`scripts/*.sh`、`scripts/probe-*.mjs`）用的是同一套解析规则，不会出现「命令读 A、桥接读 B」的情况。
 
 ### 3. 填配置
 
 ```bash
+npm run init          # 从 config.example.json 生成一份到 .config/opencode-feishu-bridge/
 open .config/opencode-feishu-bridge/config.json
 ```
 
@@ -436,7 +449,7 @@ npm run probe:names <chat_id>
 2. **同一会话任务串行。** 上一条没结束，新消息会被拒绝，不会排队。
 3. **卡片更新有 1~2 秒间隔**，不是逐字打字机效果。飞书 patch 接口有频率限制，调快会被限流。
 4. **桥接进程必须活着。** 合盖休眠、断网、退出终端，机器人都失效。要真常驻得配 launchd 或找台常开的机器。
-5. **群聊里所有人共用一个绑定。** 没有按用户区分会话的机制。
+5. **同一条话题里的所有人共用一个绑定。** 按话题隔离，不按人隔离。
 
 ---
 
@@ -456,7 +469,7 @@ npm run dry
 npm run selftest -- --model stepfun-step-plan/step-5-preview
 ```
 
-会真实建会话、发 prompt、删会话，覆盖 serve 连通、状态持久化、流式聚合、增量 patch、历史消息不被覆盖、全部命令、卡片回调、白名单拦截。
+会真实建会话、发 prompt、删会话，覆盖 serve 连通、状态持久化、流式聚合、增量 patch、历史消息不被覆盖、全部命令、卡片回调、白名单拦截、话题内回复、@ 判定。
 
 ---
 
