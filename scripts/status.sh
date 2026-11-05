@@ -19,8 +19,10 @@ fi
 echo
 echo "=== 桥接进程"
 UID_NUM="$(id -u)"
-if [ -f "$HOME/Library/LaunchAgents/ai.qiguang.ocbridge.app.plist" ]; then
-  if launchctl print "gui/$UID_NUM/ai.qiguang.ocbridge.app" >/dev/null 2>&1; then
+LABEL_APP="$(ocb_label app)"
+if [ -n "${OCB_INSTANCE:-}" ]; then echo "   实例: $OCB_INSTANCE  ($LABEL_APP)"; fi
+if [ -f "$HOME/Library/LaunchAgents/$LABEL_APP.plist" ]; then
+  if launchctl print "gui/$UID_NUM/$LABEL_APP" >/dev/null 2>&1; then
     BPID=$(pgrep -f "node .*src/index.js" | head -1)
     if [ -n "$BPID" ]; then
       echo "   ✅ 运行中  pid=$BPID  已跑 $(ps -o etime= -p "$BPID" | tr -d ' ')  （launchd 托管）"

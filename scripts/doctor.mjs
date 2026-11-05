@@ -4,8 +4,9 @@
  * 用法: npm run doctor
  */
 import { existsSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { loadConfig, CONFIG_PATH, STATE_PATH } from '../src/config.js'
-import { OpencodeClient } from '../src/oc.js'
+import { createBackend, capabilitiesFor } from '../src/backend.js'
 import { Store } from '../src/store.js'
 import { resolveOpencode, SOURCE_LABEL } from '../src/which-opencode.js'
 
@@ -34,7 +35,7 @@ async function withRetry(fn, times = 20) {
 }
 
 async function main() {
-  line('\n=== opencode ⇄ 飞书 桥接 环境体检 ===\n')
+  line('\n=== 飞书桥接 环境体检 ===\n')
 
   // 1. Node
   line('[Node]')
@@ -71,8 +72,10 @@ async function main() {
     line(`   ${okMark} allowlist ${cfg.feishu.allowlist.length} 个用户`)
   }
 
-  // 3. opencode
-  line('\n[opencode serve]')
+  // 3. 后端。opencode 要连常驻 serve，pi 只要 CLI 能跑。
+  const caps = capabilitiesFor(cfg)
+  line(`\n[后端 ${caps.label}]`)
+  if (caps.type === 'opencode') {
   const picked = resolveOpencode()
   if (picked) {
     line(`   ${okMark} 将用 ${SOURCE_LABEL[picked.source]} v${picked.version || '?'}`)
@@ -82,7 +85,7 @@ async function main() {
     line('      装桌面版 OpenCode.app，或用 OPENCODE_BIN 指定一个')
   }
 
-  const oc = new OpencodeClient({ url: cfg.opencode.url, password: cfg.opencode.password, logger: { warn: () => {} } })
+  const oc = createBackend(cfg, { logger: { warn: () => {} } })
   let healthy = false
   try {
     const h = await oc.health()
@@ -134,6 +137,18 @@ async function main() {
     } catch (err) {
       problem(`枚举模型/agent 失败: ${err.message}`)
     }
+  }
+  } else {
+    const bin = cfg.backend.pi.bin || 'pi'
+    const r = spawnSync(bin, ['--version'], { encoding: 'utf8', timeout: 8000 })
+    if (r.error || r.status !== 0) {
+      problem(`跑不起来 ${bin}：${r.error?.message || (r.stderr || '').trim().slice(0, 200)}`)
+      line('      检查 backend.pi.bin，或用绝对路径；pi 后端不需要 opencode serve')
+    } else {
+      line(`   ${okMark} ${bin} ${(r.stdout || '').trim().split('\n')[0] || '?'}`)
+    }
+    line(`   ${okMark} 一次性执行：跑完把最终结果更新到同一张卡片`)
+    line('      会话文件写在 <配置目录>/pi-sessions，首次执行时自动创建')
   }
 
   // 4. 状态文件

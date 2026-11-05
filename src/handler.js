@@ -23,11 +23,14 @@ export class Bridge {
    * @param {object} opts.config
    * @param {object} opts.transport  sendCard/patchCard/sendText
    */
-  constructor({ oc, store, config, transport, logger = console }) {
+  constructor({ oc, store, config, transport, capabilities = {}, logger = console }) {
+    // oc 只是历史变量名：现在是 createBackend() 给的后端，可能是 opencode，
+    // 也可能是一次性子进程（pi）。两者实现同一组方法 + 同形状的 SSE 事件。
     this.oc = oc
     this.store = store
     this.cfg = config
     this.t = transport
+    this.caps = capabilities
     this.log = logger
 
     /** @type {Map<string, {state: RunState, cardId: string|null, chatId: string, timer: any, lastFlush: number, meta: object}>} */
@@ -49,8 +52,9 @@ export class Bridge {
     this.stopEvents = this.oc.subscribe(
       (ev) => this.onEvent(ev),
       (s) => {
-        if (s.connected) this.log.info('opencode 事件流已连接')
-        else this.log.warn(`opencode 事件流断开: ${s.reason || ''}`)
+        const label = this.caps.label || 'opencode'
+        if (s.connected) this.log.info(`${label} 后端已就绪`)
+        else this.log.warn(`${label} 事件通道断开: ${s.reason || ''}`)
       },
     )
     // 看门狗：事件流静默太久就判定卡死，否则卡片会永远停在「执行中」
@@ -134,6 +138,14 @@ export class Bridge {
   onEvent(ev) {
     const sid = ev?.data?.sessionID
     if (!sid) return
+
+    // 一次性后端只有跑完才知道真实模型（pi 写在 message_end 里），
+    // 用它补上卡片前缀；opencode 后端不发这个事件，无副作用。
+    if (ev.type === 'backend.meta' && ev.data?.model) {
+      const run = this.runs.get(sid)
+      if (run) run.meta.model = ev.data.model
+      return
+    }
 
     // 权限请求：立即推卡片，不等事件聚合
     if (ev.type?.startsWith('session.permission.')) {
@@ -384,7 +396,7 @@ export class Bridge {
     switch (name) {
       case 'help':
       case '?':
-        return this.t.sendCard(ctx.chatId, helpCard(), { replyTo: ctx.replyTo })
+        return this.t.sendCard(ctx.chatId, helpCard(this.caps), { replyTo: ctx.replyTo })
 
       case 'new':
         return this.cmdNew(ctx, arg)
@@ -557,6 +569,7 @@ export class Bridge {
         binding,
         directory: this.lastEnv?.directory,
         server: health,
+        backendLabel: this.caps.label || 'opencode',
         k: ctx.key,
         rt: ctx.replyTo,
       }),
@@ -637,6 +650,13 @@ export class Bridge {
   }
 
   async cmdAgent(ctx, arg) {
+    if (this.caps.agents === false) {
+      return this.t.sendText(
+        ctx.chatId,
+        `${this.caps.label} 后端没有 opencode 的 agent 概念。要换模型用 /model，要改行为改 backend 配置。`,
+        { replyTo: ctx.replyTo },
+      )
+    }
     const binding = this.store.get(ctx.key)
     if (!binding?.sessionId) {
       return this.t.sendText(ctx.chatId, '当前没有绑定会话，先 /new', { replyTo: ctx.replyTo })
@@ -789,6 +809,9 @@ export class Bridge {
           return { toast: { type: 'success', content: '已中止' } }
         }
         case 'perm': {
+          if (this.caps.permissions === false) {
+            return { toast: { type: 'info', content: `${this.caps.label} 后端没有交互式授权` } }
+          }
           await this.oc.replyPermission(a.s, a.r, a.d)
           const label = a.d === 'reject' ? '已拒绝' : a.d === 'always' ? '已允许（永久）' : '已允许一次'
           return replyNew({ type: 'success', content: label }, textCard('🔐 授权已处理', label, a.d === 'reject' ? 'red' : 'green'))
@@ -807,7 +830,7 @@ export class Bridge {
   // ---------- 工具 ----------
 
   async createAndBind(ctx, directory) {
-    const model = this.cfg.opencode.defaultModel
+    const model = this.cfg.opencode.defaultModel || this.cfg.backend?.pi?.model || ''
     let modelRef
     if (model) {
       const [providerID, ...idParts] = model.split('/')

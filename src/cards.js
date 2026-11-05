@@ -321,10 +321,10 @@ export function permissionCard({ request, sessionTitle, k = '', rt = '' }) {
   ])
 }
 
-export function statusCard({ session, binding, directory, server, k = '', rt = '' }) {
+export function statusCard({ session, binding, directory, server, backendLabel = 'opencode', k = '', rt = '' }) {
   const nav = navOf({ k, rt })
   const lines = [
-    `**opencode** ${server?.version ? `v${server.version}` : '未知'} ${server?.ok ? '🟢' : '🔴'}`,
+    `**${backendLabel}** ${server?.version ? `v${server.version}` : '未知'} ${server?.ok ? '🟢' : '🔴'}`,
     `**绑定会话** ${binding?.sessionId ? `\`${binding.sessionId}\`` : '未绑定（发送 /new 新建）'}`,
     `**工作目录** \`${shortDir(binding?.directory || directory)}\``,
   ]
@@ -345,12 +345,19 @@ export function statusCard({ session, binding, directory, server, k = '', rt = '
   ])
 }
 
-export function helpCard() {
+export function helpCard(caps = {}) {
+  const label = caps.label || 'opencode'
+  const oneShot = Boolean(caps.oneShot)
   const body = [
     '**对话**',
     '群里：每句话都要 @我 再说内容，没 @ 的消息我收不到（会直接丢弃）。',
     '私聊：直接发消息就行。',
     '内容会发给当前绑定的会话。',
+  ]
+  if (oneShot) {
+    body.push('', `**${label} 是一次性执行**`, '发出后卡片先显示「执行中」，跑完一次性把结果更新到同一张卡片上，中途不刷新正文。')
+  }
+  body.push(
     '',
     '**会话**',
     '`/new [目录]` 新建会话并绑定（目录省略则用默认目录）',
@@ -364,8 +371,8 @@ export function helpCard() {
     '`/stop` 中止当前执行',
     '`/status` 查看绑定与服务器状态',
     '`/model` 列出模型，`/model <序号>` 切换',
-    '`/agent` 列出 agent，`/agent <名字>` 切换',
-    '`/help` 本帮助',
-  ].join('\n')
-  return textCard('🤖 opencode 桥接', body, 'wathet')
+  )
+  if (caps.agents !== false) body.push('`/agent` 列出 agent，`/agent <名字>` 切换')
+  body.push('`/help` 本帮助')
+  return textCard(`🤖 ${label} 桥接`, body.join('\n'), 'wathet')
 }

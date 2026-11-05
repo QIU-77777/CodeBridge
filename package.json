@@ -11,6 +11,7 @@
     "start": "node src/index.js",
     "init": "node scripts/init.mjs",
     "test:init": "node scripts/test-init.mjs",
+    "test:pi": "node scripts/test-pi.mjs",
     "dry": "node src/index.js --dry",
     "selftest": "node scripts/selftest.mjs",
     "doctor": "node scripts/doctor.mjs",

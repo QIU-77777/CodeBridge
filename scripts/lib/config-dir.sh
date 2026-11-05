@@ -20,3 +20,15 @@ ocb_config_dir() {
   fi
   printf '%s\n' "$HOME/.config/opencode-feishu-bridge"
 }
+
+# launchd 服务名。多个机器人同机部署时，第二个实例如果不换 label，
+# install-agent.sh 的 bootout 会把第一个实例一起停掉。
+# 用法: ocb_label serve   →  ai.qiguang.ocbridge[.<实例>].serve
+ocb_label() {
+  local part="$1"
+  if [ -n "${OCB_INSTANCE:-}" ]; then
+    printf 'ai.qiguang.ocbridge.%s.%s' "$OCB_INSTANCE" "$part"
+  else
+    printf 'ai.qiguang.ocbridge.%s' "$part"
+  fi
+}

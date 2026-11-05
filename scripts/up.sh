@@ -9,12 +9,14 @@ mkdir -p logs
 # 装了 launchd agent 的话，别在这儿再起一份（桥接有单实例锁，起来会互相打架）。
 # agent 自己会常驻、会自启，重启用 kickstart。
 UID_NUM="$(id -u)"
-AGENT_LABELS="ai.qiguang.ocbridge.serve ai.qiguang.ocbridge.app"
+LABEL_APP="$(ocb_label app)"
+AGENT_LABELS="$(ocb_label serve) $LABEL_APP"
 agent_installed() { [ -f "$HOME/Library/LaunchAgents/$1.plist" ]; }
 agent_loaded() { launchctl print "gui/$UID_NUM/$1" >/dev/null 2>&1; }
 
-if agent_installed ai.qiguang.ocbridge.app; then
+if agent_installed "$LABEL_APP"; then
   for label in $AGENT_LABELS; do
+    agent_installed "$label" || continue
     if agent_loaded "$label"; then
       launchctl kickstart -k "gui/$UID_NUM/$label" >/dev/null 2>&1
     else
@@ -48,7 +50,11 @@ PW=$(read_cfg "c.opencode.password")
 URL=$(read_cfg "c.opencode.url")
 PORT=$(echo "$URL" | sed -E 's|.*:([0-9]+).*|\1|')
 
-echo "=== opencode ⇄ 飞书 桥接 启动 ==="
+BACKEND_TYPE=$(node -e "try{console.log((require('$CONFIG').backend||{}).type||'opencode')}catch{console.log('opencode')}" 2>/dev/null || echo opencode)
+echo "=== $BACKEND_TYPE ⇄ 飞书 桥接 启动 ==="
+
+# pi / dsh 是一次性子进程，不需要 opencode serve，也不该要求本机装了 opencode
+if [ "$BACKEND_TYPE" = "opencode" ]; then
 
 # 0. 选 opencode 可执行文件：桌面版自带 CLI 优先（与桌面版同版本、同数据库）
 IFS=$'\t' read -r OC_BIN OC_VER OC_SRC <<< "$(node scripts/which-opencode.mjs --tsv)" || true
@@ -85,6 +91,9 @@ else
     fi
     [ "$i" = "30" ] && { echo "❌ serve 30 秒未就绪，看 logs/serve.log"; exit 1; }
   done
+fi
+else
+  echo "→ 后端 $BACKEND_TYPE：跳过 opencode serve"
 fi
 
 # 2. 桥接

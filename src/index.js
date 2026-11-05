@@ -4,7 +4,7 @@ import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from '
 import { join, dirname } from 'node:path'
 import { loadConfig, writeExampleConfig, CONFIG_PATH, CONFIG_DIR } from './config.js'
 import { Store } from './store.js'
-import { OpencodeClient } from './oc.js'
+import { createBackend, capabilitiesFor } from './backend.js'
 import { Bridge } from './handler.js'
 
 const argv = process.argv.slice(2)
@@ -109,12 +109,16 @@ class DryTransport {
   }
 }
 
-function printBanner(cfg) {
+function printBanner(cfg, caps) {
+  const backendLine =
+    caps.type === 'opencode'
+      ? `  opencode : ${cfg.opencode.url}`
+      : `  ${caps.label}     : ${cfg.backend.pi.bin}${cfg.backend.pi.model ? ` (${cfg.backend.pi.model})` : ''}`
   console.log(`
 ┌──────────────────────────────────────────────┐
-│  opencode ⇄ 飞书 桥接${DRY ? '（dry 模式：不连飞书）' : '                        '}│
+│  ${caps.label} ⇄ 飞书 桥接${DRY ? '（dry 模式：不连飞书）' : '                        '}│
 └──────────────────────────────────────────────┘
-  opencode : ${cfg.opencode.url}
+${backendLine}
   配置     : ${CONFIG_PATH}
   默认目录 : ${cfg.opencode.defaultDirectory}
 `)
@@ -138,22 +142,28 @@ ${created ? '   已为你生成模板，请填入 appId / appSecret。\n' : '   
     process.exit(1)
   }
 
-  printBanner(cfg)
+  const caps = capabilitiesFor(cfg)
+  printBanner(cfg, caps)
 
   const store = new Store()
-  const oc = new OpencodeClient({ url: cfg.opencode.url, password: cfg.opencode.password })
+  const oc = createBackend(cfg)
   const transport = DRY ? new DryTransport() : null
 
-  const bridge = new Bridge({ oc, store, config: cfg, transport })
+  const bridge = new Bridge({ oc, store, config: cfg, transport, capabilities: caps })
 
-  // 健康检查
+  // 健康检查。opencode 是连 HTTP 服务，pi 是确认 CLI 能跑起来。
   try {
     const h = await oc.health()
-    console.log(`✅ opencode serve 连通，版本 v${h.version}，pid ${h.pid}`)
+    console.log(`✅ ${caps.label} 后端就绪，版本 ${h.version || '?'}`)
   } catch (err) {
-    console.error(`❌ 连不上 opencode serve (${cfg.opencode.url}): ${err.message}`)
-    console.error(`   请先启动：opencode serve --port 19876 --hostname 127.0.0.1`)
-    if (cfg.opencode.password) console.error(`   密码已从配置读取，检查是否与 OPENCODE_SERVER_PASSWORD 一致`)
+    if (caps.type === 'opencode') {
+      console.error(`❌ 连不上 opencode serve (${cfg.opencode.url}): ${err.message}`)
+      console.error(`   请先启动：opencode serve --port 19876 --hostname 127.0.0.1`)
+      if (cfg.opencode.password) console.error(`   密码已从配置读取，检查是否与 OPENCODE_SERVER_PASSWORD 一致`)
+    } else {
+      console.error(`❌ ${caps.label} 后端不可用: ${err.message}`)
+      console.error(`   检查 backend.pi.bin 指向的 CLI 是否存在、能否执行。`)
+    }
     process.exit(1)
   }
 

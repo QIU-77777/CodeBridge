@@ -1,11 +1,16 @@
 #!/bin/bash
 # 停止桥接与 serve
-cd "$(dirname "$0")/.." || exit 1
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT" || exit 1
+. "$ROOT/scripts/lib/config-dir.sh"
+LABEL_APP="$(ocb_label app)"
+LABEL_SERVE="$(ocb_label serve)"
 
 # 由 launchd 托管的话，bootout 它就是「停止」；下次 ./scripts/up.sh 会再 bootstrap
 UID_NUM="$(id -u)"
-if [ -f "$HOME/Library/LaunchAgents/ai.qiguang.ocbridge.app.plist" ]; then
-  for label in ai.qiguang.ocbridge.app ai.qiguang.ocbridge.serve; do
+if [ -f "$HOME/Library/LaunchAgents/$LABEL_APP.plist" ]; then
+  for label in "$LABEL_APP" "$LABEL_SERVE"; do
+    [ -f "$HOME/Library/LaunchAgents/$label.plist" ] || continue
     launchctl bootout "gui/$UID_NUM/$label" 2>/dev/null && echo "已暂停 launchd $label" || echo "$label 未在运行"
   done
   rm -f .bridge.pid .serve.pid
