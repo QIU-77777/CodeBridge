@@ -1,0 +1,19 @@
+{
+  "name": "opencode-feishu-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "飞书机器人桥接本地 opencode serve，支持多会话切换与流式输出",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dry": "node src/index.js --dry",
+    "selftest": "node scripts/selftest.mjs",
+    "doctor": "node scripts/doctor.mjs"
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.76.0"
+  }
+}
