@@ -354,7 +354,7 @@ sqlite3 ~/.local/share/opencode/opencode.db "
 |---|---|---|
 | 组件级 | `scripts/probe-card.mjs` | 平台收不收这种结构 |
 | 行为探针 | `scripts/probe-thread.mjs` | 飞书话题的 `thread_id` / `root_id` 到底是什么 |
-| 单元级 | `scripts/test-cards.mjs`（72 项） | Markdown 解析、卡片结构、大小、看门狗、错误提示、二进制选择、话题绑定、并行上限、@ 判定 |
+| 单元级 | `scripts/test-cards.mjs`（82 项） | Markdown 解析、卡片结构、大小、看门狗、错误提示、二进制选择、话题绑定、并行上限、@ 判定 |
 | 集成级 | `scripts/selftest.mjs`（23 项） | 真实建会话、真实 prompt、流式聚合、命令、回调、白名单 |
 | 端到端 | `scripts/e2e-table.mjs` | 真实模型输出 → 真实事件流 → 真实卡片 |
 
@@ -377,7 +377,7 @@ src/index.js     入口（含 --dry 模式、单实例锁）
 src/which-opencode.js  选哪个 opencode 二进制（桌面版 CLI 优先）
 
 scripts/selftest.mjs    集成自测（23 项）
-scripts/test-cards.mjs  卡片、markdown、看门狗、错误提示、话题绑定、@ 判定测试（72 项；--live 多 3 项）
+scripts/test-cards.mjs  卡片、markdown、看门狗、错误提示、话题绑定、@ 判定、来源标注测试（82 项；--live 多 3 项）
 scripts/doctor.mjs      环境体检（含版本一致性检查）
 scripts/which-opencode.mjs  打印选中的二进制，供 up.sh 调用
 scripts/probe-card.mjs  卡片 schema 探针
@@ -459,6 +459,22 @@ key = root:<root_id || message_id>
 取不到 `open_id` 会退化成老的「@ 谁都算」行为，并在启动日志里告警。多机器人同群时这是必然抢答的配置，所以宁可吵一点也要说出来。
 
 代价是：话题里也没法省掉 @ 了。这是刻意的取舍——**「谁会被唤醒」必须是显式的**，否则多个 agent 共处一群时没人能预测谁响应。
+
+### 模型不知道自己在哪，就会自己去查
+
+最初 `oc.prompt(sessionId, text)` 只发正文。结果一次「在群里打个招呼」跑了 **9 分 12 秒、48 步**——模型先去 `ls`、读仓库、翻 bridge 源码，才反推出「这条消息来自飞书、我在哪个群」。
+
+这些信息在事件里本来就有，只是没往下传。现在每条 prompt 前面拼一行：
+
+```
+[飞书 · 群「桥接话题探针」 · 话题内 · 发送者 ou_c4f80436…（机器人） · 2026/11/5 20:18:05]
+```
+
+三个字段各有用途：群名/私聊解决「我在哪」；**完整 open_id** 解决「@ 回去」——@ 某人需要对方完整 id，猜不出来，之前模型只能写字面量 `@LiLO`，对方收不到提醒；`sender_type` 区分人与机器人，用于决定语气和防循环。
+
+成本控制：群名走 `/im/v1/chats/:chat_id` 且缓存，一条消息一次接口太贵；没权限就静默降级成「群聊」。发送者名字要 `im:chat.members:read`，默认没开，所以只给 open_id——够用，因为真正需要名字的是人，而人已经和 open_id 绑定在 allowlist 里了。
+
+这行是在 `runPrompt` 里拼的，不参与 `/命令` 解析，也不占 `MAX_PROMPT_CHARS`。
 
 ### 状态里两个 id 不能混
 

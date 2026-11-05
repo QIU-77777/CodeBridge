@@ -266,6 +266,8 @@ export class Bridge {
 
     const raw = msg.text || ''
     const promptText = raw.length > MAX_PROMPT_CHARS ? raw.slice(0, MAX_PROMPT_CHARS) : raw
+    // 来源标注只拼给模型，不参与 /命令 解析，也不计入 MAX_PROMPT_CHARS
+    const body = msg.origin ? `${msg.origin}\n\n${promptText}` : promptText
 
     const state = new RunState(session.id)
     const meta = {
@@ -287,7 +289,7 @@ export class Bridge {
     }
 
     try {
-      await this.oc.prompt(session.id, promptText)
+      await this.oc.prompt(session.id, body)
     } catch (err) {
       state.status = 'failed'
       state.error = { message: err.message }

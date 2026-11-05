@@ -13,6 +13,8 @@ export class FeishuTransport {
 
     /** 机器人自己的身份，start() 时取一次并缓存 */
     this.self = null
+    /** chat_id -> 群名，取不到就记空串，避免每来一条消息打一次接口 */
+    this.chatNames = new Map()
 
     this.client = new Lark.Client({
       appId: this.cfg.appId,
@@ -86,6 +88,26 @@ export class FeishuTransport {
 
     await this.ws.start({ eventDispatcher: dispatcher })
     this.log.info('飞书长连接已启动')
+  }
+
+  /**
+   * 群名，用于给模型标注消息来源。
+   *
+   * 拿不到不算错：成员/群信息接口要 im:chat 系列权限，没开就退回「群聊」。
+   * 取到一次就缓存，一条消息一个接口太浪费。
+   */
+  async resolveChatName(chatId) {
+    if (!chatId) return ''
+    if (this.chatNames.has(chatId)) return this.chatNames.get(chatId)
+    let name = ''
+    try {
+      const res = await this.client.request({ method: 'GET', url: `/open-apis/im/v1/chats/${chatId}` })
+      name = res?.data?.name || ''
+    } catch {
+      /* 没权限，静默降级 */
+    }
+    this.chatNames.set(chatId, name)
+    return name
   }
 
   async handleImMessage(data) {
@@ -162,13 +184,37 @@ export class FeishuTransport {
       )
     }
 
+    const userId = data?.sender?.sender_id?.open_id || data?.sender?.sender_id?.user_id || ''
+    const isBot = data?.sender?.sender_type === 'app'
+
+    /**
+     * 给模型标一行来源。
+     *
+     * 以前只发正文，模型看到的就是一句光秃秃的中文，于是它得靠 `ls` / 读仓库
+     * 反推「我在哪儿、谁在跟我说话」—— 实测一次打招呼花了 9 分 12 秒、48 步。
+     * 把来源和发送者 open_id 一并给出来：既省掉这轮探索，也让它有能力 @ 回去
+     * （@ 某人需要对方完整的 open_id，靠猜是猜不到的）。
+     *
+     * 名字拿不到（要 im:chat.members:read 权限），但 open_id 和「人 / 机器人」
+     * 这两个信息足够定位。
+     */
+    const chatName = isGroup ? await this.resolveChatName(m.chat_id) : ''
+    const where = isGroup ? (chatName ? `群「${chatName}」` : '群聊') : '私聊'
+    const scope = isGroup ? (m.root_id ? '话题内' : '主聊天流') : ''
+    const when = new Date(Number(m.create_time) || Date.now()).toLocaleString('zh-CN', { hour12: false })
+    const origin =
+      `[飞书 · ${where}${scope ? ` · ${scope}` : ''} · ` +
+      `发送者 ${userId || '未知'}（${isBot ? '机器人' : '用户'}） · ${when}]`
+
     await this.onMessage({
       chatId: m.chat_id,
       key,
       rootId,
       threadId,
       isGroup,
-      userId: data?.sender?.sender_id?.open_id || data?.sender?.sender_id?.user_id || '',
+      userId,
+      isBot,
+      origin,
       text,
       messageId: m.message_id,
       chatType: m.chat_type,

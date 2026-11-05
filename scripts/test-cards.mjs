@@ -441,6 +441,105 @@ if (process.argv.includes('--live')) {
   ok(got.length === 1, '降级后 @ 任何人都会响应（已知风险）')
 }
 
+// ---------- 6.4 给模型的来源标注 ----------
+{
+  const { FeishuTransport } = await import('../src/feishu.js')
+  const got = []
+  const t = new FeishuTransport(
+    { feishu: { appId: 'cli_x', appSecret: 'sec_x', requireMention: true } },
+    {
+      onMessage: async (m) => got.push(m),
+      onCardAction: async () => {},
+      logger: { info() {}, warn() {}, error() {} },
+    },
+  )
+  t.resolveSelf = async () => ({ open_id: 'ou_me', name: 'LiLO' })
+  t.client = {
+    request: async ({ url }) => {
+      if (/\/chats\/oc_g$/.test(url)) return { data: { name: '桥接话题探针' } }
+      throw new Error('no permission')
+    },
+  }
+  const me = [{ key: '@_user_1', id: { open_id: 'ou_me' }, name: 'LiLO' }]
+
+  await t.handleImMessage({
+    message: {
+      message_type: 'text',
+      chat_type: 'group',
+      chat_id: 'oc_g',
+      message_id: 'om_o1',
+      create_time: '1793879885000',
+      content: JSON.stringify({ text: '@_user_1 你好' }),
+      mentions: me,
+    },
+    sender: { sender_id: { open_id: 'ou_lild' }, sender_type: 'app' },
+  })
+  const o1 = got[0]?.origin || ''
+  ok(/群「桥接话题探针」/.test(o1), '来源标注带群名', o1)
+  ok(/主聊天流/.test(o1), '来源标注区分主聊天流 / 话题内', o1)
+  ok(/ou_lild（机器人）/.test(o1), '来源标注带发送者 open_id 和「人 / 机器人」', o1)
+
+  await t.handleImMessage({
+    message: {
+      message_type: 'text',
+      chat_type: 'group',
+      chat_id: 'oc_g',
+      message_id: 'om_o2',
+      content: JSON.stringify({ text: '@_user_1 继续' }),
+      mentions: me,
+      root_id: 'om_o1',
+      thread_id: 'omt_1',
+    },
+    sender: { sender_id: { open_id: 'ou_user' }, sender_type: 'user' },
+  })
+  ok(/话题内/.test(got[1]?.origin || ''), '话题里的消息标注为「话题内」')
+  ok(/ou_user（用户）/.test(got[1]?.origin || ''), '人类发送者标为「用户」')
+
+  await t.handleImMessage({
+    message: {
+      message_type: 'text',
+      chat_type: 'p2p',
+      chat_id: 'oc_dm',
+      message_id: 'om_o3',
+      content: JSON.stringify({ text: '私聊一句' }),
+    },
+    sender: { sender_id: { open_id: 'ou_user' }, sender_type: 'user' },
+  })
+  ok(/私聊/.test(got[2]?.origin || ''), '私聊标注为「私聊」')
+
+  const cached = await t.resolveChatName('oc_g')
+  ok(cached === '桥接话题探针' && t.chatNames.size === 1, '群名只取一次，后续走缓存')
+}
+
+// ---------- 6.5 来源标注确实拼进了 prompt ----------
+{
+  const { Bridge } = await import('../src/handler.js')
+  let sentText = ''
+  const b = new Bridge({
+    oc: {
+      getSession: async () => ({ id: 'ses_x', location: { directory: '/tmp' } }),
+      prompt: async (id, text) => {
+        sentText = text
+      },
+    },
+    store: { get: () => ({ sessionId: 'ses_x', directory: '/tmp', chatId: 'oc_g', replyTo: 'om_1' }), set() {} },
+    config: { behavior: {}, opencode: { defaultDirectory: '/tmp' } },
+    transport: { sendCard: async () => 'card_1', sendText: async () => {} },
+    logger: { info() {}, warn() {}, error() {} },
+  })
+  const msg = {
+    chatId: 'oc_g',
+    chatType: 'group',
+    messageId: 'om_1',
+    text: '帮我看下',
+    origin: '[飞书 · 群「探针」 · 主聊天流 · 发送者 ou_x（用户） · 2026/11/5 20:18:05]',
+  }
+  await b.runPrompt(msg, b.ctxOf(msg))
+  ok(sentText.startsWith('[飞书 · '), 'prompt 第一行是来源标注', sentText.slice(0, 40))
+  ok(sentText.includes('帮我看下'), '正文没丢')
+  ok(sentText.indexOf(']') < sentText.indexOf('帮我看下'), '来源标注在正文之前')
+}
+
 // ---------- 7. 按钮要带上话题上下文 ----------
 {
   const st = new RunState('ses_a')
