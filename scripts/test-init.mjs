@@ -114,6 +114,12 @@ try {
     ok(c.feishu.appId === 'cli_x', 'appId 用命令行给的值')
     ok(c.opencode.defaultDirectory === '/tmp', '默认目录用回答的值')
   }
+  // 8. 没装依赖也要能初始化：SDK 不能是顶层 import
+  {
+    const src = readFileSync(new URL('./init.mjs', import.meta.url), 'utf8')
+    ok(!/^import \* as Lark/m.test(src), 'SDK 不是顶层 import（clone 后没装依赖也能跑 init）')
+    ok(src.includes('await import('), 'SDK 走的是动态 import')
+  }
 } finally {
   rmSync(root, { recursive: true, force: true })
 }

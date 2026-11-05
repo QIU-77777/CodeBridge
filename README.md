@@ -45,6 +45,13 @@
 
 需要 Node.js 20+，以及装好的 **OpenCode 桌面版**（<https://opencode.ai>）。桥接会用桌面版自带的那份 CLI。
 
+```bash
+git clone <这个仓库> && cd opencode-feishu-bridge
+npm install
+```
+
+`npm install` 只需跑一次。忘了跑也能进下一步（`init` 会跳过凭证验证并提醒你），但启动前必须装。
+
 不需要另外 `npm i -g opencode`。装过的话建议卸掉——两份 opencode 共用同一个会话数据库，混着用会让某些会话突然读不出历史：
 
 ```bash
