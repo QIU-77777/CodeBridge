@@ -128,6 +128,20 @@ export class Bridge {
       this.log.warn(`会话 ${sid} 空闲 ${Math.round(idle / 1000)}s，判定卡死并收尾`)
       this.flushRun(sid)
     }
+    // 安全网：终态已到但终态 patch 始终没完成（飞书 SDK 请求挂死过），
+    // runs 表项和 inflight 记录会永远堆着。超过 2 分钟直接收殓状态——
+    // 卡片可能停在旧样子，但桥接的状态是干净的，重启也能 reconcile
+    const WEDGE_MS = 2 * 60_000
+    for (const [sid, run] of this.runs) {
+      if (run.flushed) continue
+      if (!['done', 'failed', 'aborted'].includes(run.state.status)) continue
+      const since = run.terminalAt || run.state.updatedAt || run.state.startedAt
+      if (now - since < WEDGE_MS) continue
+      this.log.warn(`会话 ${sid} 终态卡片更新疑似卡死（${Math.round((now - since) / 1000)}s 未完成），强制收殓状态`)
+      run.flushed = true
+      this.store.clearInflight?.(sid)
+      this.runs.delete(sid)
+    }
   }
 
   stop() {
@@ -194,6 +208,7 @@ export class Bridge {
         clearTimeout(run.timer)
         run.timer = null
       }
+      if (!run.terminalAt) run.terminalAt = Date.now()
       this.flushRun(sid)
       return
     }
@@ -252,6 +267,7 @@ export class Bridge {
     }
     if (['done', 'failed', 'aborted'].includes(run.state.status)) {
       // 卡片已经收尾，把「还有人在跑」的记录抹掉，重启时就不会误标成已中断
+      run.flushed = true
       this.store.clearInflight?.(sid)
       // 结束后再保留一小段时间便于清理
       setTimeout(() => this.runs.delete(sid), 60_000)
