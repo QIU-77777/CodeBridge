@@ -603,7 +603,7 @@ admin 按模板生成 `config.json`（权限 600，含 appSecret）、安装 lau
 | `backend.type` | `opencode`（默认，常驻 HTTP + SSE）或 `pi`（一次性子进程） | `opencode` |
 | `backend.pi.bin` | pi CLI 路径，留空用 PATH 里的 `pi` | `pi` |
 | `backend.pi.model` | 传给 `--model`，留空用 pi 自己的默认 | `""` |
-| `backend.pi.timeoutMs` | 单次执行超时 | `600000` |
+| `backend.pi.timeoutMs` | 单次执行超时（兜底值；provider 报错不等它，立即终态） | `600000` |
 | `backend.pi.extraArgs` | 额外启动参数，如 `["--no-extensions"]` | `[]` |
 
 环境变量可覆盖同名项：`FEISHU_APP_ID` `FEISHU_APP_SECRET` `OPENCODE_URL` `OPENCODE_SERVER_PASSWORD` `BRIDGE_DEFAULT_DIR` `BRIDGE_DEFAULT_MODEL` `BRIDGE_ALLOWLIST`（逗号分隔）。多实例相关的 `OCB_CONFIG_DIR` `OCB_INSTANCE` `OCB_BACKEND` `OCB_PI_BIN` `OCB_PI_MODEL` 见下一节。
