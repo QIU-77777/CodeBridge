@@ -489,6 +489,18 @@ npm run admin -- --port 8080 # 换端口
 
 ![日志与体检页：日志跟随与完整体检结果](docs/images/admin/03-new-sidebar-logs-doctor.png)
 
+### 新建实例
+
+再要一个机器人身份（例如把 pi 也接进群协作），不用敲命令行：总览页点「新建实例」，填四组信息后点「创建并启动」。
+
+- **实例**：实例名（小写字母、数字、连字符）与配置目录（留空用默认 `~/.config/opencode-feishu-bridge-实例名`），后端类型选 opencode 或 pi。
+- **飞书应用**：appId、appSecret、domain、botOpenId（选填）。飞书应用要先在开放平台建好，权限与事件订阅见「创建飞书应用」一节，admin 只收凭证。
+- **后端连接**：opencode 后端的 serve 密码必填（新建实例的 serve 用它启动，桥接也用它连，留空会连到别人需要密码的 serve 报 401）。serve 地址留空即可，admin 自动分配：配置里已被占用的端口、admin 自身的端口、探测发现有东西在跑的端口都会跳过；显式指定的端口被占用会直接拒绝并说明原因。pi 后端不连 serve，填 bin、model、timeoutMs。
+
+admin 按模板生成 `config.json`（权限 600，含 appSecret）、安装 launchd 常驻服务并启动，完成后新实例出现在总览表里，可像其他实例一样起停、看日志。安装失败会自动回滚：摘掉刚装的 launchd 服务、删掉刚生成的配置，不影响其他在跑实例。
+
+![新建实例弹窗](docs/images/admin/04-create-modal.png)
+
 ### 页面速查
 
 | 页面 | 能做什么 |
@@ -511,8 +523,9 @@ npm run admin -- --port 8080 # 换端口
 - **实例发现以 launchd plist 为准。** 扫 `~/Library/LaunchAgents/ai.qiguang.ocbridge*.plist`，label 推实例名，plist 环境变量里的 `OCB_CONFIG_DIR` 推配置目录。`install-agent.sh` 的 `--config-dir` 与 `--instance` 相互独立，从目录后缀猜实例名会猜错，plist 是唯一同时可靠的来源。
 - **起停转调既有脚本。** 带上对应实例的 `OCB_INSTANCE` 与 `OCB_CONFIG_DIR` 调 `scripts/up.sh` 与 `down.sh`，launchd 与 pid 文件两条路都走脚本里验证过的逻辑，单实例锁语义不变。
 - **doctor 按实例跑。** 传该实例的 `OCB_CONFIG_DIR`，不传查的是默认实例。
+- **两处 bash 兼容性修复。** `install-agent.sh`、`up.sh`、`agent/bridge.sh` 里 `$BACKEND_TYPE` 后紧跟全角标点，macOS 自带 bash 3.2 会把全角字符吞进变量名，`set -u` 直接报未定义——pi 实例的安装、启动、常驻三条路全被挡着；`install-agent.sh` 末尾 `status.sh | head -12` 被 head 掐断产生 SIGPIPE，`pipefail` 会把安装成功的也判失败。两处都已修，新建实例的端到端流程据此跑通。
 
-代码在 `admin/`：`server.js`（HTTP 服务与接口）、`instances.js`（实例发现与状态采集）、`control.js`（起停、体检、日志）、`public/index.html`（单页界面）。测试：`npm run test:admin`。
+代码在 `admin/`：`server.js`（HTTP 服务与接口）、`instances.js`（实例发现与状态采集）、`create.js`（新建实例的校验与配置生成）、`control.js`（起停、体检、日志、装服务）、`public/index.html`（单页界面）。测试：`npm run test:admin`。
 
 ### 排障
 
@@ -522,6 +535,7 @@ npm run admin -- --port 8080 # 换端口
 | 页面返回 403 | Host 头只接受 `localhost` 与 `127.0.0.1`。用这两个地址直接访问，不要走代理或自定义域名 |
 | 实例列表里没有某个实例 | 它没装 launchd 常驻服务，或配置目录不在 `~/.config/opencode-feishu-bridge*` 下。安装常驻服务：`./scripts/install-agent.sh --instance <实例名> --config-dir <配置目录>` |
 | 改了配置不生效 | 配置在进程启动时读取。在总览页点该实例的「重启」，或跑 `./scripts/up.sh` |
+| 新建实例失败 | 看总览页「最近一次操作输出」里的安装日志。常见原因：appId 或 appSecret 不对（开放平台上确认）；serve 端口被占（换一个端口，或留空让 admin 自动分配）；opencode 后端没填 serve 密码（必填） |
 
 ---
 

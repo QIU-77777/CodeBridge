@@ -24,7 +24,7 @@ if [ "$BACKEND_TYPE" = "opencode" ]; then
     sleep 1
   done
 else
-  echo "[$(date '+%F %T')] 后端 $BACKEND_TYPE：不需要 opencode serve"
+  echo "[$(date '+%F %T')] 后端 ${BACKEND_TYPE}：不需要 opencode serve"
 fi
 
 echo "[$(date '+%F %T')] 桥接启动（node $("$NODE" -v)）"

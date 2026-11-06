@@ -15,11 +15,14 @@
 import { createServer } from 'node:http'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { existsSync, readFileSync, writeFileSync, renameSync, copyFileSync, chmodSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, renameSync, copyFileSync, chmodSync, unlinkSync, rmSync } from 'node:fs'
 import { collectAll, collectInstance, discoverInstances } from './instances.js'
-import { startInstance, stopInstance, restartInstance, doctor, readLog } from './control.js'
+import { startInstance, stopInstance, restartInstance, doctor, readLog, installInstance, rollbackService } from './control.js'
+import { planNewInstance, writeNewInstance, nextFreeUrl } from './create.js'
 
 const REPO = resolve(fileURLToPath(import.meta.url), '../..')
+/** admin 自己监听的端口。新建实例自动分配 serve 端口时要避开它 */
+let OWN_PORT = null
 const INDEX_HTML = join(REPO, 'admin', 'public', 'index.html')
 const DEFAULT_PORT = 19877
 
@@ -258,13 +261,121 @@ function requestGuards(req) {
 
 // ---------- 路由 ----------
 
+/**
+ * 探测计划的 serve 地址上有没有别人的 serve。
+ * 端口被占时新实例的 serve 绑不上，桥接还会连到那个需要密码的 serve 报 401，
+ * 装了也是白装——装之前就拒绝，别给用户一个「已创建但起不来」的实例。
+ * 连不上（端口空着）返回 null 放行；探测超时也放行，不拿偶发慢当占用。
+ */
+async function probeServeBusy(url) {
+  try {
+    const res = await fetch(url.replace(/\/+$/, '') + '/api/info', { signal: AbortSignal.timeout(2000) })
+    if (res.status === 401) {
+      return `${url} 上已有一个需要密码的 serve，新建实例连不上（会报 401 退出）。换一个端口，或留空由 admin 自动分配`
+    }
+    return `${url} 上已有 serve 在响应，新建实例的 serve 会绑不上这个端口。换一个端口，或留空由 admin 自动分配`
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 新建实例：校验 -> 探测端口 -> 写配置 -> 装常驻服务并启动。
+ * 飞书应用要用户事先在开放平台建好（权限与事件订阅见 README），admin 只收凭证。
+ * 装服务失败时回滚刚写的配置，不留一个起不来的半成品实例。
+ */
+async function createInstanceApi(req, res) {
+  const body = await readBody(req)
+  const existing = await collectAll()
+
+  // serve 地址分两种。用户显式指定：尊重输入，探到被占就拒绝，不擅自改。
+  // 留空：自动顺延——配置里占用的、admin 自己的、探下来有东西在跑的，都跳过，
+  // 直到探到一个空端口，保证「留空即可成功」
+  let requestBody = body
+  const explicitUrl = String(body.opencode?.url || '').trim()
+  if ((body.backend?.type || 'opencode') === 'opencode' && !explicitUrl) {
+    const tried = []
+    let picked = null
+    for (let i = 0; i < 20; i++) {
+      const candidate = nextFreeUrl(existing, OWN_PORT, tried)
+      if (!(await probeServeBusy(candidate))) {
+        picked = candidate
+        break
+      }
+      tried.push(Number(/:(\d+)/.exec(candidate)[1]))
+    }
+    if (!picked) {
+      return sendError(res, 409, '19876 往后的 20 个端口都被占用了，请在表单里显式指定 serve 地址')
+    }
+    requestBody = { ...body, opencode: { ...body.opencode, url: picked } }
+  }
+
+  const { errors, plan } = planNewInstance(requestBody, existing, OWN_PORT)
+  if (errors.length) return sendError(res, 400, errors.join('；'))
+
+  // 端口被别人的 serve 占着时，新实例的 serve 绑不上、桥接还会 401，
+  // 装了也是白装——装之前就拒绝，别给用户一个「已创建但起不来」的实例
+  if (plan.backend === 'opencode' && explicitUrl) {
+    const busy = await probeServeBusy(plan.config.opencode.url)
+    if (busy) return sendError(res, 409, busy)
+  }
+
+  const dirExisted = existsSync(plan.dir)
+  let configPath
+  try {
+    configPath = writeNewInstance(plan.dir, plan.config)
+  } catch (err) {
+    return sendError(res, 500, `写配置失败: ${err.message}`)
+  }
+
+  const result = await installInstance(plan.name, plan.dir)
+  if (result.code !== 0) {
+    // 装服务失败：回滚刚写的配置与 plist，别留一个起不来的半成品实例。
+    // 回滚只摘本实例的 label 与 plist，不碰其他在跑实例
+    rollbackService(plan.name)
+    try {
+      unlinkSync(configPath)
+      if (!dirExisted) rmSync(plan.dir, { recursive: true, force: true })
+    } catch {
+      /* 回滚尽力而为，失败不掩盖原始错误 */
+    }
+    return sendJson(res, 200, {
+      ok: false,
+      name: plan.name,
+      dir: plan.dir,
+      output: result.output,
+      error: '安装常驻服务失败，已回滚刚生成的配置',
+    })
+  }
+
+  // 装好后重新发现一次：plist 已在位，label 与 managed 状态以发现结果为准
+  const found = discoverInstances().find((i) => resolve(i.dir) === resolve(plan.dir))
+  const inst = found ? await collectInstance(found) : null
+  return sendJson(res, 200, {
+    ok: true,
+    name: plan.name,
+    dir: plan.dir,
+    configPath,
+    output: result.output,
+    instance: inst && {
+      name: inst.name,
+      dir: inst.dir,
+      managed: inst.managed,
+      backend: inst.backend,
+      process: inst.process,
+      serve: inst.serve,
+    },
+  })
+}
+
 async function handleApi(req, res, url) {
   const parts = url.pathname.split('/').filter(Boolean) // ['api','instances',name,...]
   if (parts[0] !== 'api' || parts[1] !== 'instances') return sendError(res, 404, '未知接口')
 
-  // 集合接口不需要实例名
+  // 集合接口：列表（GET）与新建（POST）
   if (!parts[2]) {
-    if (req.method !== 'GET') return sendError(res, 405, '只支持 GET')
+    if (req.method === 'POST') return await createInstanceApi(req, res)
+    if (req.method !== 'GET') return sendError(res, 405, '只支持 GET 与 POST')
     const list = await collectAll()
     return sendJson(res, 200, {
       instances: list.map((i) => ({
@@ -480,6 +591,7 @@ export function startAdmin({ host, port } = parseArgs(process.argv.slice(2))) {
     }
   })
   server.listen(port, host, () => {
+    OWN_PORT = server.address().port
     console.log(`CodeBridge 管理后台: http://${host}:${port}`)
     console.log('实例发现：~/Library/LaunchAgents/ai.qiguang.ocbridge*.plist 加 ~/.config/opencode-feishu-bridge* 目录扫描')
     console.log('只监听本机回环；Ctrl-C 退出。')

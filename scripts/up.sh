@@ -93,7 +93,7 @@ else
   done
 fi
 else
-  echo "→ 后端 $BACKEND_TYPE：跳过 opencode serve"
+  echo "→ 后端 ${BACKEND_TYPE}：跳过 opencode serve"
 fi
 
 # 2. 桥接
