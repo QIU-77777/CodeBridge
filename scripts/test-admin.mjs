@@ -3,10 +3,14 @@
  * admin 管理后台的离线测试：只测本地逻辑，不碰飞书接口、不起停进程。
  *   node scripts/test-admin.mjs
  *
- * 重点断言两件事：
+ * 重点断言四件事：
  *   1. admin 的目录解析和 src/config.js 的 resolveConfigDir 逐字一致
  *      （无环境变量、绝对路径、相对路径三种输入）——配置目录解析不允许有第二套规则；
- *   2. 实例名从 launchd label 推断正确，起停环境变量按实例名生成。
+ *   2. 实例名从 launchd label 推断正确，起停环境变量按实例名生成；
+ *   3. 飞书条目（白名单、名字对照）的纯函数行为，含生效名字的优先级；
+ *   4. 页面上名字与工作目录的编辑入口真实存在（结构断言挡回归）。
+ *
+ * HTTP 接口到落盘的整条路由在 scripts/test-admin-api.mjs。
  */
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -255,6 +259,60 @@ try {
     '目录里已有 config.json 时拒绝覆盖',
   )
   rmSync(tmpDir, { recursive: true, force: true })
+
+  // 7. 飞书条目纯函数：白名单增删、名字增改删、生效名字优先级
+  const {
+    applyAllowlistAdd,
+    applyAllowlistRemove,
+    applyNameSet,
+    applyNameRemove,
+    effectiveName,
+    checkOpenId,
+    checkName,
+    NAME_MAX,
+  } = await import(join(REPO, 'admin', 'entries.js'))
+  ok(checkOpenId('ou_abc123') === null, '合法 open_id 通过校验')
+  ok(checkOpenId('') !== null, '空 open_id 被拒绝')
+  ok(checkOpenId('ou_a b') !== null, '含空白的 open_id 被拒绝')
+  ok(checkName('邱琪光') === null, '普通名字通过校验')
+  ok(checkName('') !== null, '空名字被拒绝')
+  ok(checkName('x'.repeat(NAME_MAX + 1)) !== null, `超过 ${NAME_MAX} 个字符的名字被拒绝`)
+
+  ok(applyAllowlistAdd(['ou_a'], 'ou_b').join() === 'ou_a,ou_b', '白名单加一条')
+  ok(applyAllowlistAdd(['ou_a'], 'ou_a').length === 1, '白名单重复添加幂等')
+  ok(applyAllowlistRemove(['ou_a', 'ou_b'], 'ou_a').join() === 'ou_b', '白名单移除一条')
+  ok(applyAllowlistRemove(['ou_a'], 'ou_z').length === 1, '移除不存在的条目原样返回')
+  ok(applyAllowlistAdd(null, 'ou_a').join() === 'ou_a', '白名单入参不是数组时按空表处理')
+
+  ok(applyNameSet({}, 'ou_a', '邱琪光').ou_a === '邱琪光', '写一条名字')
+  ok(applyNameSet({ ou_a: '旧' }, 'ou_a', '新').ou_a === '新', '改一条名字')
+  ok(!('ou_a' in applyNameSet({ ou_a: '旧' }, 'ou_a', '  ')), '空名字等于删除声明')
+  ok(!('ou_a' in applyNameRemove({ ou_a: 'x' }, 'ou_a')), '移除名字声明')
+  ok(!('ou_z' in applyNameRemove({ ou_a: 'x' }, 'ou_z')), '移除不存在的名字声明原样返回')
+
+  ok(effectiveName({ ou_a: '声明' }, { ou_a: '攒到' }, 'ou_a') === '声明', '生效名字以配置声明优先')
+  ok(effectiveName({}, { ou_a: '攒到' }, 'ou_a') === '攒到', '没有声明时用攒到的名字')
+  ok(effectiveName({}, {}, 'ou_a') === '', '两者都没有时为空')
+  // 生效名字的顺序必须和 src/handler.js 的 nameOf() 一致：后台显示的即是卡片上显示的
+  const handlerSrc = await import('node:fs').then((fs) =>
+    fs.readFileSync(join(REPO, 'src', 'handler.js'), 'utf8'),
+  )
+  ok(
+    /cfg\.feishu\?\.names\?\.\[openId\] \|\| this\.store\.getName\?\.\(openId\)/.test(handlerSrc),
+    '生效名字顺序与 handler.js 的 nameOf() 一致',
+  )
+
+  // 8. 页面结构：名字编辑入口必须真的在页面上。
+  // 「加白名单只能填 open_id」「名字对照表只读」两个缺陷都出过，这里挡住回归
+  ok(indexHtml.includes('id="fs-allow-add-name"'), '白名单添加行有名字输入框')
+  ok(indexHtml.includes('id="fs-name-add-btn"'), '名字对照有添加入口')
+  // opencode 专属组的内容到「工作目录与模型」小节为止，这一片里不该有工作目录字段
+  const nOcGroup = indexHtml.slice(indexHtml.indexOf('<div id="n-oc-group">'), indexHtml.indexOf('<h3>工作目录与模型</h3>'))
+  ok(
+    !nOcGroup.includes('n-defaultDirectory'),
+    '新建实例弹窗：默认工作目录不在 opencode 专属组里，pi 后端也能填',
+  )
+  ok(indexHtml.includes('默认工作目录（两个后端都用'), '配置页标注默认工作目录两个后端都用')
 } catch (err) {
   fail++
   console.log(`❌ 测试本身出错: ${err.stack || err.message}`)

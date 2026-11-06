@@ -19,6 +19,14 @@ import { existsSync, readFileSync, writeFileSync, renameSync, copyFileSync, chmo
 import { collectAll, collectInstance, discoverInstances } from './instances.js'
 import { startInstance, stopInstance, restartInstance, doctor, readLog, installInstance, rollbackService } from './control.js'
 import { planNewInstance, writeNewInstance, nextFreeUrl } from './create.js'
+import {
+  applyAllowlistAdd,
+  applyAllowlistRemove,
+  applyNameRemove,
+  applyNameSet,
+  checkName,
+  checkOpenId,
+} from './entries.js'
 
 const REPO = resolve(fileURLToPath(import.meta.url), '../..')
 /** admin 自己监听的端口。新建实例自动分配 serve 端口时要避开它 */
@@ -442,7 +450,8 @@ async function handleApi(req, res, url) {
     return sendJson(res, 200, { ok: true, config: maskConfig(next), backup: 'config.json.bak' })
   }
 
-  // 白名单快捷增删
+  // 白名单快捷增删。加的时候可以顺手填名字：写进 feishu.names，
+  // 消息来源标注里直接显示，不用再翻到别处编辑 JSON
   if (sub === 'allowlist' && req.method === 'POST') {
     const body = await readBody(req)
     const openId = String(body.openId || '').trim()
@@ -451,13 +460,51 @@ async function handleApi(req, res, url) {
       return sendError(res, 400, '需要 op（add 或 remove）与 openId')
     }
     const current = readJsonSafe(found.dir)
-    const list = Array.isArray(current.feishu?.allowlist) ? [...current.feishu.allowlist] : []
-    const idx = list.indexOf(openId)
-    if (op === 'add' && idx === -1) list.push(openId)
-    if (op === 'remove' && idx !== -1) list.splice(idx, 1)
-    current.feishu = { ...current.feishu, allowlist: list }
+    const list = Array.isArray(current.feishu?.allowlist) ? current.feishu.allowlist : []
+    const names = current.feishu?.names
+    if (op === 'add') {
+      const idErr = checkOpenId(openId)
+      if (idErr) return sendError(res, 400, idErr)
+      // 名字选填：填了要过长度校验，留空只加白名单不动 names
+      const name = String(body.name ?? '').trim()
+      if (name) {
+        const nameErr = checkName(name)
+        if (nameErr) return sendError(res, 400, nameErr)
+      }
+      const nextList = applyAllowlistAdd(list, openId)
+      const nextNames = name ? applyNameSet(names, openId, name) : names
+      current.feishu = { ...current.feishu, allowlist: nextList, names: nextNames }
+    } else {
+      // 移除只动白名单，不碰名字：这个名字可能还给非白名单用户的标注用着，
+      // 要清理去名字对照接口删
+      current.feishu = { ...current.feishu, allowlist: applyAllowlistRemove(list, openId) }
+    }
     writeConfigAtomic(join(found.dir, 'config.json'), current)
-    return sendJson(res, 200, { ok: true, allowlist: list })
+    return sendJson(res, 200, { ok: true, allowlist: current.feishu.allowlist, names: current.feishu.names })
+  }
+
+  // 名字对照增改删。飞书没有 open_id 反查名字的接口，feishu.names 是唯一
+  // 准确的名字来源，页面上逐条维护；清空保存等于删除声明
+  if (sub === 'names' && req.method === 'POST') {
+    const body = await readBody(req)
+    const openId = String(body.openId || '').trim()
+    const op = body.op
+    if (!openId || !['set', 'remove'].includes(op)) {
+      return sendError(res, 400, '需要 op（set 或 remove）与 openId')
+    }
+    const idErr = checkOpenId(openId)
+    if (idErr) return sendError(res, 400, idErr)
+    const current = readJsonSafe(found.dir)
+    const names = current.feishu?.names
+    if (op === 'set') {
+      const nameErr = checkName(body.name)
+      if (nameErr) return sendError(res, 400, nameErr)
+      current.feishu = { ...current.feishu, names: applyNameSet(names, openId, body.name) }
+    } else {
+      current.feishu = { ...current.feishu, names: applyNameRemove(names, openId) }
+    }
+    writeConfigAtomic(join(found.dir, 'config.json'), current)
+    return sendJson(res, 200, { ok: true, names: current.feishu.names })
   }
 
   // 起停。只对装了 launchd 常驻服务的实例开放：没装 plist 的实例走 down.sh
