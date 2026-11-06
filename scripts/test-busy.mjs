@@ -153,7 +153,73 @@ try {
     ok(h.store.queueLength(key) === 0, '发过后队列清空')
   }
 
-  // 6. 落盘：pending 与 queue 重启（重新 load）不丢
+  // 6. 连发两条忙等消息：旧的不丢、旧卡片点不动新内容
+  {
+    const h = makeHarness()
+    const key = 'chat-two'
+    h.store.set(key, { sessionId: 'ses_run', chatId: key, directory: '/tmp' })
+    h.bridge.runs.set('ses_run', {
+      state: { status: 'running', startedAt: Date.now(), updatedAt: Date.now() },
+      cardId: 'c1',
+      chatId: key,
+      meta: { key },
+    })
+    await h.bridge.onMessage({ chatId: key, userId: 'ou_x', text: '第一条', messageId: 'm-a', chatType: 'p2p' })
+    await h.bridge.onMessage({ chatId: key, userId: 'ou_x', text: '第二条', messageId: 'm-b', chatType: 'p2p' })
+    ok(h.store.getPending(key)?.text === '第二条', '后到的消息成为当前 pending')
+    ok(h.store.queueLength(key) === 1, '先到的那条没有丢，进了队列')
+    const oldQ = h.store.data.queue[key][0].qid
+    const newQ = h.store.getPending(key).qid
+    const r1 = await h.bridge.onCardAction({ chatId: key, userId: 'ou_x', action: { a: 'enqueue', k: key, q: oldQ }, messageId: 'c1' })
+    ok(r1?.toast?.content?.includes('已被更新的消息取代'), '旧卡片的按钮点不动新消息（被拒并提示）')
+    ok(h.store.queueLength(key) === 1, '被拒后队列还是一条（没有重复入队）')
+    const r2 = await h.bridge.onCardAction({ chatId: key, userId: 'ou_x', action: { a: 'enqueue', k: key, q: newQ }, messageId: 'c1' })
+    ok(r2?.toast?.content?.includes('已加入队列'), '新卡片的按钮正常入队')
+    ok(h.store.queueLength(key) === 2, '两条消息都在队列里，按到达顺序')
+  }
+
+  // 7. 任务结束后才点加入队列：补一次排空，不用等下一次任务
+  {
+    const h = makeHarness()
+    const key = 'chat-late'
+    h.store.setPending(key, { text: '迟到的点击', userId: 'ou_x', messageId: 'm-late', chatId: key })
+    const qid = h.store.getPending(key).qid
+    const r = await h.bridge.onCardAction({ chatId: key, userId: 'ou_x', action: { a: 'enqueue', k: key, q: qid }, messageId: 'c1' })
+    ok(r?.toast?.content?.includes('已加入队列'), '迟到点击也能入队')
+    ok(h.prompts.length === 0, '刚点击还没发（等 1.5 秒让卡片落定）')
+    await new Promise((res) => setTimeout(res, 2200))
+    ok(h.prompts.some((p) => p.text?.includes('迟到的点击')), '任务已结束，补排空把消息发出去了')
+  }
+
+  // 8. 撞并发上限：消息留在队首，不丢
+  {
+    const h = makeHarness()
+    h.bridge.cfg.behavior.maxParallel = 1
+    const key = 'chat-cap'
+    h.store.set(key, { sessionId: 'ses_run', chatId: key, directory: '/tmp' })
+    h.bridge.runs.set('ses_run', {
+      state: { status: 'running', startedAt: Date.now(), updatedAt: Date.now() },
+      cardId: 'c1',
+      chatId: key,
+      meta: { key },
+    })
+    h.store.enqueue(key, { text: '排在后面的', userId: 'ou_x', messageId: 'm-cap', chatId: key })
+    await h.bridge.drainQueue(key)
+    ok(h.store.queueLength(key) === 1, '撞 maxParallel 上限时消息留在队首')
+    ok(h.prompts.length === 0, '撞上限没有真发')
+  }
+
+  // 9. 重启 reconcile：队列里躺的消息被补发
+  {
+    const h = makeHarness()
+    const key = 'chat-restart'
+    h.store.enqueue(key, { text: '重启前排的', userId: 'ou_x', messageId: 'm-rs', chatId: key })
+    await h.bridge.start()
+    await new Promise((res) => setTimeout(res, 2200))
+    ok(h.prompts.some((p) => p.text?.includes('重启前排的')), '重启后 reconcile 把队列里的消息补发出去')
+  }
+
+  // 10. 落盘：pending 与 queue 重启（重新 load）不丢
   {
     const h = makeHarness()
     const path = join(root, 'state-persist.json')

@@ -115,10 +115,20 @@ export class Store {
   // 收尾后逐条自动发出。两块都落盘，桥接重启不丢。
 
   setPending(key, msg) {
-    if (!key || !msg?.text) return
+    if (!key || !msg?.text) return null
+    // 已有一条没处理的：按到达顺序排进队列，不丢。旧卡片按钮带的是旧消息的
+    // qid，点击时会对不上而被拒并提示，不会出现「卡片预览是一条、发出去是
+    // 另一条」。qid 优先用飞书消息 id，天然唯一
+    const prev = this.data.pending?.[key]
+    if (prev) this.enqueue(key, prev)
     const m = this.data.pending || (this.data.pending = {})
-    m[key] = { ...msg, at: Date.now() }
+    m[key] = {
+      ...msg,
+      qid: msg.qid || msg.messageId || `q${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+      at: Date.now(),
+    }
     this.scheduleSave()
+    return m[key]
   }
 
   getPending(key) {

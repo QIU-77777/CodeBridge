@@ -326,8 +326,10 @@ export function permissionCard({ request, sessionTitle, k = '', rt = '' }) {
  * 消息正文存在服务端（store 的 pending），卡片只带绑定键，所以再长的
  * 消息也不会把卡片撑爆。
  */
-export function busyCard({ preview, from, k = '', rt = '' }) {
+export function busyCard({ preview, from, qid, k = '', rt = '' }) {
   const nav = navOf({ k, rt })
+  // qid 是这条消息的身份证：按钮只对得上同一条 pending，旧卡片点不动新消息
+  const val = { ...nav, q: qid }
   return card('⏳ 上一条任务还在执行', 'yellow', [
     div(
       [
@@ -340,9 +342,9 @@ export function busyCard({ preview, from, k = '', rt = '' }) {
         .join('\n'),
     ),
     buttonRow([
-      button('加入队列', { a: 'enqueue', ...nav }, 'primary'),
-      button('中止当前，改发这条', { a: 'steer', ...nav }, 'default'),
-      button('取消', { a: 'drop', ...nav }, 'default'),
+      button('加入队列', { a: 'enqueue', ...val }, 'primary'),
+      button('中止当前，改发这条', { a: 'steer', ...val }, 'default'),
+      button('取消', { a: 'drop', ...val }, 'default'),
     ]),
   ])
 }
