@@ -112,6 +112,21 @@ export function parsePiJsonl(text) {
   return out
 }
 
+/**
+ * 从 pi 的一行输出里抠出 provider 报错；没有返回 null。
+ *
+ * 模型调用被拒（429 限流、provider 未配置）时，pi 会打一条 role=assistant、
+ * stopReason=error、errorMessage 带原文的消息，然后**不退出**——进程挂住，
+ * 以前只能等 backend.pi.timeoutMs 硬超时兜底，用户白等满一个超时周期。
+ * 这里认出这条消息就够当场终态了。
+ */
+export function providerErrorOf(ev) {
+  const msg = ev?.message
+  if (msg?.role !== 'assistant' || msg.stopReason !== 'error') return null
+  const text = msg.errorMessage || msg.error?.message
+  return text ? String(text) : null
+}
+
 export class PiBackend {
   /**
    * @param {object} opts
@@ -399,6 +414,11 @@ export class PiBackend {
       let stderr = ''
       let settled = false
       let drainTimer = null
+      // provider 报错（限流、未配置等）的行缓冲与原文。pi 遇到这种错误不退出，
+      // 只打一条 stopReason=error 的助手消息然后挂住；边收边认，认出来就杀进程、
+      // 立即失败终态，错误原文上卡片——不再让用户等满一个超时周期
+      let lineBuf = ''
+      let providerError = null
 
       const timer = setTimeout(() => {
         rec.timedOut = true
@@ -422,6 +442,14 @@ export class PiBackend {
         if (rec.aborted) {
           this._emit(sessionId, 'session.execution.interrupted')
           return resolve({ ok: false, aborted: true })
+        }
+
+        // provider 报错：turn 已经被这个错误中断（进程就是我们杀掉的），
+        // 立即失败终态，原文上卡片。排在超时之前——错误先发生，该报它的原因
+        if (providerError) {
+          const msg = `pi 的模型调用失败，本次运行已中断：\n${providerError}`
+          this._emit(sessionId, 'session.execution.failed', { error: { message: msg } })
+          return resolve({ ok: false, error: msg })
         }
 
         if (rec.timedOut) {
@@ -453,6 +481,34 @@ export class PiBackend {
 
       child.stdout?.on('data', (d) => {
         if (stdout.length < MAX_STDOUT_CHARS) stdout += d.toString()
+        if (providerError) return
+        // 逐行扫 provider 报错：一行可能被拆进两个 chunk，先用行缓冲拼齐
+        lineBuf += d.toString()
+        let idx
+        while ((idx = lineBuf.indexOf('\n')) >= 0) {
+          const line = lineBuf.slice(0, idx).trim()
+          lineBuf = lineBuf.slice(idx + 1)
+          if (!line.startsWith('{')) continue
+          let ev
+          try {
+            ev = JSON.parse(line)
+          } catch {
+            continue
+          }
+          const err = providerErrorOf(ev)
+          if (err) {
+            providerError = err
+            break
+          }
+        }
+        // 扫不完的尾巴设上限：一行始终不换行时不至于无限堆积（与 stdout 同口径）
+        if (lineBuf.length > MAX_STDOUT_CHARS) lineBuf = ''
+        if (providerError) {
+          // 认出来就杀：SIGTERM 先礼，2 秒后 SIGKILL 兜底；
+          // 退出后 finish 走 providerError 分支，错误原文上卡片
+          killTree(child, 'SIGTERM')
+          rec.killTimer = setTimeout(() => killTree(child, 'SIGKILL'), 2000)
+        }
       })
       child.stderr?.on('data', (d) => {
         if (stderr.length < MAX_STDERR_CHARS) stderr += d.toString()

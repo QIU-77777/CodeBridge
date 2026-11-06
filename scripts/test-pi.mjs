@@ -12,7 +12,7 @@ import { spawn } from 'node:child_process'
 import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { parsePiJsonl, PiBackend, capabilitiesFor } from '../src/pi.js'
+import { parsePiJsonl, providerErrorOf, PiBackend, capabilitiesFor } from '../src/pi.js'
 import { createBackend } from '../src/backend.js'
 import { RunState } from '../src/render.js'
 import { Bridge } from '../src/handler.js'
@@ -45,7 +45,18 @@ emit({ type: 'session', id: 'fake', cwd: process.cwd() })
 emit({ type: 'agent_start' })
 emit({ type: 'message_update', usage, assistantMessageEvent: { type: 'text_start', contentIndex: 0 } })
 emit({ type: 'message_update', usage, assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'HEL' } })
-if (mode === 'hang') { setInterval(() => {}, 1000); process.stdout.write('') }
+if (mode === 'provider-error') {
+  // 复现真实故障：模型调用被 provider 拒（429 限流、provider 未配置）。
+  // pi 打一条 stopReason=error、errorMessage 带原文的助手消息后不退出——
+  // 修复前只能等满 backend.pi.timeoutMs 才终态，用户白等
+  emit({ type: 'message', id: 'err1', message: { role: 'assistant', content: [],
+    provider: 'stepfun-platform', model: 'step-5-preview', usage,
+    stopReason: 'error',
+    errorMessage: 'stepfun-platform API error (429): request limited TPM reached, current: 565751, limit: 500000' } })
+  setInterval(() => {}, 1000)
+  process.stdout.write('')
+}
+else if (mode === 'hang') { setInterval(() => {}, 1000); process.stdout.write('') }
 else if (mode === 'orphan') {
   // 模拟 pi 的 bash 工具留下的长驻子进程：继承 stdout/stderr，不随父进程退出，
   // 存活 OCB_TEST_ORPHAN_LIFE_MS 毫秒后写一个标记文件，用来验证它到底有没有被杀掉
@@ -239,6 +250,25 @@ const main = async () => {
     ok(timed.ok === false, '超时返回失败')
     ok(collect(events, s.id).status === 'failed', '超时 → RunState failed')
     ok(String(events.at(-1).data.error.message).includes('分钟'), '超时文案说明可调 timeoutMs')
+
+    // provider 报错（429 限流、未配置）：pi 打一条 error 消息后挂住。
+    // 修复前要等满 5 秒超时才终态；现在认出来即杀即终态，原文上卡片
+    ok(providerErrorOf({ message: { role: 'assistant', stopReason: 'error', errorMessage: 'x' } }) === 'x', '认出 stopReason=error 的助手消息')
+    ok(providerErrorOf({ message: { role: 'assistant', stopReason: 'stop' } }) === null, '正常结束不算报错')
+    ok(providerErrorOf({ type: 'message_update' }) === null, '无关事件返回 null')
+    const bFast = makeBackend({ backend: { type: 'pi', pi: { bin: 'pi', model: '', timeoutMs: 5000, extraArgs: [] } } })
+    const sFast = await bFast.createSession({ title: '限流', directory: root })
+    currentMode = 'provider-error'
+    events = []
+    bFast.subscribe((ev) => events.push(ev), () => {})
+    const t0 = Date.now()
+    const fast = await bFast.prompt(sFast.id, '会被限流')
+    const elapsed = Date.now() - t0
+    ok(fast.ok === false, 'provider 报错返回失败')
+    ok(elapsed < 2000, `报错后立即终态，不等满超时（实际 ${elapsed}ms，超时设的是 5000ms）`)
+    ok(collect(events, sFast.id).status === 'failed', 'provider 报错 → RunState failed')
+    ok(events.at(-1).type === 'session.execution.failed', '发出 execution.failed')
+    ok(String(events.at(-1).data.error.message).includes('TPM'), '错误原文（429 限流信息）上卡片')
   }
 
   section('孤儿进程不再拖住收尾')
