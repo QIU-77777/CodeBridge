@@ -321,6 +321,32 @@ export function permissionCard({ request, sessionTitle, k = '', rt = '' }) {
   ])
 }
 
+/**
+ * 忙等卡片：上一条任务还在跑，新消息没有被丢弃，给三个处理选项。
+ * 消息正文存在服务端（store 的 pending），卡片只带绑定键，所以再长的
+ * 消息也不会把卡片撑爆。
+ */
+export function busyCard({ preview, from, k = '', rt = '' }) {
+  const nav = navOf({ k, rt })
+  return card('⏳ 上一条任务还在执行', 'yellow', [
+    div(
+      [
+        from ? `**来自** ${from}` : '',
+        `**内容** ${truncate(preview, 240) || '(空)'}`,
+        '',
+        '当前话题的上一条任务还在跑，这条消息没有丢弃。选一个处理方式：',
+      ]
+        .filter(Boolean)
+        .join('\n'),
+    ),
+    buttonRow([
+      button('加入队列', { a: 'enqueue', ...nav }, 'primary'),
+      button('中止当前，改发这条', { a: 'steer', ...nav }, 'default'),
+      button('取消', { a: 'drop', ...nav }, 'default'),
+    ]),
+  ])
+}
+
 export function statusCard({ session, binding, directory, server, backendLabel = 'opencode', k = '', rt = '' }) {
   const nav = navOf({ k, rt })
   const lines = [

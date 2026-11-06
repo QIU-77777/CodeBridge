@@ -107,6 +107,55 @@ export class Store {
     return this.all().filter((c) => c.sessionId === sessionId)
   }
 
+  // ---------- 忙等挡下的消息 ----------
+  //
+  // 上一条任务还在跑时新消息不会被丢弃：先存进 pending（每个 key 一条，
+  // 后来的覆盖先来的），同时回一张三选一的卡片——加入队列、中止当前改发
+  // 这条、取消。选「加入队列」或「插队」时消息进 queue（FIFO），当前任务
+  // 收尾后逐条自动发出。两块都落盘，桥接重启不丢。
+
+  setPending(key, msg) {
+    if (!key || !msg?.text) return
+    const m = this.data.pending || (this.data.pending = {})
+    m[key] = { ...msg, at: Date.now() }
+    this.scheduleSave()
+  }
+
+  getPending(key) {
+    return this.data.pending?.[key] || null
+  }
+
+  clearPending(key) {
+    if (!this.data.pending?.[key]) return
+    delete this.data.pending[key]
+    this.scheduleSave()
+  }
+
+  /** front=true 时插到队首（「中止当前改发这条」用） */
+  enqueue(key, msg, front = false) {
+    if (!key || !msg?.text) return 0
+    const q = this.data.queue || (this.data.queue = {})
+    const list = Array.isArray(q[key]) ? q[key] : (q[key] = [])
+    const item = { ...msg, at: Date.now() }
+    if (front) list.unshift(item)
+    else list.push(item)
+    this.scheduleSave()
+    return list.length
+  }
+
+  dequeue(key) {
+    const list = this.data.queue?.[key]
+    if (!Array.isArray(list) || !list.length) return null
+    const msg = list.shift()
+    if (!list.length) delete this.data.queue[key]
+    this.scheduleSave()
+    return msg
+  }
+
+  queueLength(key) {
+    return this.data.queue?.[key]?.length || 0
+  }
+
   scheduleSave() {
     this.dirty = true
     if (this.timer) return
