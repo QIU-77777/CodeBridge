@@ -437,7 +437,59 @@ npm run admin                # 起服务，只监听 127.0.0.1:19877
 npm run admin -- --port 8080 # 换端口
 ```
 
-浏览器打开 <http://127.0.0.1:19877> 。界面左侧是功能栏，右侧是内容区。
+浏览器打开 <http://127.0.0.1:19877> 。界面左侧是功能栏，右侧是内容区。下面五步走完一条完整的配置流程。
+
+### 第 1 步：看总览
+
+启动后落在「总览」页，实例表格一行一个实例，各列含义：
+
+- **状态**：运行中（绿点）、launchd 已装未跑（黄点）、未运行（灰点）；有任务在执行时，状态后跟蓝色「N 张进行中」徽章。
+- **pid / 时长**：桥接进程号与已运行时长。
+- **serve**：opencode 后端的 serve 版本；pi 后端显示 CLI 是否可用。
+- **会话 / 进行中**：绑定会话数与正在执行的卡片数。
+- **操作**：启动、重启、停止三个按钮，只对已装 launchd 常驻服务的实例显示；没装的实例在这一列给安装指引。
+
+![总览页：实例表格与起停按钮](docs/images/admin/03-new-sidebar-overview.png)
+
+### 第 2 步：改配置
+
+点左侧「配置」，在页面左上角选实例。表单分四段：
+
+- **飞书应用**：appId、appSecret、domain、botOpenId，以及群聊是否必须 @ 本机器人才响应。
+- **opencode 连接**：serve 地址、serve 密码、默认工作目录、默认模型。
+- **behavior**：卡片刷新间隔、正文上限、空闲超时、并发上限，思考过程与工具链路是否展示。
+- **backend**：后端类型与 pi 的各项参数。
+
+两个密钥字段（appSecret 与 serve 密码）只显示「已填写」，输入框留空表示保持原值，不会把密钥冲掉。保存前自动备份成 `config.json.bak`，用临时文件加重命名落盘。配置在进程启动时读取，改完必须重启实例才生效。
+
+![配置页：四段表单与掩码密钥字段](docs/images/admin/03-new-sidebar-config.png)
+
+### 第 3 步：管飞书应用
+
+点左侧「飞书应用」：
+
+- 点「校验凭证」，后台打一次 `bot/v3/info`：通过则显示机器人名与 open_id，失败给出具体原因。
+- 白名单逐条管理：填 open_id 点「加入白名单」，不要的点「移除」。空数组等于任何人私聊机器人都能操作本机，建议填上自己的 open_id。
+- 名字对照来自配置里的 `feishu.names`：飞书没有 open_id 反查名字的接口，在这里声明后，消息来源标注里直接显示名字。
+
+![飞书应用页：凭证校验、白名单与名字对照](docs/images/admin/03-new-sidebar-feishu.png)
+
+### 第 4 步：看会话与后端
+
+点左侧「会话与后端」：上半是后端健康（serve 版本与 pid、serve 地址）与状态文件概要（绑定会话数、进行中卡片、攒到的名字）；往下是 opencode 的会话列表（标题、会话 id、目录、模型、最近更新）、模型列表，以及 `state.json` 里进行中的卡片。pi 后端没有会话概念，这一页显示 CLI 可用性。
+
+![会话与后端页：serve 健康与会话列表](docs/images/admin/03-new-sidebar-sessions.png)
+
+### 第 5 步：看日志与体检
+
+点左侧「日志与体检」：
+
+- 日志区是终端样式，`bridge.log` 与 `serve.log` 可切换，按字节偏移增量拉取，两秒一轮。点「暂停跟随」停止滚动，「继续跟随」恢复。
+- 点「运行体检」，后台按当前实例跑 doctor，输出解析成逐条检查项：OK 通过、WARN 警告、FAIL 失败（标红）。
+
+![日志与体检页：日志跟随与完整体检结果](docs/images/admin/03-new-sidebar-logs-doctor.png)
+
+### 页面速查
 
 | 页面 | 能做什么 |
 |---|---|
@@ -447,14 +499,29 @@ npm run admin -- --port 8080 # 换端口
 | 会话与后端 | opencode 后端：serve 健康（`/api/info`）、模型列表（`/api/model`）、会话列表（`/api/session`）；pi 后端：CLI 可用性；`state.json` 只读展示（每个 chat 与话题的绑定、进行中的卡片、攒到的名字） |
 | 日志与体检 | `bridge.log` 与 `serve.log` 近实时跟随（按字节偏移增量拉取，两秒一轮）；一键跑 doctor，输出解析成逐条检查项，失败标红 |
 
-几个实现要点：
+### 安全与边界
 
-- **实例发现以 launchd plist 为准。** 扫 `~/Library/LaunchAgents/ai.qiguang.ocbridge*.plist`，label 推实例名，plist 环境变量里的 `OCB_CONFIG_DIR` 推配置目录。`install-agent.sh` 的 `--config-dir` 与 `--instance` 相互独立，从目录后缀猜实例名会猜错，plist 是唯一同时可靠的来源。没装 plist 的实例（nohup 起的）只展示、不起停。
-- **起停转调既有脚本。** 带上对应实例的 `OCB_INSTANCE` 与 `OCB_CONFIG_DIR` 调 `scripts/up.sh` 与 `down.sh`，launchd 与 pid 文件两条路都走脚本里验证过的逻辑，单实例锁语义不变。`down.sh` 末尾的 `pkill` 会误杀本机所有桥接进程，所以没有 plist 的实例不提供起停入口，页面只给安装指引。
-- **安全边界。** 只绑 `127.0.0.1`，Host 头只接受 `localhost` 与 `127.0.0.1`；接口只收 `application/json`，写操作额外要求自定义头 `X-OCB-Admin: 1`；appSecret 与 serve 密码不以明文返回浏览器，也不写进 admin 自己的日志。
+- 只监听 `127.0.0.1`：Host 头只接受 `localhost` 与 `127.0.0.1`，`--host` 参数同样只接受这两个值，不提供绑定其他网卡的入口。
+- 接口只收 `application/json`；写操作额外要求自定义头 `X-OCB-Admin: 1`，挡掉跨站表单。
+- appSecret 与 serve 密码不以明文返回浏览器，也不写进 admin 自己的日志；保存时留空表示保持原值。
+- 起停重启只对已安装 launchd 常驻服务的实例开放。没装 plist 的实例（nohup 起的）只展示，页面给安装指引：`down.sh` 末尾的 `pkill` 会误杀本机所有桥接进程，这条路不能开。
+
+### 实现要点
+
+- **实例发现以 launchd plist 为准。** 扫 `~/Library/LaunchAgents/ai.qiguang.ocbridge*.plist`，label 推实例名，plist 环境变量里的 `OCB_CONFIG_DIR` 推配置目录。`install-agent.sh` 的 `--config-dir` 与 `--instance` 相互独立，从目录后缀猜实例名会猜错，plist 是唯一同时可靠的来源。
+- **起停转调既有脚本。** 带上对应实例的 `OCB_INSTANCE` 与 `OCB_CONFIG_DIR` 调 `scripts/up.sh` 与 `down.sh`，launchd 与 pid 文件两条路都走脚本里验证过的逻辑，单实例锁语义不变。
 - **doctor 按实例跑。** 传该实例的 `OCB_CONFIG_DIR`，不传查的是默认实例。
 
 代码在 `admin/`：`server.js`（HTTP 服务与接口）、`instances.js`（实例发现与状态采集）、`control.js`（起停、体检、日志）、`public/index.html`（单页界面）。测试：`npm run test:admin`。
+
+### 排障
+
+| 现象 | 处理 |
+|---|---|
+| admin 起不来 | 端口被占。换一个：`npm run admin -- --port 8080` |
+| 页面返回 403 | Host 头只接受 `localhost` 与 `127.0.0.1`。用这两个地址直接访问，不要走代理或自定义域名 |
+| 实例列表里没有某个实例 | 它没装 launchd 常驻服务，或配置目录不在 `~/.config/opencode-feishu-bridge*` 下。安装常驻服务：`./scripts/install-agent.sh --instance <实例名> --config-dir <配置目录>` |
+| 改了配置不生效 | 配置在进程启动时读取。在总览页点该实例的「重启」，或跑 `./scripts/up.sh` |
 
 ---
 
