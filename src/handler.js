@@ -160,6 +160,31 @@ export class Bridge {
 
     const run = this.runs.get(sid)
     if (!run) return
+
+    // 兜底：任何带 error/failed 又不是工具级的事件，都把运行态翻成失败，
+    // 并原地把「执行中」卡片转成报错卡片（不新发消息）。opencode 各版本
+    // 对模型提供商报错抛出的事件名和载荷形状不一致——实测遇到过卡片停在
+    // 「执行中」、直到 15 分钟看门狗超时才收尾，用户根本不知道任务已经
+    // 断了。这里不依赖具体事件名：类型里带 error/failed，或载荷里带
+    // error 字段，都算。工具级错误只标记那个工具，不终结整个 run
+    const type = String(ev.type || '')
+    const isToolEvent = /tool/i.test(type)
+    const payloadError = isToolEvent ? null : ev.data?.error
+    if (run.state.status === 'running' && (payloadError || (!isToolEvent && /error|failed/i.test(type)))) {
+      const message =
+        payloadError?.message || ev.data?.message || `执行失败（${type || '未知事件'}）`
+      // 提供商拒输入多数是上下文过长，卡片上直接给续命办法
+      const hint = /invalid|input/i.test(message + type)
+        ? '（上下文可能过长：发 /new 开新会话续上）'
+        : ''
+      run.state.status = 'failed'
+      run.state.error = { message: message + hint }
+      run.state.updatedAt = Date.now()
+      this.log.warn?.(`会话 ${sid} 事件 ${type} 判定失败: ${message}`)
+      this.flushRun(sid)
+      return
+    }
+
     if (!run.state.apply(ev)) return
 
     const terminal = ['done', 'failed', 'aborted'].includes(run.state.status)
