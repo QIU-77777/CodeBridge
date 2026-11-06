@@ -253,7 +253,7 @@ npm run init -- --add-allow=ou_你的openid
   npm run init -- --add-allow=ou_你的openid
   ```
 
-  向导里也可以直接填，就不用跑这两步。
+  向导里也可以直接填，就不用跑这两步。起了管理后台（下文）之后，「飞书应用」页也能加，还能顺手填名字。
 
 ### 4. 体检
 
@@ -380,7 +380,7 @@ npm start
 
 所以名字走三层，逐层兜底：
 
-1. **`feishu.names` 人工声明** —— 最准，写好即生效。
+1. **`feishu.names` 人工声明** —— 最准，写好即生效。管理后台「飞书应用」页的名字对照一节可以逐条增、改、删，不用编辑 JSON。
 2. **群成员列表**（`im:chat.members:read`）—— 开到权限后，遇到不认识的发送者会拉一次整群成员，把所有人的 `open_id → 名字` 一次性存进 `state.json`，之后连接口都不用打。被拒一次就记下 `membersDenied`，不会每条消息都撞 403。
 3. **从消息 @ 提及里攒** —— 零权限。每条消息的 `mentions[]` 里都带着被 @ 者的 `name` 和 `open_id`，碰到就记。缺点是得等某个对象被 @ 过一次。
 
@@ -468,7 +468,7 @@ npm run admin -- --port 8080 # 换端口
 点左侧「配置」，在页面左上角选实例。表单分四段：
 
 - **飞书应用**：appId、appSecret、domain、botOpenId，以及群聊是否必须 @ 本机器人才响应。
-- **opencode 连接**：serve 地址、serve 密码、默认工作目录、默认模型。
+- **opencode 连接**：serve 地址、serve 密码、默认工作目录、默认模型。serve 两项仅 opencode 后端使用；**默认工作目录与默认模型两个后端都用**——pi 每次执行都起在默认工作目录里，opencode 的 `/new` 不带目录时也用这个。
 - **behavior**：卡片刷新间隔、正文上限、空闲超时、并发上限，思考过程与工具链路是否展示。
 - **backend**：后端类型与 pi 的各项参数。
 
@@ -481,14 +481,14 @@ npm run admin -- --port 8080 # 换端口
 点左侧「飞书应用」：
 
 - 点「校验凭证」，后台打一次 `bot/v3/info`：通过则显示机器人名与 open_id，失败给出具体原因。
-- 白名单逐条管理：填 open_id 点「加入白名单」，不要的点「移除」。空数组等于任何人私聊机器人都能操作本机，建议填上自己的 open_id。
-- 名字对照来自配置里的 `feishu.names`：飞书没有 open_id 反查名字的接口，在这里声明后，消息来源标注里直接显示名字。
+- 白名单逐条管理：填 open_id 点「加入白名单」，不要的点「移除」。空数组等于任何人私聊机器人都能操作本机，建议填上自己的 open_id。加入时名字选填，写进 `feishu.names`；已有条目的名字在行内改，点「保存名字」生效，清空保存即删除声明。
+- 名字对照来自配置里的 `feishu.names`：飞书没有 open_id 反查名字的接口，在这里声明后，消息来源标注里直接显示名字。这一节可以逐条增、改、删；白名单行的名字列显示生效名字（配置声明的优先，其次是有 @ 提当时自动攒到的）。
 
 ![飞书应用页：凭证校验、白名单与名字对照](docs/images/admin/03-new-sidebar-feishu.png)
 
 ### 第 4 步：看会话与后端
 
-点左侧「会话与后端」：上半是后端健康（serve 版本与 pid、serve 地址）与状态文件概要（绑定会话数、进行中卡片、攒到的名字）；往下是 opencode 的会话列表（标题、会话 id、目录、模型、最近更新）、模型列表，以及 `state.json` 里进行中的卡片。pi 后端没有会话概念，这一页显示 CLI 可用性。
+点左侧「会话与后端」：上半是后端健康（serve 版本与 pid、serve 地址、默认工作目录）与状态文件概要（绑定会话数、进行中卡片、攒到的名字）；往下是 opencode 的会话列表（标题、会话 id、目录、模型、最近更新）、模型列表，以及 `state.json` 里进行中的卡片。pi 后端没有会话概念，这一页显示 CLI 可用性与默认工作目录。默认工作目录的修改入口在「配置」页；单个会话换目录在飞书里发 `/cd`。
 
 ![会话与后端页：serve 健康与会话列表](docs/images/admin/03-new-sidebar-sessions.png)
 
@@ -508,6 +508,7 @@ npm run admin -- --port 8080 # 换端口
 - **实例**：实例名（小写字母、数字、连字符）与配置目录（留空用默认 `~/.config/opencode-feishu-bridge-实例名`），后端类型选 opencode 或 pi。
 - **飞书应用**：appId、appSecret、domain、botOpenId（选填）。飞书应用要先在开放平台建好，权限与事件订阅见「创建飞书应用」一节，admin 只收凭证。
 - **后端连接**：opencode 后端的 serve 密码必填（新建实例的 serve 用它启动，桥接也用它连，留空会连到别人需要密码的 serve 报 401）。serve 地址留空即可，admin 自动分配：配置里已被占用的端口、admin 自身的端口、探测发现有东西在跑的端口都会跳过；显式指定的端口被占用会直接拒绝并说明原因。pi 后端不连 serve，填 bin、model、timeoutMs；`backend.pi.bin` 要在 launchd 的 PATH 里找得到（`install-agent.sh` 会把系统目录和 npm 全局 bin、`~/.local/bin`、`~/.bun/bin` 写进 plist 的 PATH），装在别处就填绝对路径。
+- **工作目录与模型**：默认工作目录与默认模型两个后端都填，pi 后端也显示这一组。留空工作目录用家主目录——pi 实例建完才发现工作目录是家目录，就是留空的后果，建议建实例时直接填。
 
 admin 按模板生成 `config.json`（权限 600，含 appSecret）、安装 launchd 常驻服务并启动，完成后新实例出现在总览表里，可像其他实例一样起停、看日志。安装失败会自动回滚：摘掉刚装的 launchd 服务、删掉刚生成的配置，不影响其他在跑实例。
 
@@ -519,7 +520,7 @@ admin 按模板生成 `config.json`（权限 600，含 appSecret）、安装 lau
 |---|---|
 | 总览 | 本机所有实例一行一条：运行状态、后端类型、配置目录、pid 与已运行时长、serve 健康、绑定会话数、进行中卡片数；已装 launchd 常驻服务的实例可一键启动、停止、重启 |
 | 配置 | 按实例编辑 `config.json` 的四段（feishu / opencode / behavior / backend）；appSecret 与 serve 密码掩码显示，留空表示保持原值；保存前备份成 `config.json.bak`，临时文件加重命名落盘 |
-| 飞书应用 | 按实例校验 appId 与 appSecret（打 `bot/v3/info`，回显机器人名与 open_id）；allowlist 按 open_id 逐条增删；names 对照表 |
+| 飞书应用 | 按实例校验 appId 与 appSecret（打 `bot/v3/info`，回显机器人名与 open_id）；allowlist 按 open_id 逐条增删，加入时可选填名字；`feishu.names` 逐条增、改、删 |
 | 会话与后端 | opencode 后端：serve 健康（`/api/info`）、模型列表（`/api/model`）、会话列表（`/api/session`）；pi 后端：CLI 可用性；`state.json` 只读展示（每个 chat 与话题的绑定、进行中的卡片、攒到的名字） |
 | 日志与体检 | `bridge.log` 与 `serve.log` 近实时跟随（按字节偏移增量拉取，两秒一轮）；一键跑 doctor，输出解析成逐条检查项，失败标红 |
 
@@ -587,10 +588,10 @@ admin 按模板生成 `config.json`（权限 600，含 appSecret）、安装 lau
 | `feishu.allowlist` | open_id 白名单，空 = 不限制（不建议） | `[]` |
 | `feishu.requireMention` | 群聊是否必须 @ **本机器人** 才响应 | `true` |
 | `feishu.botOpenId` | 机器人自己的 open_id。留空则启动时自动向飞书取；多机器人同群建议显式填 | `""` |
-| `feishu.names` | `open_id → 显示名`，只影响来源标注里显不显示名字。留空则从消息 @ 提及里自动攒 | `{}` |
+| `feishu.names` | `open_id → 显示名`，只影响来源标注里显不显示名字。留空则从消息 @ 提及里自动攒；admin「飞书应用」页可逐条增、改、删 | `{}` |
 | `opencode.url` | serve 地址 | `http://127.0.0.1:19876` |
 | `opencode.password` | 与 `OPENCODE_SERVER_PASSWORD` 一致；serve 没设密码就留空 | `""` |
-| `opencode.defaultDirectory` | `/new` 不带目录时用这个 | `$HOME` |
+| `opencode.defaultDirectory` | `/new` 不带目录时用这个；pi 后端每次执行也起在这个目录。两个后端都用，admin「配置」页可改 | `$HOME` |
 | `opencode.defaultModel` | `providerID/modelID`，**建议必填** | `""` |
 | `behavior.streamIntervalMs` | 卡片刷新间隔，别低于 1200（飞书 patch 有频率限制） | `1800` |
 | `behavior.showReasoning` | 是否把模型思考过程推到卡片 | `false` |

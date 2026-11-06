@@ -315,10 +315,11 @@
             </div>
             <div>
               <h3>opencode 连接</h3>
-              <label class="fld"><span>serve 地址</span><input type="text" id="c-ocUrl"></label>
-              <label class="fld"><span>serve 密码（留空保持不变）</span><input type="password" id="c-ocPassword" placeholder="已填写时显示掩码"></label>
-              <label class="fld"><span>默认工作目录</span><input type="text" id="c-defaultDirectory"></label>
-              <label class="fld"><span>默认模型（providerID/modelID）</span><input type="text" id="c-defaultModel"></label>
+              <label class="fld"><span>serve 地址（仅 opencode 后端）</span><input type="text" id="c-ocUrl"></label>
+              <label class="fld"><span>serve 密码（仅 opencode 后端，留空保持不变）</span><input type="password" id="c-ocPassword" placeholder="已填写时显示掩码"></label>
+              <label class="fld"><span>默认工作目录（两个后端都用，/new 不带目录时用这个）</span><input type="text" id="c-defaultDirectory"></label>
+              <label class="fld"><span>默认模型（两个后端都用，providerID/modelID）</span><input type="text" id="c-defaultModel"></label>
+              <p class="hint">pi 后端不连 serve，serve 两项不生效；默认工作目录与默认模型对两个后端都生效，pi 每次执行都起在这个目录里。</p>
             </div>
           </div>
           <h3>behavior</h3>
@@ -358,17 +359,23 @@
         </div>
         <div class="card">
           <h2>白名单（allowlist）</h2>
-          <p class="lede">空数组等于任何人私聊机器人都能操作本机。填 open_id。</p>
+          <p class="lede">空数组等于任何人私聊机器人都能操作本机。填 open_id；名字选填，写进 feishu.names，来源标注里直接显示。名字列显示生效名字：配置声明的优先，其次是有 @ 提及时自动攒到的。</p>
           <table id="fs-allow"><thead><tr><th>open_id</th><th>名字</th><th></th></tr></thead><tbody></tbody></table>
           <div class="row" style="margin-top:12px">
             <input type="text" id="fs-allow-add" placeholder="ou_..." class="grow">
+            <input type="text" id="fs-allow-add-name" placeholder="名字（选填）" style="max-width:220px">
             <button class="btn" id="fs-allow-btn">加入白名单</button>
           </div>
         </div>
         <div class="card">
           <h2>名字对照（feishu.names）</h2>
-          <p class="lede">飞书没有 open_id 反查名字的接口，这里声明后，来源标注里直接显示名字。</p>
-          <table id="fs-names"><thead><tr><th>open_id</th><th>名字</th></tr></thead><tbody></tbody></table>
+          <p class="lede">飞书没有 open_id 反查名字的接口，这里声明的名字最准。清空名字保存即删除声明，之后回落到自动攒到的名字。</p>
+          <table id="fs-names"><thead><tr><th>open_id</th><th>名字</th><th></th></tr></thead><tbody></tbody></table>
+          <div class="row" style="margin-top:12px">
+            <input type="text" id="fs-name-add-id" placeholder="ou_..." class="grow">
+            <input type="text" id="fs-name-add-name" placeholder="名字" style="max-width:220px">
+            <button class="btn" id="fs-name-add-btn">加入对照</button>
+          </div>
         </div>
       </section>
 
@@ -385,6 +392,7 @@
             <div>
               <h3>后端健康</h3>
               <dl class="kv" id="ss-backend"></dl>
+              <p class="hint">默认工作目录在「配置」页修改，保存后重启实例生效；单个会话换目录，在飞书里发 /cd &lt;绝对路径&gt;。</p>
             </div>
             <div>
               <h3>状态文件概要</h3>
@@ -461,11 +469,16 @@
       </div>
     </div>
     <div id="n-oc-group">
-      <h3>opencode 连接</h3>
+      <h3>opencode serve 连接</h3>
       <div class="grid2">
         <label class="fld"><span>serve 地址（留空自动分配，避开已占用端口）</span><input type="text" id="n-ocUrl" placeholder="http://127.0.0.1:19876"></label>
         <label class="fld"><span>serve 密码（opencode 后端必填）</span><input type="password" id="n-ocPassword" placeholder="新建实例的 serve 用它启动，桥接也用它连"></label>
-        <label class="fld"><span>默认工作目录</span><input type="text" id="n-defaultDirectory" placeholder="留空用家主目录"></label>
+      </div>
+    </div>
+    <div>
+      <h3>工作目录与模型</h3>
+      <div class="grid2">
+        <label class="fld"><span>默认工作目录（两个后端都用，留空用家主目录）</span><input type="text" id="n-defaultDirectory" placeholder="留空用家主目录"></label>
         <label class="fld"><span>默认模型（providerID/modelID，可留空）</span><input type="text" id="n-defaultModel" placeholder="stepfun-step-plan/step-5-preview"></label>
       </div>
     </div>
@@ -511,7 +524,6 @@ async function api(path, opts = {}) {
 const state = {
   instances: [],
   tab: 'overview',
-  fsRaw: null,
   log: { since: 0, follow: true, timer: null, name: '', file: 'bridge' },
 }
 
@@ -717,12 +729,15 @@ async function saveConfig() {
 }
 
 // ---------- 飞书应用 ----------
+// 生效名字：配置里声明的优先，其次从 @ 提及里自动攒到的。顺序与
+// src/handler.js 的 nameOf() 一致，后台看到的即是卡片上显示的
+const effectiveName = (cfgNames, stateNames, id) => (cfgNames || {})[id] || (stateNames || {})[id] || ''
+
 async function loadFeishuTab() {
   const name = $('fs-instance').value
   if (!name) return
   try {
     const json = await api(`/api/instances/${encodeURIComponent(name)}`)
-    state.fsRaw = json
     const c = json.config || {}
     $('fs-kv').innerHTML = `
       <dt>appId</dt><dd class="mono">${esc(c.feishu?.appId || '—')}</dd>
@@ -730,45 +745,102 @@ async function loadFeishuTab() {
       <dt>domain</dt><dd>${esc(c.feishu?.domain || 'feishu')}</dd>
       <dt>requireMention</dt><dd>${c.feishu?.requireMention === false ? '否（@ 谁都算）' : '是（只认 @ 本机器人）'}</dd>
       <dt>appSecret</dt><dd>${c.feishu?.appSecret === '********' ? '已填写（不明示）' : '未填写'}</dd>`
-    const names = c.feishu?.names || {}
-    $('fs-names').querySelector('tbody').innerHTML = Object.entries(names).map(([k, v]) =>
-      `<tr><td class="mono">${esc(k)}</td><td>${esc(v)}</td></tr>`).join('') || '<tr><td colspan="2" class="dim">空</td></tr>'
-    await loadAllowlist(name, c.feishu?.allowlist || [], names)
+    loadNames(c.feishu?.names || {})
+    await loadAllowlist(name, c.feishu?.allowlist || [], c.feishu?.names || {}, json.state?.names || {})
   } catch (err) {
     $('fs-kv').innerHTML = `<dt class="err">错误</dt><dd class="err">${esc(err.message)}</dd>`
   }
 }
 
-async function loadAllowlist(name, list, names) {
-  names = names || {}
+async function loadAllowlist(name, list, cfgNames, stateNames) {
   $('fs-allow').querySelector('tbody').innerHTML = list.map((id) =>
-    `<tr><td class="mono">${esc(id)}</td><td>${esc(names[id] || '')}</td>
-     <td><button class="btn danger" onclick="removeAllow('${esc(id)}')">移除</button></td></tr>`).join('')
+    `<tr><td class="mono">${esc(id)}</td>
+     <td><input type="text" id="allow-name-${esc(id)}" value="${esc(effectiveName(cfgNames, stateNames, id))}" placeholder="（未设置）" style="max-width:220px"></td>
+     <td class="row">
+       <button class="btn" onclick="saveAllowName('${esc(id)}')">保存名字</button>
+       <button class="btn danger" onclick="removeAllow('${esc(id)}')">移除</button>
+     </td></tr>`).join('')
     || '<tr><td colspan="3" class="dim">空（不限制任何人）</td></tr>'
+}
+
+function loadNames(cfgNames) {
+  $('fs-names').querySelector('tbody').innerHTML = Object.entries(cfgNames).map(([id, v]) =>
+    `<tr><td class="mono">${esc(id)}</td>
+     <td><input type="text" id="name-map-${esc(id)}" value="${esc(v)}" style="max-width:220px"></td>
+     <td class="row">
+       <button class="btn" onclick="saveName('${esc(id)}')">保存</button>
+       <button class="btn danger" onclick="removeName('${esc(id)}')">移除</button>
+     </td></tr>`).join('') || '<tr><td colspan="3" class="dim">空（来源标注里只显示 open_id）</td></tr>'
+}
+
+/** 名字对照的统一写入口。调用方负责之后整页重取，白名单与名字两张表一起刷新 */
+async function postName(inst, body) {
+  await api(`/api/instances/${encodeURIComponent(inst)}/names`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
 }
 
 async function addAllow() {
   const name = $('fs-instance').value
   const openId = $('fs-allow-add').value.trim()
+  const displayName = $('fs-allow-add-name').value.trim()
   if (!openId) return
   try {
-    const json = await api(`/api/instances/${encodeURIComponent(name)}/allowlist`, {
+    await api(`/api/instances/${encodeURIComponent(name)}/allowlist`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ op: 'add', openId }),
+      body: JSON.stringify({ op: 'add', openId, name: displayName }),
     })
     $('fs-allow-add').value = ''
-    await loadAllowlist(name, json.allowlist, state.fsRaw?.config?.feishu?.names || {})
+    $('fs-allow-add-name').value = ''
+    await loadFeishuTab()
   } catch (err) { alert('加入失败: ' + err.message) }
 }
 
 async function removeAllow(openId) {
   const name = $('fs-instance').value
   try {
-    const json = await api(`/api/instances/${encodeURIComponent(name)}/allowlist`, {
+    await api(`/api/instances/${encodeURIComponent(name)}/allowlist`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ op: 'remove', openId }),
     })
-    await loadAllowlist(name, json.allowlist, state.fsRaw?.config?.feishu?.names || {})
+    await loadFeishuTab()
+  } catch (err) { alert('移除失败: ' + err.message) }
+}
+
+/** 保存白名单某一行的名字。清空保存 = 删除这条声明，回落到自动攒到的名字 */
+async function saveAllowName(openId) {
+  const displayName = $('allow-name-' + openId).value.trim()
+  try {
+    await postName($('fs-instance').value, { op: displayName ? 'set' : 'remove', openId, name: displayName })
+    await loadFeishuTab()
+  } catch (err) { alert('保存名字失败: ' + err.message) }
+}
+
+async function addName() {
+  const openId = $('fs-name-add-id').value.trim()
+  const displayName = $('fs-name-add-name').value.trim()
+  if (!openId || !displayName) return
+  try {
+    await postName($('fs-instance').value, { op: 'set', openId, name: displayName })
+    $('fs-name-add-id').value = ''
+    $('fs-name-add-name').value = ''
+    await loadFeishuTab()
+  } catch (err) { alert('加入失败: ' + err.message) }
+}
+
+async function saveName(openId) {
+  const displayName = $('name-map-' + openId).value.trim()
+  try {
+    await postName($('fs-instance').value, { op: displayName ? 'set' : 'remove', openId, name: displayName })
+    await loadFeishuTab()
+  } catch (err) { alert('保存失败: ' + err.message) }
+}
+
+async function removeName(openId) {
+  try {
+    await postName($('fs-instance').value, { op: 'remove', openId })
+    await loadFeishuTab()
   } catch (err) { alert('移除失败: ' + err.message) }
 }
 
@@ -795,12 +867,15 @@ async function loadSessionsTab() {
       api(`/api/instances/${encodeURIComponent(name)}/sessions`).catch(() => ({ applicable: false })),
       api(`/api/instances/${encodeURIComponent(name)}/models`).catch(() => ({ applicable: false })),
     ])
-    const be = detail.backend === 'pi'
+    let be = detail.backend === 'pi'
       ? `<dt>类型</dt><dd>pi（一次性子进程）</dd>
          <dt>CLI 可用性</dt><dd>${detail.pi?.ok ? `<span class="row"><span class="dot green"></span><span class="ok">可用 ${esc(detail.pi.version || '')}</span></span>` : `<span class="row"><span class="dot red"></span><span class="err">${esc(detail.pi?.error || '异常')}</span></span>`}</dd>`
       : `<dt>类型</dt><dd>opencode（常驻 HTTP + SSE）</dd>
          <dt>serve 健康</dt><dd>${detail.serve?.ok ? `<span class="row"><span class="dot green"></span><span class="ok">v${esc(detail.serve.version || '?')}，pid ${esc(detail.serve.pid)}</span></span>` : `<span class="row"><span class="dot red"></span><span class="err">${esc(detail.serve?.error || '无响应')}</span></span>`}</dd>
          <dt>serve 地址</dt><dd class="mono">${esc(detail.config?.opencode?.url || '')}</dd>`
+    // 默认工作目录两个后端都用：pi 每次执行起在这个目录，opencode 的 /new 不带目录时也用这个。
+    // 这里只展示，修改入口在「配置」页——同一处配置不开两个编辑器
+    be += `<dt>默认工作目录</dt><dd class="mono">${esc(detail.config?.opencode?.defaultDirectory || '—')}</dd>`
     $('ss-backend').innerHTML = be
     $('ss-summary').innerHTML = `
       <dt>绑定会话数</dt><dd class="num">${detail.summary?.chats ?? 0}</dd>
@@ -969,6 +1044,7 @@ $('cfg-save').addEventListener('click', saveConfig)
 $('fs-instance').addEventListener('change', loadFeishuTab)
 $('fs-verify').addEventListener('click', verifyFeishu)
 $('fs-allow-btn').addEventListener('click', addAllow)
+$('fs-name-add-btn').addEventListener('click', addName)
 $('ss-instance').addEventListener('change', loadSessionsTab)
 $('ss-refresh').addEventListener('click', loadSessionsTab)
 $('lg-instance').addEventListener('change', loadLogsTab)
