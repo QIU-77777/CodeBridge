@@ -17,6 +17,7 @@
     "test:busy": "node scripts/test-busy.mjs",
     "test:runfail": "node scripts/test-runfail.mjs",
     "test:wedge": "node scripts/test-wedge.mjs",
+    "test:render": "node scripts/test-render.mjs",
     "dry": "node src/index.js --dry",
     "selftest": "node scripts/selftest.mjs",
     "doctor": "node scripts/doctor.mjs",

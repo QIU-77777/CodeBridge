@@ -26,6 +26,7 @@ export class RunState {
     this.updatedAt = Date.now()
     this.reasoning = ''
     this.text = ''
+    this.pendingReset = false
     this.tools = []
     this.status = 'running'
     this.error = null
@@ -53,19 +54,43 @@ export class RunState {
 
       case 'session.step.started':
         this.steps += 1
-        this.assistantMessageID = d.assistantMessageID || this.assistantMessageID
+        // 新的一段助手叙述开始：等这段真的产出内容时，再清掉上一段累加的
+        // 文本与思考，卡片只保留最新一段。人类要求终态卡片只要结论，中间
+        // 过程的叙述不拼进正文。清空延迟到首个内容事件，是防止运行的最后
+        // 一段没有文本产出时，卡片变成空白
+        if (d.assistantMessageID && d.assistantMessageID !== this.assistantMessageID) {
+          this.assistantMessageID = d.assistantMessageID
+          this.pendingReset = true
+        }
         break
 
       case 'session.reasoning.delta':
+        if (this.pendingReset) {
+          this.text = ''
+          this.reasoning = ''
+          this.pendingReset = false
+        }
         this.reasoning += d.delta || ''
         break
 
       case 'session.text.delta':
+        if (this.pendingReset) {
+          this.text = ''
+          this.reasoning = ''
+          this.pendingReset = false
+        }
         this.text += d.delta || ''
         break
 
       case 'session.text.ended':
-        if (typeof d.text === 'string' && d.text.length >= this.text.length) this.text = d.text
+        if (typeof d.text === 'string') {
+          if (this.pendingReset) {
+            this.text = ''
+            this.reasoning = ''
+            this.pendingReset = false
+          }
+          if (d.text.length >= this.text.length) this.text = d.text
+        }
         break
 
       // 工具名在 input.started 里给，参数在 called 里给，要分两步拼
