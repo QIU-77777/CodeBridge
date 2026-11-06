@@ -113,6 +113,9 @@
   .num { font-variant-numeric: tabular-nums; }
   .dim { color: var(--dim); }
   .faint { color: var(--faint); }
+  /* 长文本单元格截断：超出最大宽度省略，完整内容放 title 悬停查看。
+     总览的配置目录、飞书应用两列不截断就会把操作列挤到折行 */
+  .clip { display: inline-block; max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
   .grow { flex: 1; }
   code { font-family: var(--mono); font-size: 0.92em; background: var(--line-soft); border-radius: 5px; padding: 1px 5px; }
 
@@ -596,19 +599,23 @@ async function loadOverview() {
       : `<span class="badge red" title="${esc(i.pi.error || '')}"><span class="dot red"></span>CLI 异常</span>`
     const busy = i.summary?.inflight ? `<span class="badge blue"><span class="dot blue"></span>${i.summary.inflight} 张进行中</span>` : ''
     const managed = i.managed ? '' : '<br><span class="badge gray" title="没有安装 launchd 常驻服务">未安装常驻服务</span>'
-    // 起停只对装了 plist 的实例开放：没装的实例走 down.sh 会误杀本机所有桥接进程
+    // 起停只对装了 plist 的实例开放：没装的实例走 down.sh 会误杀本机所有桥接进程。
+    // 按钮按运行状态给：运行中只有重启/停止，未运行只有启动——三种全列会让人误以为都能点
     const actions = i.managed
-      ? `<div class="row">
-          <button class="btn" onclick="doAction('${esc(i.name)}','start')">启动</button>
-          <button class="btn" onclick="doAction('${esc(i.name)}','restart')">重启</button>
-          <button class="btn danger" onclick="doAction('${esc(i.name)}','stop')">停止</button>
-        </div>`
+      ? i.process.running
+        ? `<div class="row">
+            <button class="btn" onclick="doAction('${esc(i.name)}','restart')">重启</button>
+            <button class="btn danger" onclick="doAction('${esc(i.name)}','stop')">停止</button>
+          </div>`
+        : `<div class="row">
+            <button class="btn" onclick="doAction('${esc(i.name)}','start')">启动</button>
+          </div>`
       : `<span class="hint">安装常驻服务：<code>./scripts/install-agent.sh --instance ${esc(i.name)} --config-dir ${esc(i.dir)}</code></span>`
     return `<tr>
       <td><b>${esc(i.name)}</b>${managed}</td>
-      <td class="mono dim" title="${esc(i.dir)}">${esc(short(i.dir, 46))}</td>
+      <td class="mono dim"><span class="clip" title="${esc(i.dir)}">${esc(i.dir)}</span></td>
       <td class="mono">${esc(i.backend)}</td>
-      <td class="mono">${esc(i.appId || '—')}${i.botOpenId ? `<br><span class="dim mono">${esc(short(i.botOpenId, 22))}</span>` : ''}</td>
+      <td class="mono"><span class="clip" title="${esc(i.appId || '')}">${esc(i.appId || '—')}</span>${i.botOpenId ? `<br><span class="clip dim" title="${esc(i.botOpenId)}">${esc(i.botOpenId)}</span>` : ''}</td>
       <td>${statusBadge(i.process)} ${busy}</td>
       <td class="mono">${i.process.pid ? esc(i.process.pid) : '—'}<br><span class="dim">${esc(i.process.uptime || '')}</span></td>
       <td>${serve}${pi ? '<br>' + pi : ''}</td>

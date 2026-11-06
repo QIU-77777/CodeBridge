@@ -113,6 +113,33 @@ try {
     `th=${thCount} td=${tdCount}`,
   )
 
+  // 4c. 长列截断与操作列按钮分流：
+  //   - 配置目录、飞书应用两列用 .clip 截断并带完整值 title（不截断会把操作列挤到折行）
+  //   - 操作列按运行状态给按钮：运行中只有重启/停止，未运行只有启动（三种全列曾把用户看懵）
+  const ovFn = indexHtml.slice(indexHtml.indexOf('async function loadOverview'))
+  const actionsTpl = ovFn.slice(ovFn.indexOf('const actions ='), ovFn.indexOf('return `<tr>'))
+  const runAt = actionsTpl.indexOf('i.process.running')
+  ok(runAt > 0, '操作列按 i.process.running 分流按钮')
+  const elseAt = actionsTpl.indexOf(': `<div', runAt)
+  const runBranch = actionsTpl.slice(runAt, elseAt)
+  const stopBranch = actionsTpl.slice(elseAt)
+  ok(
+    runBranch.includes("'restart'") && runBranch.includes("'stop'") && !runBranch.includes("'start'"),
+    '运行中的实例只有重启/停止按钮',
+    runBranch.replace(/\s+/g, ' ').slice(0, 120),
+  )
+  ok(
+    stopBranch.includes("'start'") && !stopBranch.includes("'restart'") && !stopBranch.includes("'stop'"),
+    '未运行的实例只有启动按钮',
+    stopBranch.replace(/\s+/g, ' ').slice(0, 120),
+  )
+  ok(rowTpl.includes('class="clip" title="${esc(i.dir)}"'), '配置目录列截断并带完整路径 title')
+  ok(rowTpl.includes('class="clip" title="${esc(i.appId'), '飞书应用列截断并带完整 appId title')
+  ok(
+    /\.clip \{[^}]*text-overflow: ellipsis/.test(indexHtml),
+    '截断样式超出宽度时显示省略号',
+  )
+
   // 5. 可执行文件解析：PATH 找不到时去常见用户 bin 目录找
   // （pi 装在 ~/.npm-global/bin，而 admin 进程的 PATH 里没有它，实测踩过）
   const { resolveBin } = await import(join(REPO, 'admin', 'instances.js'))
