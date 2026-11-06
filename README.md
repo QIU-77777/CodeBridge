@@ -547,7 +547,7 @@ admin 按模板生成 `config.json`（权限 600，含 appSecret）、安装 lau
 | 页面返回 403 | Host 头只接受 `localhost` 与 `127.0.0.1`。用这两个地址直接访问，不要走代理或自定义域名 |
 | 实例列表里没有某个实例 | 它没装 launchd 常驻服务，或配置目录不在 `~/.config/opencode-feishu-bridge*` 下。安装常驻服务：`./scripts/install-agent.sh --instance <实例名> --config-dir <配置目录>` |
 | 改了配置不生效 | 配置在进程启动时读取。在总览页点该实例的「重启」，或跑 `./scripts/up.sh` |
-| 卡片停在「执行中」不动 | 现在不会了：任何运行失败事件都会立刻把「执行中」卡片原地转成红色报错卡片（不新发消息），报错信息带原因；提示「上下文可能过长」时发 `/new` 开新会话续上 |
+| 卡片停在「执行中」不动 | 现在不会了：任何运行失败事件都会立刻把「执行中」卡片原地转成红色报错卡片（不新发消息），报错信息带原因；提示「上下文可能过长」时发 `/new` 开新会话续上。飞书 SDK 的请求另有 20 秒超时（`OCB_SDK_TIMEOUT_MS` 可调），看门狗也会收殓终态卡片更新卡死的运行，状态不会永久堆着 |
 | 报错说 The input you provided is invalid | 模型提供商拒了这次请求，多数是会话上下文过长。发 `/new` 开新会话，把上一条的结论带过去接着做 |
 | 新建实例失败 | 看总览页「最近一次操作输出」里的安装日志。常见原因：appId 或 appSecret 不对（开放平台上确认）；serve 端口被占（换一个端口，或留空让 admin 自动分配）；opencode 后端没填 serve 密码（必填） |
 | pi 实例显示「CLI 异常」 | admin 在 PATH 和常见用户 bin 目录（npm 全局 bin、`~/.local/bin`、`~/.bun/bin`）里都找不到 `backend.pi.bin`。装在别处就把绝对路径填进配置；老实例的 plist 若是修复前装的，重跑一次 `./scripts/install-agent.sh --instance <实例名> --config-dir <配置目录>` 把新 PATH 写进去 |

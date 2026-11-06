@@ -4,6 +4,29 @@ import * as Lark from '@larksuiteoapi/node-sdk'
  * 飞书侧传输层：长连接收事件 + 发/改卡片。
  * 长连接模式不需要公网 IP、不需要内网穿透。
  */
+/**
+ * 给 SDK 调用加超时。
+ *
+ * 为什么必须加：SDK 底层 HTTP 请求没有默认超时。长驻进程里，静默死亡的
+ * keep-alive socket（笔记本合盖、切换 Wi-Fi）会让请求永挂——await 永远
+ * 不返回，调用方整个卡死。实测代价：一次终态卡片 patch 挂住，run 卡在
+ * 终态出不去，看门狗只认 running 也收不了殓，飞书上那张卡片永远停在
+ * 「执行中」。超时后抛错，上层（flushRun 的 try/catch）记录后继续走
+ * 终态收尾，状态不卡死。
+ */
+/** 调用时读取，测试可以调小 */
+const sdkTimeoutMs = () => Number(process.env.OCB_SDK_TIMEOUT_MS) || 20_000
+function withTimeout(promise, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      const ms = sdkTimeoutMs()
+      const t = setTimeout(() => reject(new Error(`飞书 ${label} 请求超过 ${ms / 1000} 秒未响应`)), ms)
+      t.unref?.()
+    }),
+  ])
+}
+
 export class FeishuTransport {
   constructor(config, { onMessage, onCardAction, nameOf, onSeenNames, logger = console }) {
     this.cfg = config.feishu
@@ -297,19 +320,25 @@ export class FeishuTransport {
    */
   async _send(chatId, msgType, content, replyTo) {
     if (replyTo) {
-      const res = await this.client.im.v1.message.reply({
-        path: { message_id: replyTo },
-        data: { msg_type: msgType, content, reply_in_thread: true },
-      })
+      const res = await withTimeout(
+        this.client.im.v1.message.reply({
+          path: { message_id: replyTo },
+          data: { msg_type: msgType, content, reply_in_thread: true },
+        }),
+        'reply',
+      )
       if (res?.code !== 0 && res?.code !== undefined) {
         throw new Error(`发送消息失败 code=${res.code} msg=${res.msg}`)
       }
       return res?.data?.message_id
     }
-    const res = await this.client.im.v1.message.create({
-      params: { receive_id_type: 'chat_id' },
-      data: { receive_id: chatId, msg_type: msgType, content },
-    })
+    const res = await withTimeout(
+      this.client.im.v1.message.create({
+        params: { receive_id_type: 'chat_id' },
+        data: { receive_id: chatId, msg_type: msgType, content },
+      }),
+      'create',
+    )
     if (res?.code !== 0 && res?.code !== undefined) {
       throw new Error(`发送消息失败 code=${res.code} msg=${res.msg}`)
     }
@@ -321,10 +350,13 @@ export class FeishuTransport {
   }
 
   async patchCard(messageId, card) {
-    const res = await this.client.im.v1.message.patch({
-      path: { message_id: messageId },
-      data: { content: JSON.stringify(card) },
-    })
+    const res = await withTimeout(
+      this.client.im.v1.message.patch({
+        path: { message_id: messageId },
+        data: { content: JSON.stringify(card) },
+      }),
+      'patch',
+    )
     if (res?.code !== 0 && res?.code !== undefined) {
       throw new Error(`更新卡片失败 code=${res.code} msg=${res.msg}`)
     }
