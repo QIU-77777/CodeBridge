@@ -593,7 +593,8 @@ async function loadOverview() {
         </div>`
       : `<span class="hint">安装常驻服务：<code>./scripts/install-agent.sh --instance ${esc(i.name)} --config-dir ${esc(i.dir)}</code></span>`
     return `<tr>
-      <td><b>${esc(i.name)}</b><br><span class="dim mono">${esc(short(i.dir, 46))}</span>${managed}</td>
+      <td><b>${esc(i.name)}</b>${managed}</td>
+      <td class="mono dim" title="${esc(i.dir)}">${esc(short(i.dir, 46))}</td>
       <td class="mono">${esc(i.backend)}</td>
       <td class="mono">${esc(i.appId || '—')}${i.botOpenId ? `<br><span class="dim mono">${esc(short(i.botOpenId, 22))}</span>` : ''}</td>
       <td>${statusBadge(i.process)} ${busy}</td>

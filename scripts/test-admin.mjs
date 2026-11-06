@@ -91,6 +91,24 @@ try {
     'doctor 子进程带上实例的 OCB_CONFIG_DIR',
   )
 
+  // 4b. 总览表格：表头列数必须和 loadOverview 每行渲染的单元格数一致。
+  // 曾经表头 9 列、行里只有 8 个单元格（配置目录挤进第一列当副标题），
+  // 导致后端、飞书应用、状态等每一列都左移一格，「操作」列空着
+  const indexHtml = await import('node:fs').then((fs) =>
+    fs.readFileSync(join(REPO, 'admin', 'public', 'index.html'), 'utf8'),
+  )
+  const ovTable = indexHtml.slice(indexHtml.indexOf('<table id="ov-table">'))
+  const ovHead = ovTable.slice(0, ovTable.indexOf('</thead>'))
+  const thCount = (ovHead.match(/<th>/g) || []).length
+  const rowStart = indexHtml.indexOf('return `<tr>', indexHtml.indexOf('async function loadOverview'))
+  const rowTpl = indexHtml.slice(rowStart, indexHtml.indexOf('</tr>`', rowStart))
+  const tdCount = (rowTpl.match(/<td[\s>]/g) || []).length
+  ok(
+    thCount === 9 && tdCount === thCount,
+    `总览表格每行单元格数与表头一致（${thCount} 列）`,
+    `th=${thCount} td=${tdCount}`,
+  )
+
   // 5. 可执行文件解析：PATH 找不到时去常见用户 bin 目录找
   // （pi 装在 ~/.npm-global/bin，而 admin 进程的 PATH 里没有它，实测踩过）
   const { resolveBin } = await import(join(REPO, 'admin', 'instances.js'))
