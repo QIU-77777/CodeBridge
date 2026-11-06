@@ -9,6 +9,7 @@ import {
   sessionsCard,
   statusCard,
   textCard,
+  busyCard,
   fmtAgo,
 } from './cards.js'
 import { truncate } from './render.js'
@@ -225,6 +226,30 @@ export class Bridge {
       this.store.clearInflight?.(sid)
       // 结束后再保留一小段时间便于清理
       setTimeout(() => this.runs.delete(sid), 60_000)
+      // 忙等时排队或插队的消息，到这里接着发。等 1.5 秒让卡片落定、
+      // 迟到的 abort 事件过去，避免两条消息挤在同一张卡片上
+      const qk = run.meta?.key
+      if (qk && this.store.queueLength(qk) > 0) {
+        setTimeout(() => this.drainQueue(qk), 1500)
+      }
+    }
+  }
+
+  /**
+   * 把排队/插队的下一条发出去。当前任务收尾后由 flushRun 触发，
+   * 「中止当前改发这条」的 interrupt 收尾时也会走到这里。
+   */
+  async drainQueue(key) {
+    const msg = this.store.dequeue(key)
+    if (!msg) return
+    const ctx = { key, chatId: msg.chatId, replyTo: msg.replyTo || null }
+    try {
+      await this.runPrompt(msg, ctx)
+    } catch (err) {
+      this.log.error?.(`排队消息发送失败: ${err.message}`)
+      this.t
+        .sendText(ctx.chatId, `排队的内容发送失败: ${err.message}`, { replyTo: ctx.replyTo })
+        ?.catch?.(() => {})
     }
   }
 
@@ -309,9 +334,27 @@ export class Bridge {
     // 一个会话同时只跑一个任务。否则新 run 会覆盖旧的，旧卡片永远停在「执行中」
     const busy = binding?.sessionId ? this.runs.get(binding.sessionId) : null
     if (busy?.state?.status === 'running') {
-      return this.t.sendText(ctx.chatId, '这条话题的上一条还在执行中，等它结束，或者先发 /stop 中止。', {
+      // 不再直接丢弃：消息存进 pending，回一张三选一的卡片（加入队列 /
+      // 中止当前改发这条 / 取消）。队列在任务收尾后自动排空
+      this.store.setPending(ctx.key, {
+        text: msg.text,
+        userId: msg.userId,
+        messageId: msg.messageId,
+        origin: msg.origin,
+        isGroup: msg.isGroup,
+        chatId: ctx.chatId,
         replyTo: ctx.replyTo,
       })
+      return this.t.sendCard(
+        ctx.chatId,
+        busyCard({
+          preview: msg.text,
+          from: this.nameOf(msg.userId) || msg.userId,
+          k: ctx.key,
+          rt: ctx.replyTo,
+        }),
+        { replyTo: ctx.replyTo },
+      )
     }
 
     // 话题之间可以并行，但不能无限并行：每个会话都在真跑 bash / node，开太多会打满本机
@@ -815,6 +858,53 @@ export class Bridge {
           await this.oc.replyPermission(a.s, a.r, a.d)
           const label = a.d === 'reject' ? '已拒绝' : a.d === 'always' ? '已允许（永久）' : '已允许一次'
           return replyNew({ type: 'success', content: label }, textCard('🔐 授权已处理', label, a.d === 'reject' ? 'red' : 'green'))
+        }
+        case 'enqueue': {
+          const p = this.store.getPending(key)
+          if (!p) return { toast: { type: 'error', content: '没有待处理的消息（可能已被处理过）' } }
+          this.store.clearPending(key)
+          const n = this.store.enqueue(key, p)
+          return replyNew(
+            { type: 'success', content: `已加入队列（第 ${n} 位）` },
+            textCard(
+              '⏳ 已加入队列',
+              [
+                `**内容** ${truncate(p.text, 120)}`,
+                '',
+                '当前任务结束后自动发送。队列里排在前面的消息会先发。',
+              ].join('\n'),
+              'yellow',
+            ),
+          )
+        }
+        case 'steer': {
+          const p = this.store.getPending(key)
+          if (!p) return { toast: { type: 'error', content: '没有待处理的消息（可能已被处理过）' } }
+          this.store.clearPending(key)
+          // 插到队首并中止当前任务：abort 事件收尾时 drainQueue 会把它发出去
+          this.store.enqueue(key, p, true)
+          const binding = this.store.get(key)
+          const stopped = binding?.sessionId ? await this.oc.interrupt(binding.sessionId) : false
+          if (!stopped) {
+            // 当前任务已经不在了（用户刚点过 /stop 之类）：直接排空
+            setTimeout(() => this.drainQueue(key), 1500)
+          }
+          return replyNew(
+            { type: 'success', content: stopped ? '已中止当前任务' : '当前任务已结束' },
+            textCard(
+              '🛑 中止当前任务',
+              [
+                `**改发** ${truncate(p.text, 120)}`,
+                '',
+                '当前任务已中止，这条消息接着发送。',
+              ].join('\n'),
+              'red',
+            ),
+          )
+        }
+        case 'drop': {
+          this.store.clearPending(key)
+          return { toast: { type: 'info', content: '已取消，消息没有发送' } }
         }
         case 'noop':
           return { toast: { type: 'info', content: '无需操作' } }
