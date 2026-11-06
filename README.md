@@ -495,7 +495,7 @@ npm run admin -- --port 8080 # 换端口
 
 - **实例**：实例名（小写字母、数字、连字符）与配置目录（留空用默认 `~/.config/opencode-feishu-bridge-实例名`），后端类型选 opencode 或 pi。
 - **飞书应用**：appId、appSecret、domain、botOpenId（选填）。飞书应用要先在开放平台建好，权限与事件订阅见「创建飞书应用」一节，admin 只收凭证。
-- **后端连接**：opencode 后端的 serve 密码必填（新建实例的 serve 用它启动，桥接也用它连，留空会连到别人需要密码的 serve 报 401）。serve 地址留空即可，admin 自动分配：配置里已被占用的端口、admin 自身的端口、探测发现有东西在跑的端口都会跳过；显式指定的端口被占用会直接拒绝并说明原因。pi 后端不连 serve，填 bin、model、timeoutMs。
+- **后端连接**：opencode 后端的 serve 密码必填（新建实例的 serve 用它启动，桥接也用它连，留空会连到别人需要密码的 serve 报 401）。serve 地址留空即可，admin 自动分配：配置里已被占用的端口、admin 自身的端口、探测发现有东西在跑的端口都会跳过；显式指定的端口被占用会直接拒绝并说明原因。pi 后端不连 serve，填 bin、model、timeoutMs；`backend.pi.bin` 要在 launchd 的 PATH 里找得到（`install-agent.sh` 会把系统目录和 npm 全局 bin、`~/.local/bin`、`~/.bun/bin` 写进 plist 的 PATH），装在别处就填绝对路径。
 
 admin 按模板生成 `config.json`（权限 600，含 appSecret）、安装 launchd 常驻服务并启动，完成后新实例出现在总览表里，可像其他实例一样起停、看日志。安装失败会自动回滚：摘掉刚装的 launchd 服务、删掉刚生成的配置，不影响其他在跑实例。
 
@@ -536,6 +536,7 @@ admin 按模板生成 `config.json`（权限 600，含 appSecret）、安装 lau
 | 实例列表里没有某个实例 | 它没装 launchd 常驻服务，或配置目录不在 `~/.config/opencode-feishu-bridge*` 下。安装常驻服务：`./scripts/install-agent.sh --instance <实例名> --config-dir <配置目录>` |
 | 改了配置不生效 | 配置在进程启动时读取。在总览页点该实例的「重启」，或跑 `./scripts/up.sh` |
 | 新建实例失败 | 看总览页「最近一次操作输出」里的安装日志。常见原因：appId 或 appSecret 不对（开放平台上确认）；serve 端口被占（换一个端口，或留空让 admin 自动分配）；opencode 后端没填 serve 密码（必填） |
+| pi 实例显示「CLI 异常」 | admin 在 PATH 和常见用户 bin 目录（npm 全局 bin、`~/.local/bin`、`~/.bun/bin`）里都找不到 `backend.pi.bin`。装在别处就把绝对路径填进配置；老实例的 plist 若是修复前装的，重跑一次 `./scripts/install-agent.sh --instance <实例名> --config-dir <配置目录>` 把新 PATH 写进去 |
 
 ---
 

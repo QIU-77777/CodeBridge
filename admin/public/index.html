@@ -579,7 +579,9 @@ async function loadOverview() {
     const serve = !i.serve.applicable ? '<span class="faint">不适用</span>'
       : i.serve.ok ? `<span class="badge green"><span class="dot green"></span>v${esc(i.serve.version || '?')}</span>`
       : '<span class="badge red"><span class="dot red"></span>无响应</span>'
-    const pi = !i.pi.applicable ? '' : i.pi.ok ? '<span class="badge green"><span class="dot green"></span>CLI 可用</span>' : `<span class="badge red" title="${esc(i.pi.error || '')}"><span class="dot red"></span>CLI 异常</span>`
+    const pi = !i.pi.applicable ? '' : i.pi.ok
+      ? `<span class="badge green" title="${esc(i.pi.resolved || '')}"><span class="dot green"></span>CLI 可用</span>`
+      : `<span class="badge red" title="${esc(i.pi.error || '')}"><span class="dot red"></span>CLI 异常</span>`
     const busy = i.summary?.inflight ? `<span class="badge blue"><span class="dot blue"></span>${i.summary.inflight} 张进行中</span>` : ''
     const managed = i.managed ? '' : '<br><span class="badge gray" title="没有安装 launchd 常驻服务">未安装常驻服务</span>'
     // 起停只对装了 plist 的实例开放：没装的实例走 down.sh 会误杀本机所有桥接进程

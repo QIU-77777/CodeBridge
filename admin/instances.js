@@ -260,13 +260,41 @@ export async function serveHealth(cfg) {
   }
 }
 
+/**
+ * 常见用户 bin 目录。admin 进程的 PATH 未必包含它们——admin 常由 npm 启动，
+ * PATH 里只有 node_modules/.bin 和系统目录；而用户装的 CLI（pi 这类）多在
+ * npm 全局 bin 里。PATH 直接找不到时去这些目录找，别误报「CLI 异常」。
+ */
+const USER_BIN_DIRS = [
+  join(homedir(), '.npm-global', 'bin'),
+  join(homedir(), '.local', 'bin'),
+  join(homedir(), '.bun', 'bin'),
+  '/opt/homebrew/bin',
+  '/usr/local/bin',
+]
+
+/**
+ * 找可执行文件：显式路径直接用；裸命令名先信 PATH（spawn 自己会找），
+ * PATH 找不到时再逐个试常见目录。返回绝对路径或 null。
+ */
+export function resolveBin(bin) {
+  if (!bin) return null
+  if (bin.includes('/')) return existsSync(bin) ? bin : null
+  for (const dir of USER_BIN_DIRS) {
+    const p = join(dir, bin)
+    if (existsSync(p)) return p
+  }
+  return null
+}
+
 /** pi 后端：CLI 能否跑起来。和 index.js 启动时的健康检查同口径 */
 export async function piCliHealth(cfg) {
   if ((cfg?.backend?.type || 'opencode') !== 'pi') return { applicable: false }
   const bin = cfg?.backend?.pi?.bin || 'pi'
   const { spawn } = await import('node:child_process')
+  const resolved = resolveBin(bin)
   return new Promise((res) => {
-    const p = spawn(bin, ['--version'], { stdio: ['ignore', 'pipe', 'pipe'] })
+    const p = spawn(resolved || bin, ['--version'], { stdio: ['ignore', 'pipe', 'pipe'] })
     let out = ''
     const timer = setTimeout(() => {
       p.kill()
@@ -275,11 +303,24 @@ export async function piCliHealth(cfg) {
     p.stdout?.on('data', (d) => (out += d))
     p.on('error', (err) => {
       clearTimeout(timer)
-      res({ applicable: true, ok: false, error: err.code === 'ENOENT' ? `找不到可执行文件 ${bin}` : err.message })
+      const tried = USER_BIN_DIRS.join('、')
+      res({
+        applicable: true,
+        ok: false,
+        error: err.code === 'ENOENT'
+          ? `找不到可执行文件 ${bin}（PATH 与这些目录都没有：${tried}）。装在别处就把绝对路径填进 backend.pi.bin`
+          : err.message,
+      })
     })
     p.on('close', (code) => {
       clearTimeout(timer)
-      res({ applicable: true, ok: code === 0, version: out.trim(), error: code === 0 ? null : `退出码 ${code}` })
+      res({
+        applicable: true,
+        ok: code === 0,
+        version: out.trim(),
+        resolved: resolved || undefined,
+        error: code === 0 ? null : `退出码 ${code}`,
+      })
     })
   })
 }
