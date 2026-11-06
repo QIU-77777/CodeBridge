@@ -488,7 +488,7 @@ npm run admin -- --port 8080 # 换端口
 
 ### 第 4 步：看会话与后端
 
-点左侧「会话与后端」：上半是后端健康（serve 版本与 pid、serve 地址、默认工作目录）与状态文件概要（绑定会话数、进行中卡片、攒到的名字）；往下是 opencode 的会话列表（标题、会话 id、目录、模型、最近更新）、模型列表，以及 `state.json` 里进行中的卡片。pi 后端没有会话概念，这一页显示 CLI 可用性与默认工作目录。默认工作目录的修改入口在「配置」页；单个会话换目录在飞书里发 `/cd`。
+点左侧「会话与后端」：上半是后端健康（serve 版本与 pid、serve 地址、默认工作目录）与状态文件概要（绑定会话数、进行中卡片、攒到的名字）；往下是会话列表（标题、会话 id、目录、模型、最近更新）、模型列表，以及 `state.json` 里进行中的卡片。两个后端都有会话，存放方式不同：opencode 的问常驻 serve；pi 的没有 serve，桥接把会话索引写在配置目录的 `pi-sessions/index.json`，详细记录是同目录下的 JSONL 文件。pi 后端这一页同时显示 CLI 版本与默认工作目录。默认工作目录的修改入口在「配置」页；单个会话换目录在飞书里发 `/cd`。
 
 ![会话与后端页：serve 健康与会话列表](docs/images/admin/03-new-sidebar-sessions.png)
 
@@ -521,7 +521,7 @@ admin 按模板生成 `config.json`（权限 600，含 appSecret）、安装 lau
 | 总览 | 本机所有实例一行一条：运行状态、后端类型、配置目录、pid 与已运行时长、serve 健康、绑定会话数、进行中卡片数；已装 launchd 常驻服务的实例可一键启动、停止、重启 |
 | 配置 | 按实例编辑 `config.json` 的四段（feishu / opencode / behavior / backend）；appSecret 与 serve 密码掩码显示，留空表示保持原值；保存前备份成 `config.json.bak`，临时文件加重命名落盘 |
 | 飞书应用 | 按实例校验 appId 与 appSecret（打 `bot/v3/info`，回显机器人名与 open_id）；allowlist 按 open_id 逐条增删，加入时可选填名字；`feishu.names` 逐条增、改、删 |
-| 会话与后端 | opencode 后端：serve 健康（`/api/info`）、模型列表（`/api/model`）、会话列表（`/api/session`）；pi 后端：CLI 可用性；`state.json` 只读展示（每个 chat 与话题的绑定、进行中的卡片、攒到的名字） |
+| 会话与后端 | opencode 后端：serve 健康（`/api/info`）、模型列表（`/api/model`）、会话列表（`/api/session`）；pi 后端：CLI 版本、会话列表（读配置目录的 `pi-sessions/index.json`，详细记录在同目录 JSONL 文件）；`state.json` 只读展示（每个 chat 与话题的绑定、进行中的卡片、攒到的名字） |
 | 日志与体检 | `bridge.log` 与 `serve.log` 近实时跟随（按字节偏移增量拉取，两秒一轮）；一键跑 doctor，输出解析成逐条检查项，失败标红 |
 
 ### 安全与边界

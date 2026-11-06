@@ -556,9 +556,34 @@ async function handleApi(req, res, url) {
     return sendJson(res, 200, await verifyFeishu(cfg))
   }
 
-  // opencode 会话列表
+  // 会话列表。两个后端都有会话，存放方式不同：opencode 问常驻 serve；
+  // pi 没有 serve，会话索引由桥接写在配置目录的 pi-sessions/index.json，
+  // 详细记录是同目录下的 JSONL 文件（pi 自己写的）。admin 只读索引，
+  // 不与桥接进程争抢写入
   if (sub === 'sessions' && req.method === 'GET') {
     const cfg = readJsonSafe(found.dir)
+    if ((cfg.backend?.type || 'opencode') === 'pi') {
+      const indexPath = join(found.dir, 'pi-sessions', 'index.json')
+      let index = null
+      try {
+        index = JSON.parse(readFileSync(indexPath, 'utf8'))
+      } catch (err) {
+        // 从没建过会话时文件不存在，是正常状态，返回空列表；解析失败才报错
+        if (err.code !== 'ENOENT') {
+          return sendJson(res, 200, { applicable: true, error: `会话索引读取失败: ${err.message}`, sessions: [] })
+        }
+      }
+      const sessions = Object.values(index || {})
+        .sort((a, b) => (b.time?.updated || 0) - (a.time?.updated || 0))
+        .map((s) => ({
+          id: s.id || '',
+          title: s.title || '',
+          directory: s.location?.directory || '',
+          model: s.model?.id ? [s.model.providerID, s.model.id].filter(Boolean).join('/') : '',
+          updatedAt: s.time?.updated || null,
+        }))
+      return sendJson(res, 200, { applicable: true, sessions })
+    }
     if ((cfg.backend?.type || 'opencode') !== 'opencode') {
       return sendJson(res, 200, { applicable: false })
     }
