@@ -12,6 +12,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$ROOT/scripts/lib/config-dir.sh"
+. "$ROOT/scripts/lib/launchd-path.sh"
 cd "$ROOT"
 
 while [ $# -gt 0 ]; do
@@ -42,6 +43,10 @@ if [ -z "$NODE" ]; then
   if [ -x /usr/local/bin/node ]; then NODE=/usr/local/bin/node; else NODE="$(command -v node)"; fi
 fi
 
+# plist 的 PATH：系统目录加当前用户的常见 bin 目录。只写系统目录的话，
+# launchd 拉起的桥接找不到用户自己装的 CLI（pi 装在 npm 全局 bin，实测踩过）
+LAUNCHD_PATH="$(ocb_launchd_path)"
+
 write_plist() {
   local label="$1" script="$2" log="$3"
   cat > "$PLIST_DIR/$label.plist" <<PLIST
@@ -58,7 +63,7 @@ write_plist() {
   <key>WorkingDirectory</key><string>$ROOT</string>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>PATH</key><string>$LAUNCHD_PATH</string>
     <key>BRIDGE_NODE</key><string>$NODE</string>
     <key>OCB_CONFIG_DIR</key><string>$CONFIG_DIR_VAL</string>
   </dict>

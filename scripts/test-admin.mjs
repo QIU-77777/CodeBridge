@@ -11,8 +11,8 @@
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdtempSync, readFileSync, rmSync, statSync, existsSync } from 'node:fs'
+import { tmpdir, homedir } from 'node:os'
 
 let pass = 0
 let fail = 0
@@ -91,7 +91,32 @@ try {
     'doctor 子进程带上实例的 OCB_CONFIG_DIR',
   )
 
-  // 5. 新建实例：校验、端口避让、配置生成与落盘
+  // 5. 可执行文件解析：PATH 找不到时去常见用户 bin 目录找
+  // （pi 装在 ~/.npm-global/bin，而 admin 进程的 PATH 里没有它，实测踩过）
+  const { resolveBin } = await import(join(REPO, 'admin', 'instances.js'))
+  const npmGlobalPi = join(homedir(), '.npm-global', 'bin', 'pi')
+  ok(existsSync(npmGlobalPi), '测试机上前置条件：~/.npm-global/bin/pi 存在')
+  ok(resolveBin('pi') === npmGlobalPi, '裸命令名在常见目录里找到（npm 全局 bin）', String(resolveBin('pi')))
+  ok(resolveBin('/usr/bin/env') === '/usr/bin/env', '显式路径直接采用')
+  ok(resolveBin('/nonexistent/xyz') === null, '显式路径不存在返回 null')
+  ok(resolveBin('definitely-not-a-real-binary-xyz') === null, '哪里都找不到返回 null')
+  ok(resolveBin('') === null, '空名字返回 null')
+
+  // 5b. launchd plist 的 PATH：系统目录打底，追加用户的常见 bin 目录
+  // （pi 装在 npm 全局 bin，plist 只写系统目录时 launchd 拉起的桥接找不到它）
+  const lp = spawnSync('bash', ['-c', '. "$1/scripts/lib/launchd-path.sh"; ocb_launchd_path', '_', REPO], {
+    encoding: 'utf8',
+  })
+  ok(lp.status === 0, 'launchd-path.sh 可被 source 并输出 PATH')
+  const lpOut = (lp.stdout || '').trim()
+  ok(lpOut.startsWith('/usr/local/bin:'), 'PATH 以系统目录打底', lpOut.slice(0, 60))
+  ok(
+    existsSync(npmGlobalPi) ? lpOut.includes(join(homedir(), '.npm-global', 'bin')) : true,
+    'PATH 包含 npm 全局 bin（pi 所在目录）',
+    lpOut.slice(0, 120),
+  )
+
+  // 6. 新建实例：校验、端口避让、配置生成与落盘
   const { planNewInstance, writeNewInstance, nextFreeUrl, defaultDirForName } = await import(
     join(REPO, 'admin', 'create.js')
   )
