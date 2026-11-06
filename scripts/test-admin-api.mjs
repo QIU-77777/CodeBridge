@@ -125,6 +125,32 @@ try {
   const noHeader = await call(`/api/instances/${NAME}/names`, { op: 'remove', openId: 'ou_test000000000000000000a1' }, false)
   ok(noHeader.status === 403, '缺少 X-OCB-Admin 头的写操作返回 403')
   ok(readFileSync(CONFIG_PATH, 'utf8') === before, '被 403 挡回的写操作没有落盘')
+
+  // 会话列表：pi 后端读配置目录的 pi-sessions/index.json（桥接写的本地索引）。
+  // 先测「从没建过会话」：索引文件不存在时返回空列表，而不是「不适用」
+  const sessionsEmpty = await fetch(`${BASE}/api/instances/${NAME}/sessions`, { headers: { Accept: 'application/json' } }).then((x) => x.json())
+  ok(sessionsEmpty.applicable === true && sessionsEmpty.sessions?.length === 0, 'pi 无会话索引时返回空列表')
+
+  // 造一份索引，形状与 src/pi.js 写的一致；按最近更新倒序返回
+  mkdirSync(join(INSTANCE_DIR, 'pi-sessions'), { recursive: true })
+  writeFileSync(
+    join(INSTANCE_DIR, 'pi-sessions', 'index.json'),
+    JSON.stringify({
+      'pi-old0001': { id: 'pi-old0001', title: '飞书 · 2026/11/6 15:11:34', location: { directory: '/tmp/old' }, model: null, time: { created: 1000, updated: 2000 } },
+      'pi-new0002': { id: 'pi-new0002', title: '飞书 · 2026/11/6 17:44:07', location: { directory: '/tmp/new' }, model: { providerID: 'deepseek', id: 'deepseek-v4-pro' }, time: { created: 3000, updated: 9000 } },
+    }),
+  )
+  const sessions = await fetch(`${BASE}/api/instances/${NAME}/sessions`, { headers: { Accept: 'application/json' } }).then((x) => x.json())
+  ok(sessions.applicable === true && sessions.sessions?.length === 2, 'pi 会话索引读出两条')
+  ok(sessions.sessions?.[0]?.id === 'pi-new0002', '按最近更新倒序（新的在前）')
+  ok(sessions.sessions?.[0]?.directory === '/tmp/new' && sessions.sessions?.[0]?.title.includes('17:44'), '会话字段完整（标题、目录）')
+  ok(sessions.sessions?.[0]?.model === 'deepseek/deepseek-v4-pro', '模型拼成 provider/id')
+  ok(sessions.sessions?.[0]?.updatedAt === 9000, '更新时间带回')
+
+  // 索引损坏时明确报错，不静默返回空列表
+  writeFileSync(join(INSTANCE_DIR, 'pi-sessions', 'index.json'), '{ 这不是 JSON')
+  const sessionsBad = await fetch(`${BASE}/api/instances/${NAME}/sessions`, { headers: { Accept: 'application/json' } }).then((x) => x.json())
+  ok(sessionsBad.applicable === true && sessionsBad.error && sessionsBad.sessions?.length === 0, '会话索引损坏时带回错误')
 } catch (err) {
   fail++
   console.log(`❌ 测试本身出错: ${err.stack || err.message}`)

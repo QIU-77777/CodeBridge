@@ -399,7 +399,7 @@
               <dl class="kv" id="ss-summary"></dl>
             </div>
           </div>
-          <h3>会话列表（opencode）</h3>
+          <h3>会话列表</h3>
           <div class="scroll-x">
           <table id="ss-sessions"><thead><tr><th>标题</th><th>会话 id</th><th>目录</th><th>模型</th><th>最近更新</th></tr></thead><tbody></tbody></table>
           </div>
@@ -881,13 +881,16 @@ async function loadSessionsTab() {
       <dt>绑定会话数</dt><dd class="num">${detail.summary?.chats ?? 0}</dd>
       <dt>进行中卡片</dt><dd class="num">${detail.summary?.inflight ?? 0}</dd>
       <dt>攒到的名字</dt><dd class="num">${detail.summary?.names ?? 0}</dd>`
-    $('ss-sessions').querySelector('tbody').innerHTML = sessions.applicable
-      ? (sessions.sessions || []).map((s) => `<tr>
+    // 两个后端的会话都在本地有记录：opencode 在 serve 里，pi 在配置目录的
+    // pi-sessions/index.json。取不到就明说取不到，不用「没有会话概念」这类
+    // 与事实不符的说法——pi 不但有会话，详细记录还在同目录的 JSONL 文件里
+    const sessionRows = (sessions.sessions || []).map((s) => `<tr>
           <td>${esc(s.title || '（无标题）')}</td><td class="mono">${esc(s.id)}</td>
           <td class="mono">${esc(short(s.directory, 44))}</td><td class="mono">${esc(s.model)}</td>
-          <td class="mono">${fmtTime(s.updatedAt)}</td></tr>`).join('') || '<tr><td colspan="5" class="dim">没有会话</td></tr>'
-      : '<tr><td colspan="5" class="dim">pi 后端没有会话概念</td></tr>'
-    if (sessions.error) $('ss-sessions').querySelector('tbody').innerHTML = `<tr><td colspan="5" class="err">${esc(sessions.error)}</td></tr>`
+          <td class="mono">${fmtTime(s.updatedAt)}</td></tr>`).join('')
+    $('ss-sessions').querySelector('tbody').innerHTML = sessions.error
+      ? `<tr><td colspan="5" class="err">${esc(sessions.error)}</td></tr>`
+      : sessionRows || '<tr><td colspan="5" class="dim">没有会话</td></tr>'
     $('ss-models').textContent = models.applicable
       ? (models.models || []).join('\n') || '（列表为空）'
       : '（pi 后端不适用）'
