@@ -143,6 +143,21 @@ try {
     lpOut.slice(0, 120),
   )
 
+  // 5c. pi 健康检查带回版本号：总览 serve 列的 pi 徽章直接显示它（与 opencode 的 serve 版本同一列）
+  const { piCliHealth } = await import(join(REPO, 'admin', 'instances.js'))
+  if (hasPi) {
+    const ph = await piCliHealth({ backend: { type: 'pi', pi: { bin: 'pi' } } })
+    ok(
+      ph.applicable === true && ph.ok === true && typeof ph.version === 'string' && ph.version.length > 0,
+      'pi 健康检查 ok 时带回非空版本号',
+      JSON.stringify(ph).slice(0, 120),
+    )
+  } else {
+    console.log('… 跳过：本机没有 ~/.npm-global/bin/pi，pi 健康检查用例不适用')
+  }
+  const phOpen = await piCliHealth({ backend: { type: 'opencode' } })
+  ok(phOpen.applicable === false, 'opencode 实例的 pi 健康检查不适用')
+
   // 6. 新建实例：校验、端口避让、配置生成与落盘
   const { planNewInstance, writeNewInstance, nextFreeUrl, defaultDirForName } = await import(
     join(REPO, 'admin', 'create.js')
