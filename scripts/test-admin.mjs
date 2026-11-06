@@ -95,8 +95,13 @@ try {
   // （pi 装在 ~/.npm-global/bin，而 admin 进程的 PATH 里没有它，实测踩过）
   const { resolveBin } = await import(join(REPO, 'admin', 'instances.js'))
   const npmGlobalPi = join(homedir(), '.npm-global', 'bin', 'pi')
-  ok(existsSync(npmGlobalPi), '测试机上前置条件：~/.npm-global/bin/pi 存在')
-  ok(resolveBin('pi') === npmGlobalPi, '裸命令名在常见目录里找到（npm 全局 bin）', String(resolveBin('pi')))
+  const hasPi = existsSync(npmGlobalPi)
+  if (hasPi) {
+    ok(resolveBin('pi') === npmGlobalPi, '裸命令名在常见目录里找到（npm 全局 bin）', String(resolveBin('pi')))
+  } else {
+    // 没装 pi 的机器上不当失败，跳过并说明
+    console.log('… 跳过：本机没有 ~/.npm-global/bin/pi，相关用例不适用')
+  }
   ok(resolveBin('/usr/bin/env') === '/usr/bin/env', '显式路径直接采用')
   ok(resolveBin('/nonexistent/xyz') === null, '显式路径不存在返回 null')
   ok(resolveBin('definitely-not-a-real-binary-xyz') === null, '哪里都找不到返回 null')
@@ -111,7 +116,7 @@ try {
   const lpOut = (lp.stdout || '').trim()
   ok(lpOut.startsWith('/usr/local/bin:'), 'PATH 以系统目录打底', lpOut.slice(0, 60))
   ok(
-    existsSync(npmGlobalPi) ? lpOut.includes(join(homedir(), '.npm-global', 'bin')) : true,
+    hasPi ? lpOut.includes(join(homedir(), '.npm-global', 'bin')) : true,
     'PATH 包含 npm 全局 bin（pi 所在目录）',
     lpOut.slice(0, 120),
   )
