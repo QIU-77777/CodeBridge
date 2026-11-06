@@ -174,7 +174,7 @@ function lockPid(dir) {
 }
 
 /** launchd 服务名。规则与 scripts/lib/config-dir.sh 的 ocb_label() 一致 */
-function appLabel(name) {
+export function appLabel(name) {
   return name === 'default' ? 'ai.qiguang.ocbridge.app' : `ai.qiguang.ocbridge.${name}.app`
 }
 

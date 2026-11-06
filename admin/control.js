@@ -7,18 +7,19 @@
  * admin 不做 second implementation。
  */
 import { join, resolve } from 'node:path'
+import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
-import { spawn } from 'node:child_process'
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { spawn, execFileSync } from 'node:child_process'
+import { existsSync, readFileSync, statSync, unlinkSync } from 'node:fs'
 // 实例环境变量从 instances.js 导入，不在这里写第二份：两份实现迟早会漂移
-import { instanceEnv } from './instances.js'
+import { instanceEnv, appLabel } from './instances.js'
 
 const REPO = resolve(fileURLToPath(import.meta.url), '../..')
 const LOG_DIR = join(REPO, 'logs')
 
-function runScript(script, env, timeoutMs = 90_000) {
+function runScript(script, env, timeoutMs = 90_000, args = []) {
   return new Promise((res) => {
-    const p = spawn('bash', [join(REPO, 'scripts', script)], {
+    const p = spawn('bash', [join(REPO, 'scripts', script), ...args], {
       cwd: REPO,
       env: { ...process.env, ...env },
     })
@@ -43,6 +44,40 @@ function runScript(script, env, timeoutMs = 90_000) {
       res({ code: -1, output: `启动脚本失败: ${err.message}` })
     })
   })
+}
+
+/**
+ * 安装常驻服务。install-agent.sh 的两个参数相互独立：--instance 决定
+ * launchd 服务名，--config-dir 决定读哪份配置，两个都要显式传。
+ * 装好即启动（脚本内部 bootstrap），所以不需要再跑 up.sh。
+ */
+export function installInstance(name, dir) {
+  return runScript('install-agent.sh', instanceEnv(name, dir), 150_000, [
+    '--instance', name === 'default' ? '' : name,
+    '--config-dir', dir,
+  ])
+}
+
+/**
+ * 新建实例失败后的回滚：只摘掉这一个实例的 launchd label 与 plist。
+ *
+ * 不走 uninstall-agent.sh：它末尾的 pkill 会误杀本机所有桥接进程，
+ * 回滚一个失败的实例不能把在跑的实例一起带走。配置文件的清理在
+ * server.js 里做（那里知道目录是不是本次新建的）。
+ */
+export function rollbackService(name) {
+  const label = appLabel(name)
+  const plist = join(homedir(), 'Library', 'LaunchAgents', `${label}.plist`)
+  try {
+    execFileSync('launchctl', ['bootout', `gui/${process.getuid?.() ?? 501}/${label}`], { stdio: 'pipe' })
+  } catch {
+    /* 没加载过就无需 bootout */
+  }
+  try {
+    if (existsSync(plist)) unlinkSync(plist)
+  } catch {
+    /* 没写过 plist 就无需删 */
+  }
 }
 
 function runDoctor(env) {

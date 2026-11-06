@@ -187,8 +187,21 @@
   .check.warn .tag { color: var(--amber); }
   .check.bad .tag { color: var(--red); }
 
-  .hidden { display: none; }
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+  /* ---------- 新建实例弹窗 ---------- */
+  .modal-mask {
+    position: fixed; inset: 0; z-index: 20;
+    background: rgb(15 23 34 / 45%); backdrop-filter: blur(2px);
+    display: flex; align-items: flex-start; justify-content: center;
+    padding: 4vh 16px; overflow: auto;
+  }
+  .modal {
+    background: var(--surface); border-radius: 14px; box-shadow: 0 24px 64px rgb(9 16 28 / 28%);
+    width: 860px; max-width: 100%; padding: 22px 24px;
+  }
+  .modal h2 { margin: 0 0 4px; font-size: 16px; }
+  .modal .lede { margin: 0 0 14px; font-size: 12.5px; color: var(--dim); }
   @media (max-width: 760px) {
     .app { grid-template-columns: 1fr; }
     .sidebar { position: static; height: auto; flex-direction: row; align-items: center; gap: 10px; overflow-x: auto; }
@@ -198,6 +211,10 @@
     .content { padding: 18px 14px 48px; }
     .topbar { padding: 12px 14px; }
   }
+
+  /* 放在样式表末尾：单位类名的 display 规则（如 .modal-mask 的 flex）
+     不能压过 .hidden，否则弹窗关不掉 */
+  .hidden { display: none; }
 </style>
 </head>
 <body>
@@ -253,6 +270,11 @@
         <div class="card">
           <h2>实例总览</h2>
           <p class="lede">一个实例 = 一份配置目录 + 一个进程 + 一个飞书应用。起停转调仓库既有脚本，单实例锁语义不变。</p>
+          <div class="toolbar">
+            <span class="hint">再要一个机器人身份（例如把 pi 也接进群），点右侧「新建实例」，不用敲命令行。</span>
+            <span class="spacer"></span>
+            <button class="btn primary" id="ov-create">新建实例</button>
+          </div>
           <div class="scroll-x">
           <table id="ov-table">
             <thead><tr>
@@ -408,6 +430,60 @@
         </div>
       </section>
     </main>
+  </div>
+</div>
+
+<!-- 新建实例弹窗 -->
+<div class="modal-mask hidden" id="create-modal">
+  <div class="modal">
+    <h2>新建实例</h2>
+    <p class="lede">一个实例 = 一份配置目录 + 一个进程 + 一个飞书应用。飞书应用要先在开放平台建好（权限与事件订阅见 README「创建飞书应用」），这里只填凭证；admin 负责生成配置、安装 launchd 常驻服务并启动。</p>
+    <div class="grid2">
+      <div>
+        <h3>实例</h3>
+        <label class="fld"><span>实例名（小写字母、数字、连字符，字母或数字开头）</span><input type="text" id="n-name" placeholder="pi"></label>
+        <label class="fld"><span>配置目录（留空用默认 ~/.config/opencode-feishu-bridge-实例名）</span><input type="text" id="n-dir" placeholder="~/.config/opencode-feishu-bridge-pi"></label>
+        <label class="fld"><span>后端类型</span>
+          <select id="n-backend">
+            <option value="opencode">opencode（常驻流式）</option>
+            <option value="pi">pi（一次性子进程）</option>
+          </select>
+        </label>
+      </div>
+      <div>
+        <h3>飞书应用</h3>
+        <label class="fld"><span>appId</span><input type="text" id="n-appId" placeholder="cli_..."></label>
+        <label class="fld"><span>appSecret</span><input type="password" id="n-appSecret" placeholder="开放平台上的 App Secret"></label>
+        <label class="fld"><span>domain</span>
+          <select id="n-domain"><option value="feishu">feishu</option><option value="lark">lark</option></select>
+        </label>
+        <label class="fld"><span>botOpenId（选填，留空则启动时自动向飞书取）</span><input type="text" id="n-botOpenId" placeholder="ou_..."></label>
+      </div>
+    </div>
+    <div id="n-oc-group">
+      <h3>opencode 连接</h3>
+      <div class="grid2">
+        <label class="fld"><span>serve 地址（留空自动分配，避开已占用端口）</span><input type="text" id="n-ocUrl" placeholder="http://127.0.0.1:19876"></label>
+        <label class="fld"><span>serve 密码（opencode 后端必填）</span><input type="password" id="n-ocPassword" placeholder="新建实例的 serve 用它启动，桥接也用它连"></label>
+        <label class="fld"><span>默认工作目录</span><input type="text" id="n-defaultDirectory" placeholder="留空用家主目录"></label>
+        <label class="fld"><span>默认模型（providerID/modelID，可留空）</span><input type="text" id="n-defaultModel" placeholder="stepfun-step-plan/step-5-preview"></label>
+      </div>
+    </div>
+    <div id="n-pi-group" class="hidden">
+      <h3>pi 参数</h3>
+      <div class="grid2">
+        <label class="fld"><span>pi.bin</span><input type="text" id="n-piBin" placeholder="pi"></label>
+        <label class="fld"><span>pi.model（留空用 pi 默认）</span><input type="text" id="n-piModel"></label>
+        <label class="fld"><span>pi.timeoutMs</span><input type="number" id="n-piTimeout" placeholder="600000"></label>
+      </div>
+    </div>
+    <div class="row" style="margin-top:16px">
+      <span class="hint">创建过程要装服务并等它就绪，约几十秒。</span>
+      <span class="spacer"></span>
+      <button class="btn" id="n-cancel">取消</button>
+      <button class="btn primary" id="n-submit">创建并启动</button>
+    </div>
+    <div id="n-msg" style="margin-top:10px"></div>
   </div>
 </div>
 
@@ -809,6 +885,75 @@ async function runDoctor() {
   }
 }
 
+// ---------- 新建实例 ----------
+function toggleBackendGroup() {
+  const pi = $('n-backend').value === 'pi'
+  $('n-pi-group').classList.toggle('hidden', !pi)
+  $('n-oc-group').classList.toggle('hidden', pi)
+}
+
+function openCreateModal() {
+  $('create-modal').classList.remove('hidden')
+  $('n-msg').textContent = ''
+  toggleBackendGroup()
+}
+
+function closeCreateModal() {
+  $('create-modal').classList.add('hidden')
+}
+
+async function submitCreate() {
+  const body = {
+    name: $('n-name').value.trim(),
+    dir: $('n-dir').value.trim(),
+    backend: { type: $('n-backend').value },
+    feishu: {
+      appId: $('n-appId').value.trim(),
+      appSecret: $('n-appSecret').value,
+      domain: $('n-domain').value,
+      botOpenId: $('n-botOpenId').value.trim(),
+    },
+    opencode: {
+      url: $('n-ocUrl').value.trim(),
+      password: $('n-ocPassword').value,
+      defaultDirectory: $('n-defaultDirectory').value.trim(),
+      defaultModel: $('n-defaultModel').value.trim(),
+    },
+    pi: {
+      bin: $('n-piBin').value.trim(),
+      model: $('n-piModel').value.trim(),
+      timeoutMs: $('n-piTimeout').value.trim() === '' ? undefined : Number($('n-piTimeout').value),
+    },
+  }
+  // 与服务端同一条规则：opencode 后端的 serve 密码必填，提前挡掉，别等几十秒后才报错
+  if (body.backend.type === 'opencode' && !body.opencode.password) {
+    $('n-msg').innerHTML = '<span class="err">opencode 后端要填 serve 密码：新建实例的 serve 用它启动，桥接也用它连。</span>'
+    return
+  }
+  $('n-msg').textContent = '创建中：写配置、装常驻服务并等待就绪，约几十秒…'
+  $('n-submit').disabled = true
+  try {
+    const json = await api('/api/instances', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    if (!json.ok) {
+      $('n-msg').innerHTML = `<span class="err">${esc(json.error || '创建失败')}</span>` +
+        (json.output ? `<pre class="out" style="margin-top:8px">${esc(json.output)}</pre>` : '')
+      return
+    }
+    $('ov-action-out').textContent = json.output || '（无输出）'
+    $('ov-action-card').classList.remove('hidden')
+    closeCreateModal()
+    await loadOverview()
+  } catch (err) {
+    $('n-msg').innerHTML = `<span class="err">${esc(err.message)}</span>`
+  } finally {
+    $('n-submit').disabled = false
+  }
+}
+
 // ---------- 事件绑定与自动刷新 ----------
 $('btn-refresh').addEventListener('click', () => {
   if (state.tab === 'overview') loadOverview()
@@ -827,6 +972,12 @@ $('lg-instance').addEventListener('change', loadLogsTab)
 $('lg-file').addEventListener('change', loadLogsTab)
 $('lg-follow').addEventListener('click', () => (state.log.follow ? stopFollow() : startFollow()))
 $('lg-doctor').addEventListener('click', runDoctor)
+$('ov-create').addEventListener('click', openCreateModal)
+$('n-cancel').addEventListener('click', closeCreateModal)
+$('n-submit').addEventListener('click', submitCreate)
+$('n-backend').addEventListener('change', toggleBackendGroup)
+// 点遮罩空白处关闭弹窗；表单区域内的点击不冒泡到遮罩
+$('create-modal').addEventListener('click', (e) => { if (e.target.id === 'create-modal') closeCreateModal() })
 
 // 总览十秒一轮，会话页十五秒一轮；切走页签后由 switchTab 负责重取
 setInterval(() => { if (state.tab === 'overview') loadOverview() }, 10_000)

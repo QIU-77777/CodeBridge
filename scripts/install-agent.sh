@@ -91,7 +91,7 @@ if [ "$BACKEND_TYPE" = "opencode" ]; then
   echo "已写入 $PLIST_DIR/$LABEL_SERVE.plist"
   LABELS+=("$LABEL_SERVE")
 else
-  echo "后端 $BACKEND_TYPE：跳过 opencode serve（只有 opencode 实例需要）"
+  echo "后端 ${BACKEND_TYPE}：跳过 opencode serve（只有 opencode 实例需要）"
 fi
 write_plist "$LABEL_APP" bridge.sh bridge.log
 echo "已写入 $PLIST_DIR/$LABEL_APP.plist"
@@ -118,4 +118,4 @@ fi
 sleep 4
 echo
 echo "现在两个进程由 launchd 托管：登录自动起、被杀自动起，关终端/退出 WorkBuddy 都不影响。"
-./scripts/status.sh | head -12
+./scripts/status.sh | head -12 || true   # 展示用，head 掐断管道的 SIGPIPE 不拖垮安装
