@@ -76,3 +76,54 @@ export function effectiveName(configNames, stateNames, openId) {
   const id = String(openId ?? '')
   return configNames?.[id] || stateNames?.[id] || ''
 }
+
+/**
+ * 「谁能唤醒它」主表的行视图模型。
+ *
+ * 后台原本是三张表（allowlist / names / contacts），同一个实体在三处各出现一次，
+ * 用户分不清哪张表是权威源。这里在入口处把四个数据源取并集，派生出「一个体一行」
+ * 的视图：
+ *
+ *   contacts —— 运行时自动攒的认识层（state.json，只读）
+ *   allowlist —— 手写白名单（config）
+ *   listen   —— 通讯录面板的开关（config）
+ *   names    —— 手写名字声明（config）
+ *
+ * 放行语义与 src/handler.js 的 isAllowed() 一致：allowlist ∪ listen 取并集。
+ * allowedVia 标明这个放行来自哪张名单，界面据此决定移除时该动哪个端点。
+ */
+export function buildPeople({ contacts, allowlist, listen, names } = {}) {
+  const allow = new Set(Array.isArray(allowlist) ? allowlist : [])
+  const lis = new Set(Array.isArray(listen) ? listen : [])
+  const cfgNames = names && typeof names === 'object' && !Array.isArray(names) ? names : {}
+  const con = contacts && typeof contacts === 'object' && !Array.isArray(contacts) ? contacts : {}
+
+  const ids = new Set([...allow, ...lis, ...Object.keys(cfgNames), ...Object.keys(con)])
+  const rows = []
+  for (const id of ids) {
+    const c = con[id] || {}
+    const allowedVia = allow.has(id) ? 'manual' : lis.has(id) ? 'listen' : null
+    const nameSource = cfgNames[id] ? 'cfg' : c.name ? 'auto' : ''
+    rows.push({
+      id,
+      name: cfgNames[id] || c.name || '',
+      nameSource,
+      kind: c.kind || '',
+      firstSeen: c.firstSeen || null,
+      allowed: Boolean(allowedVia),
+      allowedVia,
+      inContacts: Boolean(c.name),
+    })
+  }
+  // 放行的置顶（手写先于开关），其余按认识时间倒序，纯 names 声明垫底
+  const rank = (r) => (r.allowedVia === 'manual' ? 0 : r.allowedVia === 'listen' ? 1 : r.inContacts ? 2 : 3)
+  rows.sort((a, b) => rank(a) - rank(b) || (b.firstSeen || 0) - (a.firstSeen || 0))
+  return rows
+}
+
+/** 类型徽章的文字与配色类。设计规范禁 emoji，用圆点加文字标签 */
+export function kindBadge(kind) {
+  if (kind === 'app') return { label: '机器人', cls: 'blue' }
+  if (kind === 'user') return { label: '人类', cls: 'green' }
+  return { label: '未知', cls: 'gray' }
+}

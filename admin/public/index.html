@@ -370,37 +370,18 @@
           <dl class="kv" id="fs-kv"></dl>
         </div>
         <div class="card">
-          <h2>白名单（allowlist）</h2>
-          <p class="lede">空数组等于任何人私聊机器人都能操作本机。填 open_id；名字选填，写进 feishu.names，来源标注里直接显示。名字列显示生效名字：配置声明的优先，其次是有 @ 提及时自动攒到的。</p>
-          <table id="fs-allow"><thead><tr><th>open_id</th><th>名字</th><th></th></tr></thead><tbody></tbody></table>
+          <h2>谁能唤醒它</h2>
+          <p class="lede">
+            这张表回答三个问题：机器人<b>认识谁</b>（被 @ 过就自动记下，不用你管）、<b>谁能唤醒它</b>（「能唤醒它」列）、<b>群里的消息来源显示谁的名字</b>（改名只影响群里的来源标注）。
+          </p>
+          <p class="hint" id="fs-gate-summary"></p>
+          <table id="fs-allow"><thead><tr><th>名字</th><th>open_id</th><th>类型</th><th>能唤醒它</th><th></th></tr></thead><tbody></tbody></table>
           <div class="row" style="margin-top:12px">
             <input type="text" id="fs-allow-add" placeholder="ou_..." class="grow">
             <input type="text" id="fs-allow-add-name" placeholder="名字（选填）" style="max-width:220px">
-            <button class="btn" id="fs-allow-btn">加入白名单</button>
+            <label class="chk"><input type="checkbox" id="fs-add-listen" checked> 加入后允许它唤醒我</label>
+            <button class="btn" id="fs-allow-btn">加入</button>
           </div>
-        </div>
-        <div class="card">
-          <h2>名字对照（feishu.names）</h2>
-          <p class="lede">飞书没有 open_id 反查名字的接口，这里声明的名字最准。清空名字保存即删除声明，之后回落到自动攒到的名字。</p>
-          <table id="fs-names"><thead><tr><th>open_id</th><th>名字</th><th></th></tr></thead><tbody></tbody></table>
-          <div class="row" style="margin-top:12px">
-            <input type="text" id="fs-name-add-id" placeholder="ou_..." class="grow">
-            <input type="text" id="fs-name-add-name" placeholder="名字" style="max-width:220px">
-            <button class="btn" id="fs-name-add-btn">加入对照</button>
-          </div>
-        </div>
-  <!-- 通讯录（contacts） -->
-        <div class="card">
-          <h2>通讯录（contacts）</h2>
-          <p class="lede">
-            <b>认识层</b>：任何人在群里 @ 过一个机器人，所有机器人的通讯录都会自动记下它（open_id 按应用隔离，所以每个实例看到的值不同）。
-            这里只回答「它是谁、怎么地址它」，<b>不等于能唤醒我</b>——放行看右边的 listen 开关。
-          </p>
-          <p class="lede">类型图标：<span title="机器人">\u{1f916}</span> 机器人（它在本群说过话）　<span title="人类">\u{1f464}</span> 人类　<span title="未知">\u2753</span> 未知（被 @ 过但还没开口，等它说过一次话才能判定）</p>
-          <p class="lede" style="display:none">
-            飞书没有按应用查机器人 open_id 的接口（群成员列表只有人类），所以通讯录是唯一可靠的地址来源。
-          </p>
-          <table id="fs-contacts"><thead><tr><th>类型</th><th>名字</th><th>open_id</th><th>首次见到</th><th>listen</th></tr></thead><tbody></tbody></table>
         </div>
       </section>
       <section id="tab-sessions" class="hidden">
@@ -806,171 +787,242 @@ async function saveConfig() {
   }
 }
 
+// ---------- 纯函数内联副本 ----------
+// buildPeople / kindBadge 的实现与 admin/entries.js 保持一致（模块源在那里，
+// 供离线测试直接 import；这里内联一份给页面用）。test-admin.mjs 断言两边等价。
+function kindBadge(kind) {
+  if (kind === 'app') return { label: '机器人', cls: 'blue' }
+  if (kind === 'user') return { label: '人类', cls: 'green' }
+  return { label: '未知', cls: 'gray' }
+}
+
+function buildPeople({ contacts, allowlist, listen, names } = {}) {
+  const allow = new Set(Array.isArray(allowlist) ? allowlist : [])
+  const lis = new Set(Array.isArray(listen) ? listen : [])
+  const cfgNames = names && typeof names === 'object' && !Array.isArray(names) ? names : {}
+  const con = contacts && typeof contacts === 'object' && !Array.isArray(contacts) ? contacts : {}
+  const ids = new Set([...allow, ...lis, ...Object.keys(cfgNames), ...Object.keys(con)])
+  const rows = []
+  for (const id of ids) {
+    const c = con[id] || {}
+    const allowedVia = allow.has(id) ? 'manual' : lis.has(id) ? 'listen' : null
+    const nameSource = cfgNames[id] ? 'cfg' : c.name ? 'auto' : ''
+    rows.push({
+      id,
+      name: cfgNames[id] || c.name || '',
+      nameSource,
+      kind: c.kind || '',
+      firstSeen: c.firstSeen || null,
+      allowed: Boolean(allowedVia),
+      allowedVia,
+      inContacts: Boolean(c.name),
+    })
+  }
+  const rank = (r) => (r.allowedVia === 'manual' ? 0 : r.allowedVia === 'listen' ? 1 : r.inContacts ? 2 : 3)
+  rows.sort((a, b) => rank(a) - rank(b) || (b.firstSeen || 0) - (a.firstSeen || 0))
+  return rows
+}
+
 // ---------- 飞书应用 ----------
-// 生效名字：配置里声明的优先，其次从 @ 提及里自动攒到的。顺序与
-// src/handler.js 的 nameOf() 一致，后台看到的即是卡片上显示的
-const effectiveName = (cfgNames, stateNames, id) => (cfgNames || {})[id] || (stateNames || {})[id] || ''
+// 主表行模型由 admin/entries.js 的 buildPeople() 派生（可测纯函数）：
+// contacts（认识层，只读）+ allowlist / listen（许可层，并集）+ names（名字声明）
+// 合成「一个体一行」。放行语义与 src/handler.js 的 isAllowed() 一致。
+
+let fsPeople = []   // 当前实例的行模型，行内编辑据此重渲
 
 async function loadFeishuTab() {
   const name = $('fs-instance').value
   if (!name) return
+  // 切换实例时清掉上一个实例的操作反馈，避免提示挂错页面
+  $('fs-verify-msg').innerHTML = ''
   try {
     const json = await api(`/api/instances/${encodeURIComponent(name)}`)
     const c = json.config || {}
     $('fs-kv').innerHTML = `
-      <dt>appId</dt><dd class="mono">${esc(c.feishu?.appId || '—')}</dd>
-      <dt>botOpenId</dt><dd class="mono">${esc(c.feishu?.botOpenId || '—（启动时自动向飞书取）')}</dd>
+      <dt>appId</dt><dd class="mono">${esc(c.feishu?.appId || '\u2014')}</dd>
+      <dt>botOpenId</dt><dd class="mono">${esc(c.feishu?.botOpenId || '\u2014（启动时自动向飞书取）')}</dd>
       <dt>domain</dt><dd>${esc(c.feishu?.domain || 'feishu')}</dd>
       <dt>requireMention</dt><dd>${c.feishu?.requireMention === false ? '否（@ 谁都算）' : '是（只认 @ 本机器人）'}</dd>
       <dt>appSecret</dt><dd>${c.feishu?.appSecret === '********' ? '已填写（不明示）' : '未填写'}</dd>`
-    loadNames(c.feishu?.names || {})
-    await loadAllowlist(name, c.feishu?.allowlist || [], c.feishu?.names || {}, json.state?.contacts || {})
-    loadContacts(json.state?.contacts || {}, c.feishu?.listen || [], c.feishu?.names || {})
+    renderPeople(json)
   } catch (err) {
     $('fs-kv').innerHTML = `<dt class="err">错误</dt><dd class="err">${esc(err.message)}</dd>`
   }
 }
 
-/**
- * 通讯录面板。数据来自 state.json 的 contacts（运行时自动攒，admin 只读）；
- * listen 开关写配置（feishu.listen）。图标按 kind 分：机器人 / 人类 / 未知
- * （被 @ 过但还没说过话，kind 要等它开口才补得上）。
- */
-function loadContacts(contacts, listen, cfgNames) {
-  const on = new Set(listen || [])
-  const rows = Object.entries(contacts || {})
-    .sort((a, b) => (b[1]?.firstSeen || 0) - (a[1]?.firstSeen || 0))
-    .map(([id, v]) => {
-      const icon = v?.kind === 'app' ? '\u{1f916}' : v?.kind === 'user' ? '\u{1f464}' : '\u2753'
-      const kindLabel = v?.kind === 'app' ? '机器人' : v?.kind === 'user' ? '人类' : '未知'
-      const name = cfgNames?.[id] || v?.name || ''
-      const first = v?.firstSeen ? new Date(v.firstSeen).toLocaleString('zh-CN', { hour12: false }) : '\u2014'
-      const listening = on.has(id)
-      return '<tr>' +
-        '<td title="' + esc(kindLabel) + '">' + icon + '</td>' +
-        '<td>' + (esc(name) || '<span class="dim">（无名字）</span>') + '</td>' +
-        '<td class="mono">' + esc(id) + '</td>' +
-        '<td class="dim">' + esc(first) + '</td>' +
-        '<td><label class="switch" title="' + (listening ? '已放行：它的 @ 能唤醒我' : '未放行：它的 @ 到不了我') + '">' +
-        '<input type="checkbox" ' + (listening ? 'checked' : '') + ' onchange="toggleListen(\'' + esc(id) + '\', ' + listening + ')">' +
-        '<span class="slider"></span></label></td>' +
-      '</tr>'
-    })
-    .join('')
-  $('fs-contacts').querySelector('tbody').innerHTML =
-    rows || '<tr><td colspan="5" class="dim">空（还没有任何人被 @ 过）</td></tr>'
-}
+/** 用接口返回的全部数据重渲主表与摘要行 */
+function renderPeople(json) {
+  const cfg = json.config || {}
+  fsPeople = buildPeople({
+    contacts: json.state?.contacts,
+    allowlist: cfg.feishu?.allowlist,
+    listen: cfg.feishu?.listen,
+    names: cfg.feishu?.names,
+  })
+  drawPeople()
 
-/** listen 开关。写配置，重启实例后生效——和 allowlist 一个口径 */
-async function toggleListen(openId, listening) {
-  const name = $('fs-instance').value
-  if (!name) return
-  try {
-    const json = await api(`/api/instances/${encodeURIComponent(name)}/listen`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ openId, op: listening ? 'remove' : 'add' }),
-    })
-    $('fs-verify-msg').innerHTML =
-      '<span class="ok">' + (listening ? '已收回' : '已放行') + ' ' + esc(openId) +
-      '（listen 名单已写入配置，重启实例后生效）</span>'
-    const detail = await api(`/api/instances/${encodeURIComponent(name)}`)
-    loadContacts(detail.state?.contacts || {}, json.listen || [], detail.config?.feishu?.names || {})
-  } catch (err) {
-    $('fs-verify-msg').innerHTML = '<span class="err">操作失败: ' + esc(err.message) + '</span>'
+  // 摘要行：放行几个（手写 + 开关）、认识几个。空表时把闸门真实语义说清楚
+  const manual = fsPeople.filter((r) => r.allowedVia === 'manual').length
+  const viaListen = fsPeople.filter((r) => r.allowedVia === 'listen').length
+  const known = fsPeople.filter((r) => r.inContacts).length
+  if (!fsPeople.length) {
+    $('fs-gate-summary').innerHTML =
+      '<span class="err">当前不限制：任何人的 @ 都能唤醒这个机器人。</span>在下面加一行开始限制。'
+  } else {
+    $('fs-gate-summary').textContent =
+      `放行 ${manual + viaListen} 个（手写白名单 ${manual} + 开关 ${viaListen}）　认识 ${known} 个（被 @ 过自动记下）`
   }
 }
 
-async function loadAllowlist(name, list, cfgNames, stateNames) {
-  $('fs-allow').querySelector('tbody').innerHTML = list.map((id) =>
-    `<tr><td class="mono">${esc(id)}</td>
-     <td><input type="text" id="allow-name-${esc(id)}" value="${esc(effectiveName(cfgNames, stateNames, id))}" placeholder="（未设置）" style="max-width:220px"></td>
-     <td class="row">
-       <button class="btn" onclick="saveAllowName('${esc(id)}')">保存名字</button>
-       <button class="btn danger" onclick="removeAllow('${esc(id)}')">移除</button>
-     </td></tr>`).join('')
-    || '<tr><td colspan="3" class="dim">空（不限制任何人）</td></tr>'
+function drawPeople() {
+  const rows = fsPeople.map((r) => {
+    const kb = kindBadge(r.kind)
+    const nameCell = r.name
+      ? esc(r.name) + nameSourceBadge(r.nameSource)
+      : '<span class="dim">（群里显示 open_id）</span>'
+    const first = r.firstSeen ? new Date(r.firstSeen).toLocaleString('zh-CN', { hour12: false }) : '\u2014'
+    // 放行状态的呈现：开关本身表达「能否唤醒」，手写行额外给一个徽章说明来源
+    const gate = '<label class="switch" title="' +
+      (r.allowed ? '已放行：它的 @ 能唤醒这个机器人' : '未放行：它的 @ 到不了这个机器人') + '">' +
+      '<input type="checkbox" ' + (r.allowed ? 'checked' : '') +
+      ' onchange="toggleAllowed(\'' + esc(r.id) + '\', ' + r.allowed + ')">' +
+      '<span class="slider"></span></label>' +
+      (r.allowedVia === 'manual' ? ' <span class="badge gray">手写</span>' : '')
+    return '<tr>' +
+      '<td>' + nameCell + '</td>' +
+      '<td class="mono">' + esc(r.id) + '</td>' +
+      '<td><span class="badge ' + kb.cls + '"><span class="dot ' + kb.cls + '"></span>' + kb.label + '</span></td>' +
+      '<td>' + gate + '</td>' +
+      '<td class="row">' +
+        '<button class="btn" onclick="startNameEdit(\'' + esc(r.id) + '\')">改名</button>' +
+        (r.allowedVia === 'manual'
+          ? '<button class="btn danger" onclick="removeAllow(\'' + esc(r.id) + '\')">移除</button>'
+          : '') +
+      '</td>' +
+    '</tr>'
+  }).join('')
+  $('fs-allow').querySelector('tbody').innerHTML =
+    rows || '<tr><td colspan="5" class="dim">表是空的。任何人被 @ 过都会自动出现在这里。</td></tr>'
 }
 
-function loadNames(cfgNames) {
-  $('fs-names').querySelector('tbody').innerHTML = Object.entries(cfgNames).map(([id, v]) =>
-    `<tr><td class="mono">${esc(id)}</td>
-     <td><input type="text" id="name-map-${esc(id)}" value="${esc(v)}" style="max-width:220px"></td>
-     <td class="row">
-       <button class="btn" onclick="saveName('${esc(id)}')">保存</button>
-       <button class="btn danger" onclick="removeName('${esc(id)}')">移除</button>
-     </td></tr>`).join('') || '<tr><td colspan="3" class="dim">空（来源标注里只显示 open_id）</td></tr>'
+/** 名字来源徽章：让用户看出这个名字是人工声明的还是自动攒到的 */
+function nameSourceBadge(source) {
+  if (source === 'cfg') return ' <span class="badge green"><span class="dot green"></span>我声明的</span>'
+  if (source === 'auto') return ' <span class="badge gray">自动攒的</span>'
+  return ''
 }
 
-/** 名字对照的统一写入口。调用方负责之后整页重取，白名单与名字两张表一起刷新 */
+/** 行内改名：默认态只有「改名」按钮，点了才出输入框与保存/取消（渐进式披露） */
+function startNameEdit(openId) {
+  const row = fsPeople.find((r) => r.id === openId)
+  if (!row) return
+  const cell = document.querySelector(`#fs-allow tr:has(td.mono)`);
+  // 直接重渲该行：名字单元格换成输入框 + 保存 / 取消
+  const idx = fsPeople.indexOf(row)
+  const tr = $('fs-allow').querySelectorAll('tbody tr')[idx]
+  if (!tr) return
+  const kb = kindBadge(row.kind)
+  tr.cells[0].innerHTML =
+    '<input type="text" id="name-edit-' + esc(openId) + '" value="' + esc(row.name) +
+    '" placeholder="（留空 = 群里显示 open_id）" style="max-width:200px">'
+  tr.cells[4].innerHTML =
+    '<button class="btn primary" onclick="saveNameEdit(\'' + esc(openId) + '\')">保存</button>' +
+    '<button class="btn" onclick="drawPeople()">取消</button>'
+  $('name-edit-' + openId).focus()
+}
+
+/** 保存行内改名。空值 = 删除声明，回落到自动攒到的名字 */
+async function saveNameEdit(openId) {
+  const displayName = ($('name-edit-' + openId)?.value || '').trim()
+  try {
+    await postName($('fs-instance').value, { op: displayName ? 'set' : 'remove', openId, name: displayName })
+    setFsMsg('名字已保存' + (displayName ? '' : '（声明已删除，回落到自动攒到的名字）') + '。重启实例后生效。')
+    await loadFeishuTab()
+  } catch (err) {
+    setFsMsg('保存失败: ' + err.message, true)
+  }
+}
+
+/** 统一的状态行：所有写操作的结果都写在这里，切换实例时清空 */
+function setFsMsg(text, isErr) {
+  $('fs-verify-msg').innerHTML = isErr
+    ? '<span class="err">' + esc(text) + '</span>'
+    : '<span class="ok">' + esc(text) + '</span>'
+}
+
+/**
+ * 「能唤醒它」开关。按放行来源分流：
+ *   manual（手写白名单）→ confirm 后走 allowlist remove，文案说明名字声明保留；
+ *   listen（开关放行）→ 直接切换，可逆，不确认。
+ */
+async function toggleAllowed(openId, allowed) {
+  const row = fsPeople.find((r) => r.id === openId)
+  if (!row) return
+  if (allowed && row.allowedVia === 'manual') {
+    if (!confirm('移除后，这个 open_id 的 @ 不能再唤醒这个机器人。名字声明会保留，群里的来源标注不受影响。确定移除？')) {
+      return drawPeople()
+    }
+    try {
+      await api(`/api/instances/${encodeURIComponent($('fs-instance').value)}/allowlist`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ op: 'remove', openId }),
+      })
+      setFsMsg('已移出手写白名单。重启实例后生效。')
+      await loadFeishuTab()
+    } catch (err) { setFsMsg('移除失败: ' + err.message, true) }
+    return
+  }
+  try {
+    await api(`/api/instances/${encodeURIComponent($('fs-instance').value)}/listen`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ openId, op: allowed ? 'remove' : 'add' }),
+    })
+    setFsMsg((allowed ? '已收回' : '已放行') + ' ' + openId + '（listen 名单已写入配置，重启实例后生效）')
+    await loadFeishuTab()
+  } catch (err) { setFsMsg('操作失败: ' + err.message, true) }
+}
+
+/** 加入。勾选「允许它唤醒我」时进白名单（带名字），否则只写名字声明 */
+async function addAllow() {
+  const name = $('fs-instance').value
+  const openId = $('fs-allow-add').value.trim()
+  const displayName = $('fs-allow-add-name').value.trim()
+  const alsoListen = $('fs-add-listen').checked
+  if (!openId) return
+  try {
+    if (alsoListen) {
+      await api(`/api/instances/${encodeURIComponent(name)}/allowlist`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ op: 'add', openId, name: displayName }),
+      })
+    } else if (displayName) {
+      await postName(name, { op: 'set', openId, name: displayName })
+    }
+    $('fs-allow-add').value = ''
+    $('fs-allow-add-name').value = ''
+    setFsMsg('已加入。重启实例后生效。')
+    await loadFeishuTab()
+  } catch (err) { setFsMsg('加入失败: ' + err.message, true) }
+}
+
+async function removeAllow(openId) {
+  if (!confirm('移除后，这个 open_id 的 @ 不能再唤醒这个机器人。名字声明会保留，群里的来源标注不受影响。确定移除？')) return
+  try {
+    await api(`/api/instances/${encodeURIComponent($('fs-instance').value)}/allowlist`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ op: 'remove', openId }),
+    })
+    setFsMsg('已移出手写白名单。重启实例后生效。')
+    await loadFeishuTab()
+  } catch (err) { setFsMsg('移除失败: ' + err.message, true) }
+}
+
+/** 名字对照的统一写入口 */
 async function postName(inst, body) {
   await api(`/api/instances/${encodeURIComponent(inst)}/names`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
-}
-
-async function addAllow() {
-  const name = $('fs-instance').value
-  const openId = $('fs-allow-add').value.trim()
-  const displayName = $('fs-allow-add-name').value.trim()
-  if (!openId) return
-  try {
-    await api(`/api/instances/${encodeURIComponent(name)}/allowlist`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ op: 'add', openId, name: displayName }),
-    })
-    $('fs-allow-add').value = ''
-    $('fs-allow-add-name').value = ''
-    await loadFeishuTab()
-  } catch (err) { alert('加入失败: ' + err.message) }
-}
-
-async function removeAllow(openId) {
-  const name = $('fs-instance').value
-  try {
-    await api(`/api/instances/${encodeURIComponent(name)}/allowlist`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ op: 'remove', openId }),
-    })
-    await loadFeishuTab()
-  } catch (err) { alert('移除失败: ' + err.message) }
-}
-
-/** 保存白名单某一行的名字。清空保存 = 删除这条声明，回落到自动攒到的名字 */
-async function saveAllowName(openId) {
-  const displayName = $('allow-name-' + openId).value.trim()
-  try {
-    await postName($('fs-instance').value, { op: displayName ? 'set' : 'remove', openId, name: displayName })
-    await loadFeishuTab()
-  } catch (err) { alert('保存名字失败: ' + err.message) }
-}
-
-async function addName() {
-  const openId = $('fs-name-add-id').value.trim()
-  const displayName = $('fs-name-add-name').value.trim()
-  if (!openId || !displayName) return
-  try {
-    await postName($('fs-instance').value, { op: 'set', openId, name: displayName })
-    $('fs-name-add-id').value = ''
-    $('fs-name-add-name').value = ''
-    await loadFeishuTab()
-  } catch (err) { alert('加入失败: ' + err.message) }
-}
-
-async function saveName(openId) {
-  const displayName = $('name-map-' + openId).value.trim()
-  try {
-    await postName($('fs-instance').value, { op: displayName ? 'set' : 'remove', openId, name: displayName })
-    await loadFeishuTab()
-  } catch (err) { alert('保存失败: ' + err.message) }
-}
-
-async function removeName(openId) {
-  try {
-    await postName($('fs-instance').value, { op: 'remove', openId })
-    await loadFeishuTab()
-  } catch (err) { alert('移除失败: ' + err.message) }
 }
 
 async function verifyFeishu() {
@@ -1183,7 +1235,6 @@ $('cfg-save').addEventListener('click', saveConfig)
 $('fs-instance').addEventListener('change', loadFeishuTab)
 $('fs-verify').addEventListener('click', verifyFeishu)
 $('fs-allow-btn').addEventListener('click', addAllow)
-$('fs-name-add-btn').addEventListener('click', addName)
 $('ss-instance').addEventListener('change', loadSessionsTab)
 $('ss-refresh').addEventListener('click', loadSessionsTab)
 $('lg-instance').addEventListener('change', loadLogsTab)

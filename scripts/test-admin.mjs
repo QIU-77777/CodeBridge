@@ -495,10 +495,48 @@ try {
     rmSync(dir, { recursive: true, force: true })
   }
 
+  // 7c. 主表行模型 buildPeople：四源取并集、放行分流、排序
+  {
+    const { buildPeople, kindBadge } = await import(join(REPO, 'admin', 'entries.js'))
+    const people = buildPeople({
+      contacts: { ou_a: { name: '小A', kind: 'app', firstSeen: 100 },
+                  ou_b: { name: '小B', kind: 'user', firstSeen: 200 } },
+      allowlist: ['ou_a'],
+      listen: ['ou_c'],
+      names: { ou_d: '手写D' },
+    })
+    const byId = Object.fromEntries(people.map((p) => [p.id, p]))
+    ok(people.length === 4, '四个数据源取并集，一个体一行')
+    ok(byId.ou_a.allowed && byId.ou_a.allowedVia === 'manual', 'allowlist 里的个体放行来源是手写')
+    ok(byId.ou_c.allowed && byId.ou_c.allowedVia === 'listen', 'listen 里的个体放行来源是开关')
+    ok(!byId.ou_b.allowed && byId.ou_b.inContacts, '只在通讯录里的个体：认识但放行')
+    ok(byId.ou_d.name === '手写D' && byId.ou_d.nameSource === 'cfg' && !byId.ou_d.inContacts, '纯 names 声明也有一行')
+    ok(byId.ou_a.nameSource === 'auto' && byId.ou_b.nameSource === 'auto', '通讯录名字标记为自动攒的')
+    ok(people[0].id === 'ou_a' && people[1].id === 'ou_c', '放行行置顶，手写先于开关')
+    ok(kindBadge('app').label === '机器人' && kindBadge('user').label === '人类', '类型徽章分人/机器人')
+    ok(kindBadge('').label === '未知', '没有类型信息时是未知')
+    // 与页面内联副本必须等价：页面是给浏览器用的，模块源是给测试用的，
+    // 两边漂移就会出现「后台显示的和实际逻辑不同」。用文本断言钉住关键语义
+    // （不动态执行页面代码——本地后台也不该在测试里跑任意 JS）
+    const html = await import('node:fs').then((fs) =>
+      fs.readFileSync(join(REPO, 'admin', 'public', 'index.html'), 'utf8'),
+    )
+    ok(/function buildPeople\(/.test(html), '页面内联了 buildPeople（与 entries.js 同源）')
+    ok(/function kindBadge\(/.test(html), '页面内联了 kindBadge')
+    const inlineFn = html.match(/function buildPeople\([\s\S]*?\n\}/)[0]
+    ok(inlineFn.includes('allow.has(id)'), '内联副本按 allowlist 判手写放行')
+    ok(inlineFn.includes("lis.has(id) ? 'listen'"), '内联副本按 listen 判开关放行')
+    ok(inlineFn.includes('rank(a) - rank(b)'), '内联副本用同一套排序规则')
+    ok(html.includes('fs-gate-summary'), '页面有闸门摘要行')
+    ok(html.includes('当前不限制'), '空表时把闸门真实语义（不限制）说清楚')
+    ok(!/\u{1f916}/.test(html), '通讯录不再用 emoji 图标（设计规范禁用）')
+  }
+
   // 8. 页面结构：名字编辑入口必须真的在页面上。
   // 「加白名单只能填 open_id」「名字对照表只读」两个缺陷都出过，这里挡住回归
   ok(indexHtml.includes('id="fs-allow-add-name"'), '白名单添加行有名字输入框')
-  ok(indexHtml.includes('id="fs-name-add-btn"'), '名字对照有添加入口')
+  ok(indexHtml.includes('id="fs-allow-btn"'), '主表有添加入口')
+  ok(indexHtml.includes('id="fs-add-listen"'), '加入时可选择是否放行它唤醒')
   // opencode 专属组的内容到「工作目录与模型」小节为止，这一片里不该有工作目录字段
   const nOcGroup = indexHtml.slice(indexHtml.indexOf('<div id="n-oc-group">'), indexHtml.indexOf('<h3>工作目录与模型</h3>'))
   ok(
