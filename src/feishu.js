@@ -28,7 +28,7 @@ function withTimeout(promise, label) {
 }
 
 export class FeishuTransport {
-  constructor(config, { onMessage, onCardAction, nameOf, onSeenNames, onContactKind, backendType = '', logger = console }) {
+  constructor(config, { onMessage, onCardAction, nameOf, onSeenNames, onContactKind, onSelf, backendType = '', logger = console }) {
     this.cfg = config.feishu
     // prompt 前缀配置（src/config.js 的 prompt 段）：来源标注是每条消息都带的
     // 动态数据，协作规则这类静态说明走 once 模式，每个会话只带一次
@@ -43,7 +43,7 @@ export class FeishuTransport {
     /** 补充通讯录条目的「人是机器人」：只说它见过面的类型，不建册 */
     this.onContactKind = onContactKind
     /** 解析出自身 open_id 时通知上层：用于把存量数据里的「自己」清出通讯录 */
-    this.onSelf = null
+    this.onSelf = onSelf
     /** 后端类型（opencode / pi）。pi 后端的桥接会把本实例凭证注入子进程，
      *  身份声明据此给不同文案 */
     this.backendType = backendType
