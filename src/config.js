@@ -77,6 +77,23 @@ const DEFAULTS = {
     // 默认模型（providerID/modelID）；留空用 opencode 默认
     defaultModel: '',
   },
+  github: {
+    // GitHub 身份注入：让每个 agent 以各自的 GitHub App（xxx[bot]）身份
+    // 推送和开 PR，不占用人的账号。与 feishu 段同一套注入机制（见
+    // src/github-identity.js 与 scripts/lib/github-identity.sh）。
+    //   off  = 不注入（默认，现有部署零改动）
+    //   app  = GitHub App，需要 appId / installationId / privateKeyPath
+    //   pat  = 个人访问令牌，需要 token
+    mode: 'off',
+    appId: '',
+    installationId: '',
+    // .pem 私钥路径，建议放实例配置目录（与 appSecret 同规格，权限 600）
+    privateKeyPath: '',
+    token: '',
+    // 提交署名，注入 GIT_AUTHOR_* / GIT_COMMITTER_*
+    gitName: '',
+    gitEmail: '',
+  },
   behavior: {
     // 卡片流式刷新间隔（毫秒），飞书 message.patch 有 QPS 限制，别低于 1200
     streamIntervalMs: 1800,

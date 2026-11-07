@@ -85,6 +85,11 @@ else
   . "$ROOT/scripts/lib/feishu-identity.sh"
   ocb_export_feishu_identity "$(dirname "$CONFIG")" node
   echo "   飞书身份：${FEISHU_APP_ID:-（未配置，沿用机器级 CLI 配置）}"
+  # 本实例的 GitHub 身份：serve 里的代理推送、开 PR 时以本实例的 GitHub App
+  # （xxx[bot]）行事。没配（github.mode=off，默认）时什么都不注入
+  . "$ROOT/scripts/lib/github-identity.sh"
+  ocb_export_github_identity "$(dirname "$CONFIG")" node
+  echo "   GitHub 身份：${GIT_AUTHOR_NAME:-（未配置，沿用机器级 gh 登录）}"
   OPENCODE_SERVER_PASSWORD="$PW" nohup "$OC_BIN" serve --port "$PORT" --hostname 127.0.0.1 \
     >> logs/serve.log 2>&1 &
   echo $! > .serve.pid
