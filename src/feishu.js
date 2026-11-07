@@ -28,8 +28,11 @@ function withTimeout(promise, label) {
 }
 
 export class FeishuTransport {
-  constructor(config, { onMessage, onCardAction, nameOf, onSeenNames, backendType = '', logger = console }) {
+  constructor(config, { onMessage, onCardAction, nameOf, onSeenNames, onContactKind, backendType = '', logger = console }) {
     this.cfg = config.feishu
+    // prompt 前缀配置（src/config.js 的 prompt 段）：来源标注是每条消息都带的
+    // 动态数据，协作规则这类静态说明走 once 模式，每个会话只带一次
+    this.promptCfg = config.prompt || {}
     this.log = logger
     this.onMessage = onMessage
     this.onCardAction = onCardAction
@@ -37,6 +40,8 @@ export class FeishuTransport {
     this.nameOf = nameOf
     /** 把消息 mentions 里的 (open_id, name) 交给上层攒起来 */
     this.onSeenNames = onSeenNames
+    /** 补充通讯录条目的「人是机器人」：只说它见过面的类型，不建册 */
+    this.onContactKind = onContactKind
     /** 后端类型（opencode / pi）。pi 后端的桥接会把本实例凭证注入子进程，
      *  身份声明据此给不同文案 */
     this.backendType = backendType
@@ -271,6 +276,11 @@ export class FeishuTransport {
       )
     }
 
+    // 发送者的类型（人 / 机器人）补充进通讯录。只更新已入册的条目、不建册——
+    // 入册只认被 @（见 store.learnContact）。机器人被 @ 之后通常就会在群里说话，
+    // 说过一次话它的 kind 就准了，admin 的通讯录图标才有东西可显示
+    this.onContactKind?.(userId, isBot ? 'app' : 'user')
+
     /**
      * 给模型标一行来源。
      *
@@ -295,7 +305,11 @@ export class FeishuTransport {
     // 问候以 Lil_O 的应用到达群里。声明身份之外，pi 后端的桥接还会把本实例
     // 凭证注入子进程环境（src/pi.js childEnv），两句互相印证
     const identity = this.identityLine(self)
-    const originWithIdentity = identity ? `${origin}\n${identity}` : origin
+    // 第三部分：配置里的 prompt 前缀，按模式分两路。always 的（含用户自定义）
+    // 并进本条消息的前缀；once 的（协作规则）单独交给上层——它只在该会话的
+    // 第一条消息拼，之后靠上下文记住，每轮重复只是白烧 token
+    const { always, once } = this.prefixTexts(isGroup)
+    const originBlock = [origin, identity, always].filter(Boolean).join('\n')
 
     await this.onMessage({
       chatId: m.chat_id,
@@ -305,11 +319,70 @@ export class FeishuTransport {
       isGroup,
       userId,
       isBot,
-      origin: originWithIdentity,
+      origin: originBlock,
+      oncePrefix: once,
       text,
       messageId: m.message_id,
       chatType: m.chat_type,
     })
+  }
+
+  /**
+   * 协作机制说明：怎么唤醒另一个 agent。
+   *
+   * 唯一的方法是某一方用飞书 CLI 发一条**新的 text 消息**，内容里带真正的
+   * at 标签。写在卡片正文或普通文本里的 `@名字` 只是字面字符，不产生飞书提醒
+   * ——这条规则不可能靠模型自己悟出来，而 agent 之间的每次对话都要用它。
+   *
+   * open_id 按应用隔离，且**没有按应用查机器人 open_id 的接口**（群成员列表
+   * 只有人类；contact 是用户体系）。能拿到它的只有两类消息：它给你发过的
+   * （发送者标注）、它被 @ 到的（mentions）。桥接把这两类都存进了通讯录
+   * （state.json 的 contacts），所以「读通讯录」是唯一可靠的来源。
+   */
+  collabLine() {
+    return (
+      '[协作 · 唤醒另一个 agent 的唯一方法：用 feishu-cli 发一条新的 text 消息，' +
+      '内容里带 <at user_id="对方 open_id"></at>。open_id 只认本应用视角：给你发过消息的人，其 id 就在本行上方「发送者」标注里；' +
+      '被 @ 到的人，id 在那条消息的 mentions 里。这两类桥接都已存进 $OCB_CONFIG_DIR/state.json 的 contacts，可直接读。' +
+      '从没在群里露过面的对象，飞书没有按应用查机器人 open_id 的接口，你拿不到，请人类在 admin 通讯录里放行后再 @。' +
+      '写在正文或卡片里的 @名字 只是字面字符，唤不醒任何人。' +
+      '话题内发言要回复话题内已有的 om_ 消息，不要新开发布到主聊天流。' +
+      '你的终态回复呈现在卡片上，卡片不唤醒任何人]'
+    )
+  }
+
+  /**
+   * 把配置里的 prompt 前缀按模式分成两堆。
+   *
+   * always：每条消息都拼——静态文本（用户自定义条目）并进来源标注那段。
+   * once：每个会话的第一条消息拼一次——由上层在新建会话时决定要不要拼。
+   *
+   * 内置的 `rules` 条目：text 留空用内置默认（collabLine），填写则覆盖；
+   * 只在群里拼（私聊没有同伴）。自定义条目纯静态文本，两种模式都生效。
+   * 删掉某个条目就是关闭它——所以这里不做任何「必须有一个」的兜底。
+   */
+  prefixTexts(isGroup) {
+    const list = this.promptCfg?.prefixes || []
+    let always = ''
+    let once = ''
+    const append = (bucket, text) => {
+      if (bucket) bucket += '\n'
+      return bucket + text
+    }
+    for (const p of list) {
+      if (!p || typeof p !== 'object') continue
+      let text
+      if (p.id === 'rules') {
+        if (!isGroup) continue // 协作规则只在群里有意义
+        text = p.text || this.collabLine()
+      } else {
+        text = p.text
+      }
+      if (!text) continue
+      if (p.mode === 'once') once = append(once, text)
+      else always = append(always, text)
+    }
+    return { always, once }
   }
 
   /**

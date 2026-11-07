@@ -382,9 +382,17 @@
             <button class="btn" id="fs-name-add-btn">加入对照</button>
           </div>
         </div>
+  <!-- 通讯录（contacts） -->
+        <div class="card">
+          <h2>通讯录（contacts）</h2>
+          <p class="lede">
+            <b>认识层</b>：任何人在群里 @ 过一个机器人，所有机器人的通讯录都会自动记下它（open_id 按应用隔离，所以每个实例看到的值不同）。
+            这里只回答「它是谁、怎么地址它」，<b>不等于能唤醒我</b>——放行看下面的 listen 开关。
+            飞书没有按应用查机器人 open_id 的接口（群成员列表只有人类），所以通讯录是唯一可靠的地址来源。
+          </p>
+          <table id="fs-contacts"><thead><tr><th>类型</th><th>名字</th><th>open_id</th><th>首次 / 最近见到</th><th>listen</th></tr></thead><tbody></tbody></table>
+        </div>
       </section>
-
-      <!-- 会话与后端 -->
       <section id="tab-sessions" class="hidden">
         <div class="card">
           <div class="toolbar">
@@ -806,9 +814,60 @@ async function loadFeishuTab() {
       <dt>requireMention</dt><dd>${c.feishu?.requireMention === false ? '否（@ 谁都算）' : '是（只认 @ 本机器人）'}</dd>
       <dt>appSecret</dt><dd>${c.feishu?.appSecret === '********' ? '已填写（不明示）' : '未填写'}</dd>`
     loadNames(c.feishu?.names || {})
-    await loadAllowlist(name, c.feishu?.allowlist || [], c.feishu?.names || {}, json.state?.names || {})
+    await loadAllowlist(name, c.feishu?.allowlist || [], c.feishu?.names || {}, json.state?.contacts || {})
+    loadContacts(json.state?.contacts || {}, c.feishu?.listen || [], c.feishu?.names || {})
   } catch (err) {
     $('fs-kv').innerHTML = `<dt class="err">错误</dt><dd class="err">${esc(err.message)}</dd>`
+  }
+}
+
+/**
+ * 通讯录面板。数据来自 state.json 的 contacts（运行时自动攒，admin 只读）；
+ * listen 开关写配置（feishu.listen）。图标按 kind 分：机器人 / 人类 / 未知
+ * （被 @ 过但还没说过话，kind 要等它开口才补得上）。
+ */
+function loadContacts(contacts, listen, cfgNames) {
+  const on = new Set(listen || [])
+  const rows = Object.entries(contacts || {})
+    .sort((a, b) => (b[1]?.lastSeen || 0) - (a[1]?.lastSeen || 0))
+    .map(([id, v]) => {
+      const icon = v?.kind === 'app' ? '\u{1f916}' : v?.kind === 'user' ? '\u{1f464}' : '\u2753'
+      const kindLabel = v?.kind === 'app' ? '机器人' : v?.kind === 'user' ? '人类' : '未知'
+      const name = cfgNames?.[id] || v?.name || ''
+      const first = v?.firstSeen ? new Date(v.firstSeen).toLocaleString('zh-CN', { hour12: false }) : '\u2014'
+      const last = v?.lastSeen ? new Date(v.lastSeen).toLocaleString('zh-CN', { hour12: false }) : '\u2014'
+      const listening = on.has(id)
+      return '<tr>' +
+        '<td title="' + esc(kindLabel) + '">' + icon + '</td>' +
+        '<td>' + (esc(name) || '<span class="dim">（无名字）</span>') + '</td>' +
+        '<td class="mono">' + esc(id) + '</td>' +
+        '<td class="dim">' + esc(first) + '<br>' + esc(last) + '</td>' +
+        '<td><button class="btn ' + (listening ? '' : 'danger') + '" onclick="toggleListen(\'' + esc(id) + '\', ' + listening + ')">' +
+        (listening ? '已放行' : '未放行') + '</button></td>' +
+      '</tr>'
+    })
+    .join('')
+  $('fs-contacts').querySelector('tbody').innerHTML =
+    rows || '<tr><td colspan="5" class="dim">空（还没有任何人被 @ 过）</td></tr>'
+}
+
+/** listen 开关。写配置，重启实例后生效——和 allowlist 一个口径 */
+async function toggleListen(openId, listening) {
+  const name = $('fs-instance').value
+  if (!name) return
+  try {
+    const json = await api(`/api/instances/${encodeURIComponent(name)}/listen`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ openId, op: listening ? 'remove' : 'add' }),
+    })
+    $('fs-verify-msg').innerHTML =
+      '<span class="ok">' + (listening ? '已收回' : '已放行') + ' ' + esc(openId) +
+      '（listen 名单已写入配置，重启实例后生效）</span>'
+    const detail = await api(`/api/instances/${encodeURIComponent(name)}`)
+    loadContacts(detail.state?.contacts || {}, json.listen || [], detail.config?.feishu?.names || {})
+  } catch (err) {
+    $('fs-verify-msg').innerHTML = '<span class="err">操作失败: ' + esc(err.message) + '</span>'
   }
 }
 

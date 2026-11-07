@@ -15,7 +15,7 @@
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
-import { mkdtempSync, readFileSync, rmSync, statSync, existsSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, statSync, existsSync, writeFileSync } from 'node:fs'
 import { tmpdir, homedir } from 'node:os'
 
 let pass = 0
@@ -415,6 +415,66 @@ try {
     /cfg\.feishu\?\.names\?\.\[openId\] \|\| this\.store\.getName\?\.\(openId\)/.test(handlerSrc),
     '生效名字顺序与 handler.js 的 nameOf() 一致',
   )
+
+  // 7b. 通讯录与 listen：store 的入册 / 类型补充 / 旧数据迁移，闸门并集
+  {
+    const { Store } = await import(join(REPO, 'src', 'store.js'))
+    const dir = mkdtempSync(join(tmpdir(), 'ocb-contacts-'))
+    const st = new Store(join(dir, 'state.json'))
+
+    // 入册只认被 @：有名字才建册
+    st.learnContact('ou_lilp', 'Lil_P')
+    ok(st.getName('ou_lilp') === 'Lil_P', '被 @ 到就入册，名字可查')
+    st.learnContact('ou_noname', '')
+    ok(!st.data.contacts?.['ou_noname'], '没有名字的 mention 不建册')
+    ok(st.getName('ou_noname') === '', '查不到的 id 返回空串')
+
+    // 类型补充：只更新已入册的，不建册
+    st.markContactKind('ou_lilp', 'app')
+    ok(st.data.contacts['ou_lilp'].kind === 'app', '类型补进已入册条目')
+    st.markContactKind('ou_never_seen', 'app')
+    ok(!st.data.contacts?.['ou_never_seen'], '类型补充不给没见过的 id 建册')
+    st.markContactKind('ou_lilp', 'user')
+    ok(st.data.contacts['ou_lilp'].kind === 'user', '类型可被后续消息更正')
+
+    // 时间戳：首次见到不翻新，最近见到翻新
+    const firstSeen = st.data.contacts['ou_lilp'].firstSeen
+    await new Promise((r) => setTimeout(r, 5))
+    st.learnContact('ou_lilp', 'Lil_P')
+    ok(st.data.contacts['ou_lilp'].firstSeen === firstSeen, '重复见到不翻新首次时间')
+    ok(st.data.contacts['ou_lilp'].lastSeen > firstSeen, '重复见到翻新最近时间')
+
+    // 旧版平铺 names 迁移
+    const legacy = join(dir, 'legacy.json')
+    writeFileSync(legacy, JSON.stringify({ version: 1, chats: {}, names: { ou_old: '老名字' } }))
+    const st2 = new Store(legacy)
+    ok(st2.getName('ou_old') === '老名字', '旧版平铺 names 迁移后可查')
+    ok(st2.data.contacts?.['ou_old']?.name === '老名字', '迁移落进 contacts 结构')
+    ok(!st2.data.names, '迁移后旧的平铺字段被清掉')
+
+    // 闸门：allowlist 与 listen 并集，单向下放行的是「它的 @」
+    const { Bridge } = await import(join(REPO, 'src', 'handler.js'))
+    const mkBridge = (feishu) =>
+      new Bridge({
+        oc: {}, store: st, config: { behavior: {}, feishu },
+        transport: {}, capabilities: {},
+        logger: { info() {}, warn() {}, error() {} },
+      })
+    const both = mkBridge({ allowlist: ['ou_human'], listen: ['ou_lilp'] })
+    ok(both.isAllowed('ou_human'), 'allowlist 里的个体放行')
+    ok(both.isAllowed('ou_lilp'), 'listen 里的个体放行（它的 @ 能到达我）')
+    ok(!both.isAllowed('ou_stranger'), '两个名单都没有的个体挡在外面')
+    ok(
+      mkBridge({ allowlist: [], listen: [] }).isAllowed('ou_anyone') === true,
+      '两个名单都空时不限制（与旧行为一致）',
+    )
+    const listenOnly = mkBridge({ allowlist: ['ou_human'], listen: [] })
+    ok(listenOnly.isAllowed('ou_human') && !listenOnly.isAllowed('ou_lilp'), '只配 allowlist 时 listen 不放行')
+    // 通讯录里「认识」不等于「许可」：入册了但没进 listen 的，闸门照样挡
+    ok(st.data.contacts['ou_lilp'] && !both.isAllowed('ou_not_listened'), '认识不等于放行')
+
+    rmSync(dir, { recursive: true, force: true })
+  }
 
   // 8. 页面结构：名字编辑入口必须真的在页面上。
   // 「加白名单只能填 open_id」「名字对照表只读」两个缺陷都出过，这里挡住回归

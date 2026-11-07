@@ -310,8 +310,16 @@ export class Bridge {
     run.flushed = true
     // 卡片已经收尾，把「还有人在跑」的记录抹掉，重启时就不会误标成已中断
     this.store.clearInflight?.(sid)
-    // 结束后再保留一小段时间便于清理
-    setTimeout(() => this.runs.delete(sid), 60_000)
+    // 结束后再保留一小段时间便于清理。**只删还是同一个 run 对象的情况**：
+    // 同一个会话 60 秒内完全可能又起一个新 run（用户连着发两句，前一句跑得
+    // 快），新 run 的 this.runs.set 会覆盖旧条目，而这个定时器只认 sid——
+    // 无条件删会把新 run 的对象删掉，它的终态事件随后被 onEvent 的
+    // 「找不到 run 就丢弃」全部吃掉，卡片永远停在「执行中」。真实事故：
+    // 22:12:19 排的定时器在 22:13:19 删掉了 22:13:10 才开始的 run，那张卡
+    // 至今停在「执行中 · 耗时 7s · 正在等待模型响应…」，而答案早就产出了
+    setTimeout(() => {
+      if (this.runs.get(sid) === run) this.runs.delete(sid)
+    }, 60_000)
     // 忙等时排队或插队的消息，到这里接着发。等 1.5 秒让卡片落定、
     // 迟到的 abort 事件过去，避免两条消息挤在同一张卡片上
     const qk = run.meta?.key
@@ -367,10 +375,24 @@ export class Bridge {
 
   // ---------- 消息入口 ----------
 
+  /**
+   * 放行闸门。两个名单的并集，都来自配置（启动时读一次，人在 admin 里维护）：
+   *
+   *   feishu.allowlist —— 手写的例外清单，人类也走这里；
+   *   feishu.listen    —— 通讯录里「认识且放行」的个体，admin 通讯录面板的开关
+   *                      写的就是这个列表。语义是「它的 @ 能到达我」，单向：
+   *                      A 的 listen 里有 B，则 B 的 @ 能唤醒 A；A 的 @ 能不能
+   *                      唤醒 B，看 B 自己的配置。
+   *
+   * 「认识」（通讯录 contacts，运行时自动攒）和「许可」（这两个配置名单）是
+   * 两层：被 @ 过只等于认识，不等于能唤醒我。@ 判定（requireMention）在更前面，
+   * 所以 listen 放行的是「它的 @ 消息」，不是它的任何消息。
+   */
   isAllowed(userId) {
-    const list = this.cfg.feishu.allowlist || []
-    if (!list.length) return true
-    return list.includes(userId)
+    const allow = this.cfg.feishu.allowlist || []
+    const listen = this.cfg.feishu.listen || []
+    if (!allow.length && !listen.length) return true
+    return allow.includes(userId) || listen.includes(userId)
   }
 
   /**
@@ -385,9 +407,14 @@ export class Bridge {
     return this.cfg.feishu?.names?.[openId] || this.store.getName?.(openId) || ''
   }
 
-  /** 每条消息里被 @ 的人，把 (open_id, 名字) 记下来 */
+  /** 每条消息里被 @ 的人，入通讯录（认识层）。放行与否看配置，不在这里决定 */
   learnNames(list) {
-    for (const x of list || []) this.store.setName?.(x.openId, x.name)
+    for (const x of list || []) this.store.learnContact?.(x.openId, x.name)
+  }
+
+  /** 补充通讯录条目的类型（人 / 机器人）。只更新已入册的，不建册 */
+  markContactKind(openId, kind) {
+    this.store.markContactKind?.(openId, kind)
   }
 
   dedupe(messageId) {
@@ -453,6 +480,7 @@ export class Bridge {
         userId: msg.userId,
         messageId: msg.messageId,
         origin: msg.origin,
+        oncePrefix: msg.oncePrefix,
         isGroup: msg.isGroup,
         chatId: ctx.chatId,
         replyTo: ctx.replyTo,
@@ -482,6 +510,7 @@ export class Bridge {
 
     // 没有绑定或不存在的会话 -> 自动建一个
     let session
+    let isNewSession = false
     try {
       if (binding?.sessionId) {
         session = await this.oc.getSession(binding.sessionId)
@@ -492,12 +521,18 @@ export class Bridge {
     }
     if (!session) {
       session = await this.createAndBind(ctx, directory)
+      isNewSession = true
     }
 
     const raw = msg.text || ''
     const promptText = raw.length > MAX_PROMPT_CHARS ? raw.slice(0, MAX_PROMPT_CHARS) : raw
-    // 来源标注只拼给模型，不参与 /命令 解析，也不计入 MAX_PROMPT_CHARS
-    const body = msg.origin ? `${msg.origin}\n\n${promptText}` : promptText
+    // 前缀分两路，只拼给模型，不参与 /命令 解析，也不计入 MAX_PROMPT_CHARS：
+    //   origin      每条消息都带（来源标注 + 身份声明 + 配置里 always 的前缀）
+    //   oncePrefix  只在该会话的第一条消息带（配置里 once 的前缀，默认是协作
+    //               规则）。规则是静态的，第一条带过之后就在会话历史里，后续
+    //               消息靠上下文记住——每轮重复只是白烧 token
+    const preamble = [msg.origin, isNewSession ? msg.oncePrefix : ''].filter(Boolean).join('\n')
+    const body = preamble ? `${preamble}\n\n${promptText}` : promptText
 
     const state = new RunState(session.id)
     const meta = {

@@ -147,6 +147,9 @@ function validateConfig(body, current) {
   if (feishu.allowlist !== undefined && !Array.isArray(feishu.allowlist)) {
     errs.push('feishu.allowlist 必须是数组')
   }
+  if (feishu.listen !== undefined && !Array.isArray(feishu.listen)) {
+    errs.push('feishu.listen 必须是数组')
+  }
   if (feishu.names !== undefined && (typeof feishu.names !== 'object' || feishu.names === null || Array.isArray(feishu.names))) {
     errs.push('feishu.names 必须是 open_id 到名字的对象')
   }
@@ -515,6 +518,27 @@ async function handleApi(req, res, url) {
     }
     writeConfigAtomic(join(found.dir, 'config.json'), current)
     return sendJson(res, 200, { ok: true, names: current.feishu.names })
+  }
+
+  // 监听名单（feishu.listen）增删。语义与 allowlist 不同：这里是「它的 @ 能
+  // 到达我」，由通讯录面板的开关维护，单向——A 的 listen 里有 B，B 的 @ 能
+  // 唤醒 A；A 的 @ 能不能唤醒 B 看 B 自己的配置。写入的是 open_id，页面
+  // 展示时用通讯录里的名字解释这个 id 是谁
+  if (sub === 'listen' && req.method === 'POST') {
+    const body = await readBody(req)
+    const openId = String(body.openId || '').trim()
+    const op = body.op
+    if (!openId || !['add', 'remove'].includes(op)) {
+      return sendError(res, 400, '需要 op（add 或 remove）与 openId')
+    }
+    const idErr = checkOpenId(openId)
+    if (idErr) return sendError(res, 400, idErr)
+    const current = readJsonSafe(found.dir)
+    const list = Array.isArray(current.feishu?.listen) ? current.feishu.listen : []
+    const next = op === 'add' ? applyAllowlistAdd(list, openId) : applyAllowlistRemove(list, openId)
+    current.feishu = { ...current.feishu, listen: next }
+    writeConfigAtomic(join(found.dir, 'config.json'), current)
+    return sendJson(res, 200, { ok: true, listen: next })
   }
 
   // 起停。只对装了 launchd 常驻服务的实例开放：没装 plist 的实例走 down.sh

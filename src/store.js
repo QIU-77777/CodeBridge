@@ -30,6 +30,26 @@ export class Store {
       // 文件损坏就从空状态开始，不阻塞启动
       this.data = { version: VERSION, chats: {} }
     }
+    this.migrateNames()
+  }
+
+  /**
+   * 旧版的 names 是平铺的 { open_id: 名字 }，只为「标注里显示名字」服务。
+   * 通讯录需要类型和时间戳，升级时平译过去：kind 留空（下次它说话就补上），
+   * 时间戳用当前时间。丢一次也不心疼——那本来就是个缓存，重新 @ 一遍就全回来了。
+   */
+  migrateNames() {
+    const flat = this.data.names
+    if (!flat || typeof flat !== 'object') return
+    const c = this.data.contacts || (this.data.contacts = {})
+    const now = Date.now()
+    for (const [openId, name] of Object.entries(flat)) {
+      if (typeof name !== 'string' || !name) continue
+      if (c[openId]) continue
+      c[openId] = { name, kind: '', source: 'mention', firstSeen: now, lastSeen: now }
+    }
+    delete this.data.names
+    this.scheduleSave()
   }
 
   get(chatId) {
@@ -58,23 +78,71 @@ export class Store {
   }
 
   /**
-   * open_id -> 显示名。
+   * 通讯录：open_id -> { name, kind, source, firstSeen, lastSeen }。
    *
-   * 飞书没有「open_id 反查机器人名字」的接口（contact 接口对机器人 open_id
-   * 直接返回 41050 no user authority），所以名字只能从消息的 mentions 里攒：
-   * 谁被 @ 过，我们就把那条 mention 的 name 记下来。用得越久越全。
+   * 这是「认识」层——知道对方是谁、在**本应用视角**里怎么地址它。入册只认
+   * 「被 @」：飞书把群里每条消息推给每一个机器人，mentions 数组里带的是接收
+   * 方视角的 open_id 和名字，所以任何人 @ 过一次某机器人，所有机器人都认识了
+   * 它。`kind`（user/app）由「它说过话」的事件补充，只 enrichment 不建册。
+   *
+   * 注意这和「许可」是两层：认识 ≠ 能唤醒我。放行名单在 config 的
+   * feishu.listen / feishu.allowlist，见 handler.isAllowed。
+   *
+   * 飞书没有「open_id 反查名字」的接口（contact 对机器人 open_id 直接返回
+   * 41050），mentions 里的 name 是唯一免费来源。
    */
   getName(openId) {
     if (!openId) return ''
-    return this.data.names?.[openId] || ''
+    return this.data.contacts?.[openId]?.name || ''
+  }
+
+  /** 被 @ 到 → 入册（或刷新名字）。没有名字的 mention 不入册 */
+  learnContact(openId, name) {
+    if (!openId || !name) return
+    const c = this.data.contacts || (this.data.contacts = {})
+    const prev = c[openId]
+    if (prev && prev.name === name) {
+      prev.lastSeen = Date.now()
+      this.scheduleSave()
+      return
+    }
+    c[openId] = {
+      name,
+      kind: prev?.kind || '',
+      source: 'mention',
+      firstSeen: prev?.firstSeen || Date.now(),
+      lastSeen: Date.now(),
+    }
+    this.scheduleSave()
+  }
+
+  /**
+   * 补充「它是人还是机器人」。只更新已入册的条目，不建册——入册只认被 @。
+   * 机器人被 @ 之后通常就会在群里说话，所以说过一次话它的 kind 就准了。
+   */
+  markContactKind(openId, kind) {
+    if (!openId || !kind) return
+    const c = this.data.contacts || {}
+    const prev = c[openId]
+    if (!prev || prev.kind === kind) return
+    prev.kind = kind
+    this.scheduleSave()
+  }
+
+  /** 通讯录全量，admin 通讯录面板用 */
+  contactList() {
+    return Object.entries(this.data.contacts || {}).map(([openId, v]) => ({
+      openId,
+      name: v.name || '',
+      kind: v.kind || '',
+      source: v.source || '',
+      firstSeen: v.firstSeen || null,
+      lastSeen: v.lastSeen || null,
+    }))
   }
 
   setName(openId, name) {
-    if (!openId || !name) return
-    const names = this.data.names || (this.data.names = {})
-    if (names[openId] === name) return
-    names[openId] = name
-    this.scheduleSave()
+    this.learnContact(openId, name)
   }
 
   /**
