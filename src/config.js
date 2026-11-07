@@ -58,6 +58,13 @@ const DEFAULTS = {
     domain: 'feishu',
     // 白名单：填 open_id 或 user_id。空数组 = 不限制（不建议）
     allowlist: [],
+    // 监听名单：通讯录里「认识且放行」的个体，填 open_id（本应用视角的值）。
+    // 与 allowlist 是并集关系，语义不同：
+    //   allowlist = 手写例外，人类也走这里；
+    //   listen   = 「它的 @ 能到达我」，由 admin 通讯录面板的开关维护。
+    // 单向：A 的 listen 里有 B，B 的 @ 能唤醒 A；反过来要看 B 自己的配置。
+    // 「认识」（通讯录，运行时自动攒）不等于「许可」（这个名单）
+    listen: [],
     // 群聊是否必须 @ 本机器人 才响应（@ 别的机器人 / 别人不会被触发）
     requireMention: true,
     // 机器人自己的 open_id。留空则启动时调 /open-apis/bot/v3/info 自动取；

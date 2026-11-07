@@ -577,7 +577,9 @@ if (process.argv.includes('--live')) {
   ok(/@名字 只是字面字符，唤不醒任何人/.test(o1once), '说明里点明 @名字 不产生提醒', o1once)
   ok(/卡片不唤醒任何人/.test(o1once), '说明里点明终态卡片不唤醒别人', o1once)
   ok(/回复话题内已有的 om_ 消息/.test(o1once), '说明里给了话题内发言的落点规则', o1once)
-  ok(/open_id 按应用隔离/.test(o1once), '说明里点明 open_id 按应用隔离', o1once)
+  ok(/open_id 只认本应用视角/.test(o1once), '说明里点明 open_id 按应用隔离（只认本应用视角）', o1once)
+  ok(/contacts/.test(o1once), '说明里指向通讯录这个地址来源', o1once)
+  ok(!/查群成员列表/.test(o1once), '不再建议查群成员列表——那里面没有机器人（实测）', o1once)
   ok(!/\[协作 ·/.test(o1), '协作说明不再混在每条消息的来源标注里（避免每轮重复）', o1)
 
   await t.handleImMessage({
