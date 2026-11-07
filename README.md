@@ -649,13 +649,20 @@ OCB_INSTANCE=pi npm run up      # 之后重启、查看都要带同一个 OCB_IN
 
 代理在群里要用飞书 CLI 发消息时，读的是**机器级配置**（`~/.feishu-cli/config.yaml`、`~/.lark-cli/config.json`）。多机器人同机时那个默认应用经常是另一个实例的——真实事故：用户让 Lil_P 跟 LilO 打招呼，Lil_P 的代理调 `feishu-cli` 发出，消息却以 Lil_O 的应用到达群里，看起来像 Lil_O 自己跟自己打招呼。
 
-pi 后端因此在起子进程时把本实例的身份钉进去（`src/pi.js` 的 `childEnv()`）：
+两个后端的注入点不同，语义完全一致（`scripts/lib/feishu-identity.sh` 与 `src/pi.js` 的 `childEnv()` 是同一套逻辑）：
+
+- **pi 后端**：桥接起子进程前注入（`src/pi.js` 的 `childEnv()`）；
+- **opencode 后端**：代理跑在常驻的 `opencode serve` 里，桥接没法向已启动的进程注入，注入点挪到 serve 启动处——launchd 路径的 `scripts/agent/serve.sh` 与手动路径的 `scripts/up.sh` 在起 serve 前都调用 `ocb_export_feishu_identity`。
+
+两边都做三件事：
 
 - 注入 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_DOMAIN`。`feishu-cli` 的凭证优先级是 `--bot-app-id` > 环境变量 > 配置文件，环境变量即可盖过机器级配置；
 - 在实例配置目录下生成只含本实例应用的 `lark-cli/config.json`（权限 600，与桥接自己的 `config.json` 同规格），并设 `LARKSUITE_CLI_CONFIG_DIR` 指向它；
 - 给模型的来源标注追加一行身份声明（「你是 X（飞书应用 cli_…）」），声明与注入互相印证。
 
-配置里没有飞书凭证时什么都不注入，子进程沿用机器级配置，与老行为一致。opencode 后端的代理跑在常驻的 `opencode serve` 里，桥接无法向它注入环境变量，只能拿到身份声明那一行——换机器级配置前先核对。
+配置里没有飞书凭证时什么都不注入，进程沿用机器级配置，与老行为一致。身份是 serve/子进程**启动时现读**的，不是安装时焊死的：换绑机器人只改实例配置里的 `appId`/`appSecret`，重启 serve（opencode）或等下次任务（pi）即跟随，plist 不用重新生成。
+
+两条边界：桌面版 OpenCode 自己拉起的会话不走这套注入（只有桥接经 `serve.sh`/`up.sh` 起的 serve 走）；shell 里 `lark-cli` 若前面还有别的包装器（例如 dsh-superagent 的 worker-bin），以最前面那个为准。
 
 ### 已知风险
 

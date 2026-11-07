@@ -80,6 +80,11 @@ if [ -n "$RUN_VER" ]; then
   fi
 else
   echo "→ 启动 opencode serve :${PORT}"
+  # 本实例的飞书身份：serve 里的代理用 CLI 发言时以本实例应用发出，不读机器级
+  # 配置里别的机器人应用。没有配置凭证时什么都不注入，沿用机器级配置
+  . "$ROOT/scripts/lib/feishu-identity.sh"
+  ocb_export_feishu_identity "$(dirname "$CONFIG")" node
+  echo "   飞书身份：${FEISHU_APP_ID:-（未配置，沿用机器级 CLI 配置）}"
   OPENCODE_SERVER_PASSWORD="$PW" nohup "$OC_BIN" serve --port "$PORT" --hostname 127.0.0.1 \
     >> logs/serve.log 2>&1 &
   echo $! > .serve.pid
