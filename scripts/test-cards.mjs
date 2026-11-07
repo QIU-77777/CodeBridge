@@ -523,12 +523,15 @@ if (process.argv.includes('--live')) {
 // ---------- 6.4 给模型的来源标注 ----------
 {
   const { FeishuTransport } = await import('../src/feishu.js')
+  const { loadConfig } = await import('../src/config.js')
   const got = []
   const seen = []
   const names = new Map([['ou_lild', '小d']])
-  const t = new FeishuTransport(
-    { feishu: { appId: 'cli_x', appSecret: 'sec_x', requireMention: true } },
-    {
+  // 用真实默认配置（含 prompt.prefixes 的 rules once 条目），桩里只覆盖飞书凭证
+  const cfg = loadConfig()
+  // 只覆盖要用的字段，appId/appSecret 必须非空（Lark.Client 构造时校验）
+  cfg.feishu = { appId: 'cli_x', appSecret: 'sec_x', domain: 'feishu', requireMention: true, allowlist: [], names: {} }
+  const t = new FeishuTransport(cfg, {
       onMessage: async (m) => got.push(m),
       onCardAction: async () => {},
       nameOf: (id) => names.get(id) || '',
@@ -566,14 +569,16 @@ if (process.argv.includes('--live')) {
     seen.some((x) => x.openId === 'ou_me' && x.name === 'LiLO'),
     '把消息里被 @ 的 (open_id, 名字) 交给上层攒起来',
   )
-  // 协作机制说明：只在群里拼，且必须把三条关键规则说清（真实事故：Lil_O 拿着
-  // Lil_P 的 open_id 却在卡片上回复，两个 agent 完全没对话上）
-  ok(/\[协作 ·/.test(o1), '群消息带协作机制说明', o1)
-  ok(/<at user_id="对方 open_id"><\/at>/.test(o1), '说明里给了真 mention 的写法', o1)
-  ok(/@名字 只是字面字符，唤不醒任何人/.test(o1), '说明里点明 @名字 不产生提醒', o1)
-  ok(/卡片不唤醒任何人/.test(o1), '说明里点明终态卡片不唤醒别人', o1)
-  ok(/回复话题内已有的 om_ 消息/.test(o1), '说明里给了话题内发言的落点规则', o1)
-  ok(/open_id 按应用隔离/.test(o1), '说明里点明 open_id 按应用隔离', o1)
+  // 协作机制说明：默认每会话只带一次（oncePrefix），不再混在每条消息的 origin 里
+  // ——规则是静态的，第一条带过就在会话历史里，每轮重复只是白烧 token
+  const o1once = got[0]?.oncePrefix || ''
+  ok(/\[协作 ·/.test(o1once), '群消息的 oncePrefix 带协作机制说明', o1once)
+  ok(/<at user_id="对方 open_id"><\/at>/.test(o1once), '说明里给了真 mention 的写法', o1once)
+  ok(/@名字 只是字面字符，唤不醒任何人/.test(o1once), '说明里点明 @名字 不产生提醒', o1once)
+  ok(/卡片不唤醒任何人/.test(o1once), '说明里点明终态卡片不唤醒别人', o1once)
+  ok(/回复话题内已有的 om_ 消息/.test(o1once), '说明里给了话题内发言的落点规则', o1once)
+  ok(/open_id 按应用隔离/.test(o1once), '说明里点明 open_id 按应用隔离', o1once)
+  ok(!/\[协作 ·/.test(o1), '协作说明不再混在每条消息的来源标注里（避免每轮重复）', o1)
 
   await t.handleImMessage({
     message: {
@@ -590,6 +595,7 @@ if (process.argv.includes('--live')) {
   })
   ok(/话题内/.test(got[1]?.origin || ''), '话题里的消息标注为「话题内」')
   ok(/ou_user（用户）/.test(got[1]?.origin || ''), '人类发送者标为「用户」')
+  ok(got[1]?.oncePrefix !== undefined, 'oncePrefix 字段每条消息都带（由上层决定拼不拼）')
 
   await t.handleImMessage({
     message: {
@@ -602,7 +608,54 @@ if (process.argv.includes('--live')) {
     sender: { sender_id: { open_id: 'ou_user' }, sender_type: 'user' },
   })
   ok(/私聊/.test(got[2]?.origin || ''), '私聊标注为「私聊」')
-  ok(!/\[协作 ·/.test(got[2]?.origin || ''), '私聊不带协作机制说明（群里没有其他 agent）')
+  ok(!(got[2]?.oncePrefix || ''), '私聊不带协作说明（群里没有其他 agent）')
+  ok(!/\[协作 ·/.test(got[2]?.origin || ''), '私聊的来源标注里也没有协作说明')
+
+  // 配置化：text 填了就用用户的版本；自定义 always 条目并进每条消息的 origin
+  const t2 = new FeishuTransport(
+    {
+      feishu: { appId: 'cli_x', appSecret: 'sec_x', domain: 'feishu', requireMention: true, allowlist: [], names: {} },
+      prompt: {
+        prefixes: [
+          { id: 'rules', mode: 'once', text: '我的协作规则：先问再做。' },
+          { id: 'house-style', mode: 'always', text: '回答用中文。' },
+        ],
+      },
+    },
+    { onMessage: (m) => got.push(m), onCardAction() {}, nameOf: () => '', onSeenNames() {} },
+  )
+  await t2.handleImMessage({
+    message: {
+      message_type: 'text',
+      chat_type: 'group',
+      chat_id: 'oc_g',
+      message_id: 'om_o4',
+      content: JSON.stringify({ text: '@_user_1 在吗' }),
+      mentions: me,
+    },
+    sender: { sender_id: { open_id: 'ou_user' }, sender_type: 'user' },
+  })
+  ok(/我的协作规则：先问再做。/.test(got[3]?.oncePrefix || ''), 'rules 的 text 填了就覆盖内置默认', got[3]?.oncePrefix)
+  ok(/回答用中文。/.test(got[3]?.origin || ''), '自定义 always 前缀并进每条消息的来源标注', got[3]?.origin)
+  ok(!/\[协作 ·/.test(got[3]?.oncePrefix || ''), '覆盖后不再出现内置默认文本')
+
+  // 删掉 rules 条目 = 关闭协作说明
+  const t3 = new FeishuTransport(
+    { feishu: { appId: 'cli_x', appSecret: 'sec_x', domain: 'feishu', requireMention: true, allowlist: [], names: {} }, prompt: { prefixes: [] } },
+    { onMessage: (m) => got.push(m), onCardAction() {}, nameOf: () => '', onSeenNames() {} },
+  )
+  await t3.handleImMessage({
+    message: {
+      message_type: 'text',
+      chat_type: 'group',
+      chat_id: 'oc_g',
+      message_id: 'om_o5',
+      content: JSON.stringify({ text: '@_user_1 在吗' }),
+      mentions: me,
+    },
+    sender: { sender_id: { open_id: 'ou_user' }, sender_type: 'user' },
+  })
+  ok(!(got[4]?.oncePrefix || ''), 'prefixes 清空后不再拼任何 once 前缀')
 
   const cached = await t.resolveChatName('oc_g')
   ok(cached === '桥接话题探针' && t.chatNames.size === 1, '群名只取一次，后续走缓存')
@@ -635,6 +688,70 @@ if (process.argv.includes('--live')) {
   ok(sentText.startsWith('[飞书 · '), 'prompt 第一行是来源标注', sentText.slice(0, 40))
   ok(sentText.includes('帮我看下'), '正文没丢')
   ok(sentText.indexOf(']') < sentText.indexOf('帮我看下'), '来源标注在正文之前')
+}
+
+// ---------- 6.6 once 前缀只在新会话的第一条消息拼 ----------
+{
+  const { Bridge } = await import('../src/handler.js')
+  const RULES = '[协作 · 真 mention 的写法…]'
+  // getSession 决定走哪条路：抛错 = 绑定失效，重建新会话（once 要拼）；
+  // 返回会话 = 续聊（once 不拼）。store 里要有对应绑定，否则会再去建会话
+  const mk = (getSession, bound) => {
+    const sent = []
+    const b = new Bridge({
+      oc: {
+        getSession,
+        createSession: async () => ({ id: 'ses_new', location: { directory: '/tmp' } }),
+        prompt: async (_id, text) => sent.push(text),
+      },
+      store: {
+        get: () => (bound ? { sessionId: 'ses_x', directory: '/tmp', chatId: 'oc_g', replyTo: 'om_1' } : null),
+        set() {},
+        setInflight() {},
+        clearInflight() {},
+        queueLength: () => 0,
+      },
+      config: { behavior: {}, opencode: { defaultDirectory: '/tmp' } },
+      transport: { sendCard: async () => 'card_1', sendText: async () => {} },
+      logger: { info() {}, warn() {}, error() {} },
+    })
+    return { b, sent }
+  }
+  const msg = {
+    chatId: 'oc_g',
+    chatType: 'group',
+    messageId: 'om_1',
+    text: '帮我看下',
+    origin: '[飞书 · 群「探针」]',
+    oncePrefix: RULES,
+  }
+
+  // 新会话（getSession 抛错 → 重建）：once 前缀要拼
+  {
+    const { b, sent } = mk(async () => {
+      throw new Error('不存在')
+    }, false)
+    await b.runPrompt(msg, b.ctxOf(msg))
+    ok(sent[0]?.includes(RULES), '新会话的第一条消息拼上 once 前缀', sent[0]?.slice(0, 120))
+    ok(sent[0]?.startsWith('[飞书 · 群「探针」]\n' + RULES), 'once 前缀拼在来源标注之后、正文之前')
+  }
+
+  // 续聊会话（getSession 成功）：once 前缀不拼，规则已在会话历史里
+  {
+    const { b, sent } = mk(async () => ({ id: 'ses_x', location: { directory: '/tmp' } }), true)
+    await b.runPrompt(msg, b.ctxOf(msg))
+    ok(!sent[0]?.includes(RULES), '续聊会话不重复拼 once 前缀（靠上下文记住）', sent[0]?.slice(0, 120))
+    ok(sent[0]?.startsWith('[飞书 · 群「探针」]'), '来源标注仍然每条都带')
+  }
+
+  // 没有 oncePrefix（比如私聊，或用户关了 rules 条目）：两种情况都不拼，不炸
+  {
+    const { b, sent } = mk(async () => {
+      throw new Error('不存在')
+    }, false)
+    await b.runPrompt({ ...msg, oncePrefix: '' }, b.ctxOf(msg))
+    ok(sent[0]?.startsWith('[飞书 · 群「探针」]') && !sent[0]?.includes('undefined'), 'oncePrefix 为空时干净退化成只有来源标注', sent[0]?.slice(0, 80))
+  }
 }
 
 // ---------- 6.6 名字从哪来：配置 > @ 攒的 > 空 ----------
