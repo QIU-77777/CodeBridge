@@ -112,7 +112,7 @@ cwd: <directory>                                          # 话题绑定的项�
 - `ensureLarkCliConfig()` 在实例配置目录写一份只含本实例应用的 `lark-cli/config.json`（权限 600），并把 `LARKSUITE_CLI_CONFIG_DIR` 指过去；
 - 配置里没有飞书凭证时两者都不做，子进程沿用机器级配置，与老行为一致。
 
-opencode 后端的代理跑在常驻 serve 里，桥接无法注入环境变量，只能在来源标注里给一行身份声明（见 `src/feishu.js` 的 `identityLine`）。
+opencode 后端的代理跑在常驻 serve 里，桥接没法向已启动的进程注入环境变量，注入点因此挪到 serve 启动处：`scripts/lib/feishu-identity.sh` 的 `ocb_export_feishu_identity` 被 `scripts/agent/serve.sh`（launchd 路径）和 `scripts/up.sh`（手动路径）在起 serve 前调用，导出内容与本文件的 `childEnv()` 相同。身份声明行（`src/feishu.js` 的 `identityLine`）对两个后端都加，作为第二重提示。
 
 ## 5. 一次性模式下的行为差异
 
