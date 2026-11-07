@@ -310,8 +310,16 @@ export class Bridge {
     run.flushed = true
     // 卡片已经收尾，把「还有人在跑」的记录抹掉，重启时就不会误标成已中断
     this.store.clearInflight?.(sid)
-    // 结束后再保留一小段时间便于清理
-    setTimeout(() => this.runs.delete(sid), 60_000)
+    // 结束后再保留一小段时间便于清理。**只删还是同一个 run 对象的情况**：
+    // 同一个会话 60 秒内完全可能又起一个新 run（用户连着发两句，前一句跑得
+    // 快），新 run 的 this.runs.set 会覆盖旧条目，而这个定时器只认 sid——
+    // 无条件删会把新 run 的对象删掉，它的终态事件随后被 onEvent 的
+    // 「找不到 run 就丢弃」全部吃掉，卡片永远停在「执行中」。真实事故：
+    // 22:12:19 排的定时器在 22:13:19 删掉了 22:13:10 才开始的 run，那张卡
+    // 至今停在「执行中 · 耗时 7s · 正在等待模型响应…」，而答案早就产出了
+    setTimeout(() => {
+      if (this.runs.get(sid) === run) this.runs.delete(sid)
+    }, 60_000)
     // 忙等时排队或插队的消息，到这里接着发。等 1.5 秒让卡片落定、
     // 迟到的 abort 事件过去，避免两条消息挤在同一张卡片上
     const qk = run.meta?.key
