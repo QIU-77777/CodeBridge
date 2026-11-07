@@ -95,18 +95,31 @@ cwd: <directory>                                          # 话题绑定的项�
 
 `getSession(id)` 从会话目录里找 `<...>_<id>.jsonl`，存在就返回会话对象。桥接重启后内存 Map 空了，但文件还在，续聊能接上；文件也丢了就抛错，`Bridge` 现有的 `catch` 会自动重建会话。
 
-### 4.4 超时与中止
+### 4.4 超时、中止与静默收尾
 
-- `timeoutMs`（默认 10 分钟）到点先 `SIGTERM`，2 秒后 `SIGKILL`，并合成 `execution.failed`，错误文案说明是超时；
+- `timeoutMs`（默认 10 分钟，从进程启动算总时长）到点先 `SIGTERM`，2 秒后 `SIGKILL`，并合成 `execution.failed`，错误文案说明是超时；
 - `interrupt(id)` 找到在跑的子进程 kill 掉，标记 `aborted`，**不抛出**，避免 `runPrompt` 的 catch 把 `aborted` 覆盖成 `failed`；
-- 子进程 `rc !== 0` 且非主动中止 → 合成 `execution.failed`，把 stderr 尾部放进错误区。
+- 子进程 `rc !== 0` 且非主动中止 → 合成 `execution.failed`，把 stderr 尾部放进错误区；
+- **静默收尾**（`settleQuietMs`，默认 60 秒）：pi 偶发「最终回答产出了却不退出」——`agent_settled` 永远不来，进程挂住但不再吐事件。实测一次卡片在「执行中」停了 6 分 58 秒。桥接逐行读 stdout 维护三个现场（最后事件时间、是否见过 `turn_end`、有没有在进行中的助手消息或工具调用），三条同时满足「见过最终消息、无进行中事项、静默超时」就按已完成收尾：正文取 `parsePiJsonl` 的最终文本并附一行说明，随后杀掉整个进程组。设 0 关闭，恢复「只等进程退出」的老行为。
+
+### 4.5 子进程环境：发言身份钉成本实例
+
+多机器人同机时，代理用飞书 CLI 发消息读的是机器级配置（`~/.feishu-cli/config.yaml`、`~/.lark-cli/config.json`），默认应用可能是另一个实例的。真实事故：用户让 Lil_P 跟 LilO 打招呼，Lil_P 的代理调 `feishu-cli` 发出，消息以 Lil_O 的应用到达群里。
+
+`childEnv()` 在起子进程前准备好环境：
+
+- `FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_DOMAIN` 取本实例的 `cfg.feishu`。`feishu-cli` 的凭证优先级是 `--bot-app-id` > 环境变量 > 配置文件，注入即覆盖；
+- `ensureLarkCliConfig()` 在实例配置目录写一份只含本实例应用的 `lark-cli/config.json`（权限 600），并把 `LARKSUITE_CLI_CONFIG_DIR` 指过去；
+- 配置里没有飞书凭证时两者都不做，子进程沿用机器级配置，与老行为一致。
+
+opencode 后端的代理跑在常驻 serve 里，桥接无法注入环境变量，只能在来源标注里给一行身份声明（见 `src/feishu.js` 的 `identityLine`）。
 
 ## 5. 一次性模式下的行为差异
 
 | 能力 | opencode 后端 | pi 后端（本阶段） |
 |---|---|---|
 | 执行中卡片 | 有，按 1.8s 节流刷新 | 有，但内容保持「正在等待模型响应…」直到结束 |
-| 结果 | 流式逐步长出来 | **跑完一次 patch 成最终卡片** |
+| 结果 | 流式逐步长出来 | **跑完一次 patch 成最终卡片**（最终消息后静默超时则提前收尾，见 4.4） |
 | 正文 / 表格 / 代码块 | 有 | 有（复用 `mdToElements`） |
 | `in / out / 金额` | 有 | 有（从 `usage` 取，卡片已是两位小数） |
 | 模型名 | 有 | 有（`provider/model`） |
@@ -129,6 +142,7 @@ cwd: <directory>                                          # 话题绑定的项�
     "bin": "pi",
     "model": "",
     "timeoutMs": 600000,
+    "settleQuietMs": 60000,
     "extraArgs": []
   }
 }

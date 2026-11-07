@@ -5,6 +5,7 @@
       "bin": "pi",
       "model": "",
       "timeoutMs": 600000,
+      "settleQuietMs": 60000,
       "extraArgs": []
     }
   },
