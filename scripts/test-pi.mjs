@@ -53,8 +53,6 @@ const usage = { input: 17, output: 3, cacheRead: 4608, cacheWrite: 0, totalToken
 const emit = (o) => console.log(JSON.stringify(o))
 emit({ type: 'session', id: 'fake', cwd: process.cwd() })
 emit({ type: 'agent_start' })
-emit({ type: 'message_update', usage, assistantMessageEvent: { type: 'text_start', contentIndex: 0 } })
-emit({ type: 'message_update', usage, assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'HEL' } })
 if (mode === 'provider-error') {
   // 复现真实故障：模型调用被 provider 拒（429 限流、provider 未配置）。
   // pi 打一条 stopReason=error、errorMessage 带原文的助手消息后不退出——
@@ -86,6 +84,36 @@ else if (mode === 'quiet-empty') {
   setInterval(() => {}, 1000)
   process.stdout.write('')
 }
+else if (mode === 'stream') {
+  // 复现真实多轮运行的事件序列（形状见 pi 文档 docs/json.md）：两轮助手
+  // 消息，第一轮带 bash 工具调用，文本分片流出，模型名写在消息里。
+  // 修复前这些行只进缓冲区，卡片在运行中一次都不刷新
+  const asst = (id, text, stop) => ({ role: 'assistant', id, content: text ? [{ type: 'text', text }] : [],
+    provider: 'stepfun-platform', model: 'step-5-preview', stopReason: stop, usage })
+  emit({ type: 'turn_start' })
+  emit({ type: 'message_start', message: { role: 'user', id: 'u1', content: '读一下' } })
+  emit({ type: 'message_end', message: { role: 'user', id: 'u1', content: '读一下' } })
+  emit({ type: 'message_start', message: asst('a1', '', 'pending') })
+  emit({ type: 'message_update', usage, assistantMessageEvent: { type: 'text_start', contentIndex: 0 } })
+  emit({ type: 'message_update', usage, assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: '我先' } })
+  emit({ type: 'message_update', usage, assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: '看一下。' } })
+  emit({ type: 'message_update', usage, assistantMessageEvent: { type: 'text_end', contentIndex: 0, content: '我先看一下。' } })
+  emit({ type: 'message_update', usage, assistantMessageEvent: { type: 'toolcall_start', contentIndex: 1, id: 'call_1', toolName: 'bash' } })
+  emit({ type: 'message_update', usage, assistantMessageEvent: { type: 'toolcall_end', contentIndex: 1, toolCall: { id: 'call_1', name: 'bash', args: { command: 'ls' } } } })
+  emit({ type: 'message_end', message: asst('a1', '我先看一下。', 'toolUse') })
+  emit({ type: 'tool_execution_start', toolCallId: 'call_1', toolName: 'bash', args: { command: 'ls' } })
+  emit({ type: 'tool_execution_end', toolCallId: 'call_1', toolName: 'bash', isError: false, durationMs: 12,
+    result: { content: [{ type: 'text', text: 'a.js 与 b.js' }], details: {} } })
+  emit({ type: 'turn_end', message: asst('a1', '我先看一下。', 'toolUse'), toolResults: [] })
+  emit({ type: 'turn_start' })
+  emit({ type: 'message_start', message: asst('a2', '', 'pending') })
+  emit({ type: 'message_update', usage, assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: '目录里有' } })
+  emit({ type: 'message_update', usage, assistantMessageEvent: { type: 'text_end', contentIndex: 0, content: '目录里有 a.js 和 b.js。' } })
+  emit({ type: 'message_end', message: asst('a2', '目录里有 a.js 和 b.js。', 'stop') })
+  emit({ type: 'turn_end', message: asst('a2', '目录里有 a.js 和 b.js。', 'stop'), toolResults: [] })
+  emit({ type: 'agent_end', messages: [] })
+  emit({ type: 'agent_settled', aborted: false })
+}
 else if (mode === 'hang') { setInterval(() => {}, 1000); process.stdout.write('') }
 else if (mode === 'orphan') {
   // 模拟 pi 的 bash 工具留下的长驻子进程：继承 stdout/stderr，不随父进程退出，
@@ -98,6 +126,8 @@ else if (mode === 'orphan') {
   process.stdout.write('')
 }
 else {
+  emit({ type: 'message_update', usage, assistantMessageEvent: { type: 'text_start', contentIndex: 0 } })
+  emit({ type: 'message_update', usage, assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'HEL' } })
   emit({ type: 'message_update', usage, assistantMessageEvent: { type: 'text_end', contentIndex: 0, content: 'HELLO' } })
   emit({ type: 'message_end', message: { role: 'assistant',
     content: [{ type: 'text', text: 'HELLO' }], provider: 'deepseek', model: 'deepseek-v4-pro', usage } })
@@ -259,6 +289,72 @@ const main = async () => {
     ok(calls[0].opts.cwd === root, 'cwd 是话题绑定的工作目录')
   }
 
+  section('运行中流式：文本、工具、步数、模型边收边发')
+  {
+    // 复现真实故障（2026-11-07）：pi 后端运行期间不发任何事件，卡片从创建起
+    // 就是一张静态图。用户 14:18 发的追问，Lil_P 实际从 14:18:19 干活到
+    // 14:25:52，卡片 8 分 24 秒没有任何变化，用户看不到一个字
+    const b = makeBackend({
+      backend: { type: 'pi', pi: { bin: 'pi', model: '', timeoutMs: 8000, extraArgs: [] } },
+    })
+    const s = await b.createSession({ title: '流式', directory: root })
+    currentMode = 'stream'
+    const events = []
+    b.subscribe((ev) => events.push(ev), () => {})
+    const r = await b.prompt(s.id, '读一下项目')
+    ok(r.ok === true, '流式运行正常结束')
+
+    const types = events.map((e) => e.type)
+    const iTerminal = types.indexOf('session.execution.succeeded')
+    const iFirstText = types.findIndex((t) => t === 'session.text.delta')
+    ok(iFirstText >= 0 && iFirstText < iTerminal, '文本增量在终态之前就发出（运行中卡片就在刷新）')
+    ok(
+      events.slice(0, iTerminal).filter((e) => e.type === 'session.text.delta').length >= 2,
+      '文本是分片流到的，不是最后一次性给',
+    )
+    ok(types.includes('session.step.started'), '有 step.started（步数）')
+    ok(events.filter((e) => e.type === 'session.step.started').length === 2, '两轮助手消息 = 两步')
+    ok(
+      types.includes('session.tool.input.started') && types.includes('session.tool.called') && types.includes('session.tool.success'),
+      '工具调用生命周期完整上卡',
+    )
+    ok(types.includes('session.usage.updated'), '用量在运行中就更新')
+
+    // 模型名一从流里看到就补前缀，不用等跑完。旧实现只在终态补一次，中途
+    // 卡片前缀一直没有模型，而 opencode 后端的卡片从头带着模型
+    const iMeta = types.indexOf('backend.meta')
+    ok(iMeta >= 0 && iMeta < iFirstText, '模型名在第一条文本之前就补上卡片前缀')
+    ok(events[iMeta]?.data?.model === 'stepfun-platform/step-5-preview', '模型名取 provider/model')
+
+    const st = collect(events, s.id)
+    ok(st.status === 'done', 'RunState 收尾为 done')
+    ok(st.text === '目录里有 a.js 和 b.js。', `正文只保留最后一段（实际 ${st.text}）`)
+    ok((st.text.match(/目录里有/g) || []).length === 1, '终态的权威覆盖不会把答案重复两遍')
+    ok(st.steps === 2, '步数记到 RunState 上')
+    ok(st.tools.length === 1 && st.tools[0].name === 'bash', '工具调用记到 RunState 上')
+    ok(String(st.tools[0].output).includes('a.js'), '工具输出也上卡（showTools 打开时可见）')
+
+    // 卡片前缀：模型和步数都出现，和 opencode 后端一致
+    const card = runCard(st, {
+      directory: root,
+      model: 'stepfun-platform/step-5-preview',
+      title: '流式',
+      isGroup: true,
+    })
+    const text = JSON.stringify(card)
+    ok(text.includes('**模型** stepfun-platform/step-5-preview'), '前缀带模型')
+    ok(text.includes('**步数** 2'), '前缀带步数')
+    ok(text.includes('已完成'), '标题是已完成')
+
+    // 收尾只发一次权威文本，不再追加第二份
+    const textEvents = events.filter((e) => e.type === 'session.text.delta' || e.type === 'session.text.ended')
+    ok(textEvents.at(-1)?.type === 'session.text.ended', '收尾用 text.ended 权威覆盖')
+    ok(
+      textEvents.some((e) => e.type === 'session.text.ended' && e.data?.text === '目录里有 a.js 和 b.js。'),
+      '权威全文上卡',
+    )
+  }
+
   section('失败 / 中止 / 超时')
   {
     const b = makeBackend()
@@ -387,14 +483,23 @@ const main = async () => {
     const r = await b.prompt(s.id, '把环境变量落盘')
     delete process.env.OCB_TEST_ENV_DUMP
     ok(r.ok === true, 'dump-env 正常退出')
-    const env = JSON.parse(readFileSync(dump, 'utf8'))
-    ok(env.FEISHU_APP_ID === 'cli_testenv', 'feishu-cli 的 appId 环境变量用本实例的')
-    ok(env.FEISHU_APP_SECRET === 'sec_testenv', 'feishu-cli 的 appSecret 环境变量用本实例的')
-    ok(env.FEISHU_DOMAIN === 'feishu', 'domain 一并注入')
+    // 读不到文件时给一条断言失败，别让裸栈把整份测试冲掉
+    const readJson = (p) => {
+      try {
+        return JSON.parse(readFileSync(p, 'utf8'))
+      } catch {
+        return null
+      }
+    }
+    const env = readJson(dump)
+    ok(env !== null, '环境变量落盘文件已生成')
+    ok(env?.FEISHU_APP_ID === 'cli_testenv', 'feishu-cli 的 appId 环境变量用本实例的')
+    ok(env?.FEISHU_APP_SECRET === 'sec_testenv', 'feishu-cli 的 appSecret 环境变量用本实例的')
+    ok(env?.FEISHU_DOMAIN === 'feishu', 'domain 一并注入')
     const larkFile = join(configDir, 'lark-cli', 'config.json')
     ok(existsSync(larkFile), '生成了 lark-cli 实例配置')
-    const larkCfg = JSON.parse(readFileSync(larkFile, 'utf8'))
-    ok(larkCfg.apps?.length === 1 && larkCfg.apps[0].appId === 'cli_testenv', 'lark-cli 配置只含本实例应用')
+    const larkCfg = readJson(larkFile)
+    ok(larkCfg?.apps?.length === 1 && larkCfg.apps[0].appId === 'cli_testenv', 'lark-cli 配置只含本实例应用')
     ok(env.LARKSUITE_CLI_CONFIG_DIR === join(configDir, 'lark-cli'), 'LARKSUITE_CLI_CONFIG_DIR 指向该配置')
     ok((statSync(larkFile).mode & 0o777) === 0o600, 'lark-cli 配置权限 600（含 appSecret，与桥接 config.json 同规格）')
   }
@@ -423,9 +528,10 @@ const main = async () => {
     )
     ok(events.at(-1).type === 'session.execution.succeeded', '最后一个事件是 succeeded')
     ok(collect(events, sQ.id).status === 'done', '静默收尾 → RunState done，不是 failed')
-    const delta = events.find((e) => e.type === 'session.text.delta')?.data?.delta || ''
-    ok(delta.includes('QUIETDONE'), '正文取最终消息的文本')
-    ok(delta.includes('静默'), '卡片注明这是提前收尾，用户看得出不是 pi 自己退的')
+    const lastText = events.filter((e) => e.type === 'session.text.ended' || e.type === 'session.text.delta').at(-1)
+    const body = lastText?.data?.text || lastText?.data?.delta || ''
+    ok(body.includes('QUIETDONE'), '正文取最终消息的文本')
+    ok(body.includes('静默'), '卡片注明这是提前收尾，用户看得出不是 pi 自己退的')
     ok(
       (await Promise.race([exitP, new Promise((res) => setTimeout(() => res(false), 3000))])) === true,
       '收尾后进程被杀死（SIGTERM，2 秒后 SIGKILL 兜底），不会永远挂着',

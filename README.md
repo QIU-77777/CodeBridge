@@ -20,7 +20,7 @@
 | 多项目 | `/cd` 换目录，每个目录一份独立会话列表 |
 | 群里并行 | 群里每 @ 它一次就在下面开一条话题，一条话题一个会话，多条话题同时跑；只响应 @ 它自己的消息 |
 | 免公网 | 走长连接，不需要公网 IP、不需要内网穿透 |
-| 可换后端 | `backend.type` 选 `opencode`（流式）或 `pi`（一次性子进程跑完发一张结果卡片）；同一套卡片、中止、僵尸卡收尾逻辑 |
+| 可换后端 | `backend.type` 选 `opencode`（常驻服务 + SSE 流式）或 `pi`（一次性子进程，边跑边把进度翻译成同一套事件）；同一套卡片、中止、僵尸卡收尾逻辑 |
 
 ---
 
@@ -641,11 +641,13 @@ OCB_INSTANCE=pi npm run up      # 之后重启、查看都要带同一个 OCB_IN
 
 `OCB_CONFIG_DIR` 决定读哪份配置，`OCB_INSTANCE` 决定 launchd 服务名。缺省实例的服务名保持原样，老部署不用改任何东西。`bridge.lock` / `state.json` / `pi-sessions` 全在各自配置目录下，多个实例互不干扰。
 
-### 一次性模式下什么变了
+### pi 后端：进度是翻译出来的，不是原生流式
 
-`pi -p --mode json` 跑完才出结果，所以卡片是「执行中 → 跑完一次性更新成结果」两张状态，中途不刷新正文。除此之外和 opencode 后端一致：分割线、`in / out / $金额｜@我 并发送 /help`、中止按钮、僵尸卡收尾都在。
+`pi -p --mode json` 的 stdout 是 JSONL 事件流。桥接逐条翻译成与 opencode SSE 同形状的合成事件（`src/pi.js` 的 `_streamEvent()`）：`turn_start` / `turn_end` 变步数，`text_delta` / `text_end` 变正文，`toolcall_*` / `tool_execution_*` 变工具调用，第一条助手消息里带的 `model` / `provider` 立即补上卡片前缀的模型名。渲染层一行不改，所以卡片版式、节流节奏、中止、僵尸卡收尾与 opencode 后端完全一致。
 
-没有的：工具调用轨迹、思考过程、交互式权限卡片、`/agent`（pi 没有 opencode 的 agent 概念）。`/sessions` 列的是该实例的 pi 会话文件，`--session-id` 保证同一话题里能续聊。
+`showTools` / `showReasoning` 两个开关对 pi 同样有效（默认关）。没有的只有：交互式权限卡片、`/agent`（pi 没有 opencode 的 agent 概念）。`/sessions` 列的是该实例的 pi 会话文件，`--session-id` 保证同一话题里能续聊。
+
+运行中卡片的一次次更新是**串行**发出的（`src/handler.js` 的 `flushRun()`）：终态事件和最后一条文本事件常常同一时刻到达，两个 patch 同时在途时飞书侧的生效顺序没有保证——真实事故是任务早已完成、卡片却永远停在「执行中」。串行之后在途期间到达的刷新会合并，终态一定最后生效。
 
 ### 多机器人同机：发言身份是钉死的
 

@@ -63,18 +63,22 @@ pi 和 dsh 都不提供 `/api/session`、`/api/event`。所以多起一个进程
 
 `PiBackend.subscribe(onEvent, onStatus)` 不做网络连接，只把回调存下来、立即回一个 `connected: true`，返回一个 no-op 的停止函数。
 
-`prompt(sessionId, body)` 里 spawn 子进程，结束后把结果**转换成与 opencode SSE 同形状的对象**，喂给同一个 `onEvent`：
+`prompt(sessionId, body)` 里 spawn 子进程，**边收边把 pi 的 JSONL 事件转换成与 opencode SSE 同形状的对象**，喂给同一个 `onEvent`（`_streamEvent()`，事件形状以 pi 文档 `docs/json.md` 为准）：
 
-```js
-{ type: 'session.execution.started',        data: { sessionID } }
-{ type: 'session.text.delta',               data: { sessionID, delta: finalText } }
-{ type: 'session.usage.updated',            data: { sessionID, tokens, cost, model } }
-{ type: 'session.execution.succeeded',      data: { sessionID } }   // 或 failed
-```
+| pi 事件 | 合成事件 | 说明 |
+|---|---|---|
+| `turn_start` / `turn_end` | `session.step.started` / `session.step.ended` | 一轮助手响应加它的工具调用算一步，前缀的「步数」由此而来 |
+| `message_start`（assistant，带 `model`/`provider`） | `backend.meta` | 模型名一露面就补卡片前缀，不用等跑完 |
+| `message_update` → `text_delta` / `text_end` | `session.text.delta` / `session.text.ended` | 正文分片流到，`text_end` 是权威全文 |
+| `message_update` → `thinking_delta` | `session.reasoning.delta` | 思考过程，`showReasoning` 打开才显示 |
+| `message_update` → `toolcall_start` / `toolcall_end` | `session.tool.input.started` / `session.tool.called` | 工具名与完整参数 |
+| `tool_execution_start` / `tool_execution_end` | `session.tool.input.started` / `session.tool.called` / `session.tool.success` / `session.tool.failed` | 工具执行生命周期与输出，`showTools` 打开才显示 |
+| `message_end`（assistant） | `session.text.ended` + `session.usage.updated` | 权威全文与用量 |
+| 进程退出 | `session.text.ended` + `session.execution.succeeded` / `failed` / `interrupted` | 终态一律用 `text.ended` 权威覆盖，流式发过的文本不会再重复一遍 |
 
 于是当前这条链路全部复用：
 
-- `RunState` 的状态机（`running → done / failed / aborted`）
+- `RunState` 的状态机（`running → done / failed / aborted`）与分段保留逻辑
 - `runCard()` 的卡片版式、前缀分割线、后缀 `in · out · $x.xx｜@我 并发送 /help`
 - `setInflight()` / `reconcileInflight()`：进程跑到一半挂掉，重启后僵尸卡片照样被标成「已中止」
 - 中止按钮：kill 子进程 → 合成 `execution.interrupted` → 卡片变「已中止」
@@ -100,7 +104,9 @@ cwd: <directory>                                          # 话题绑定的项�
 - `timeoutMs`（默认 10 分钟，从进程启动算总时长）到点先 `SIGTERM`，2 秒后 `SIGKILL`，并合成 `execution.failed`，错误文案说明是超时；
 - `interrupt(id)` 找到在跑的子进程 kill 掉，标记 `aborted`，**不抛出**，避免 `runPrompt` 的 catch 把 `aborted` 覆盖成 `failed`；
 - 子进程 `rc !== 0` 且非主动中止 → 合成 `execution.failed`，把 stderr 尾部放进错误区；
-- **静默收尾**（`settleQuietMs`，默认 60 秒）：pi 偶发「最终回答产出了却不退出」——`agent_settled` 永远不来，进程挂住但不再吐事件。实测一次卡片在「执行中」停了 6 分 58 秒。桥接逐行读 stdout 维护三个现场（最后事件时间、是否见过 `turn_end`、有没有在进行中的助手消息或工具调用），三条同时满足「见过最终消息、无进行中事项、静默超时」就按已完成收尾：正文取 `parsePiJsonl` 的最终文本并附一行说明，随后杀掉整个进程组。设 0 关闭，恢复「只等进程退出」的老行为。
+- **静默收尾**（`settleQuietMs`，默认 180 秒）：pi 偶发「最终回答产出了却不退出」——`agent_settled` 永远不来，进程挂住但不再吐事件。实测一次卡片在「执行中」停了 6 分 58 秒。桥接逐行读 stdout 维护几个现场（最后事件时间、是否见过 `turn_end`、有没有在进行中的助手消息或工具调用、是否见过 `agent_settled`），满足「见过最终消息、无进行中事项、静默超时」就按已完成收尾：正文取 `parsePiJsonl` 的最终文本并附一行说明，随后杀掉整个进程组。设 0 关闭，恢复「只等进程退出」的老行为。
+  - 阈值分两档：**见过 `agent_settled`** 时 pi 已明确没有后续工作，静默 5 秒即收尾（只等管道里缓存的数据读完）；**没见到**时用完整阈值。
+  - 默认值从 60 秒调到 180 秒：实测同一轮任务里模型轮间思考间隔到过 62 秒和 107 秒，60 秒会把还在跑的运行误判成完成——杀掉进程、把中途答案标成「已完成」，用户拿到半截结果。
 
 ### 4.5 子进程环境：发言身份钉成本实例
 
@@ -116,20 +122,23 @@ opencode 后端的代理跑在常驻 serve 里，桥接没法向已启动的进�
 
 ## 5. 一次性模式下的行为差异
 
-| 能力 | opencode 后端 | pi 后端（本阶段） |
+2026-11-07 起 pi 后端改为**边收边转发**（见 4.2 与第 10 节事故复盘），与 opencode 后端的差异只剩后端能力本身：
+
+| 能力 | opencode 后端 | pi 后端 |
 |---|---|---|
-| 执行中卡片 | 有，按 1.8s 节流刷新 | 有，但内容保持「正在等待模型响应…」直到结束 |
-| 结果 | 流式逐步长出来 | **跑完一次 patch 成最终卡片**（最终消息后静默超时则提前收尾，见 4.4） |
+| 执行中卡片 | 按 1.8s 节流刷新 | 同样按 1.8s 节流刷新（文本增量、步数、用量、模型名都是流式的） |
+| 结果 | 流式逐步长出来 | 流式逐步长出来，终态再权威覆盖一次 |
 | 正文 / 表格 / 代码块 | 有 | 有（复用 `mdToElements`） |
-| `in / out / 金额` | 有 | 有（从 `usage` 取，卡片已是两位小数） |
-| 模型名 | 有 | 有（`provider/model`） |
+| `in / out / 金额` | 有 | 有（每条助手消息的 `usage` 都发 `session.usage.updated`） |
+| 模型名 | 有 | 有，且**不等跑完**：第一条助手消息带着 `model`/`provider`，`backend.meta` 立即补前缀 |
+| 步数 | 有 | 有（`turn_start` / `turn_end` → `session.step.started` / `ended`，一轮一记） |
 | 中止按钮 | 调 `/interrupt` | kill 子进程，同样有效 |
-| 工具调用轨迹 | 可开 `showTools` | 无（pi 的工具事件本阶段不翻译） |
-| 思考过程 | 可开 `showReasoning` | 无 |
+| 工具调用轨迹 | 可开 `showTools` | 可开 `showTools`（`toolcall_*` / `tool_execution_*` 全套翻译，见 4.2） |
+| 思考过程 | 可开 `showReasoning` | 可开 `showReasoning`（`thinking_delta` → `session.reasoning.delta`） |
 | 交互式权限卡片 | 有 | 无；pi 用 `--approve` 或对工具做限制，不给飞书按钮 |
 | 看门狗 / 僵尸卡收尾 | 有 | 有 |
 
-卡片上不额外标注「这是一次性后端」——状态词「执行中 / 已完成」已经说清楚了，多写一行是噪音。
+仍然没有的只有三样：交互式权限卡片、`/agent`、常驻服务意义上的「会话列表来自服务端」。卡片上不额外标注「这是 pi 后端」——状态词「执行中 / 已完成」已经说清楚了，多写一行是噪音。
 
 ## 6. 配置
 
@@ -142,7 +151,7 @@ opencode 后端的代理跑在常驻 serve 里，桥接没法向已启动的进�
     "bin": "pi",
     "model": "",
     "timeoutMs": 600000,
-    "settleQuietMs": 60000,
+    "settleQuietMs": 180000,
     "extraArgs": []
   }
 }
@@ -193,28 +202,54 @@ opencode 后端的代理跑在常驻 serve 里，桥接没法向已启动的进�
 
 另外提醒：卡片正文里写 `@名字` 只是字面字符，不产生飞书提醒；要让另一个 agent 醒，必须发真正的 `<at user_id="ou_...">`。模型需要这条能力说明，同样列入下一阶段。
 
-## 10. 验收
+## 10. 一次真实事故复盘（2026-11-07）
+
+### 现象
+
+用户在飞书里让 Lil_P「阅读一下这个项目」。任务 44 秒就跑完了，但卡片永远停在「⏳ 执行中」——标题是执行中，正文却是完整答案，前缀只有目录和耗时，没有模型和步数。用户追问「你执行完了吗」，Lil_P 其实从 14:18:19 一直干活到 14:25:52（pi 会话文件里的工具调用连绵不断），但新卡片 8 分 24 秒没有任何变化，用户一个字都看不到，最后手动点了中止。
+
+### 根因（三条，互相独立）
+
+1. **终态 patch 与文本 patch 竞争**（`src/handler.js`）。pi 的 `finish()` 在同一时刻连发 `text.delta` / `usage` / `backend.meta` / `succeeded` 四个事件，前一个触发一次立即 patch，后一个又触发一次，两个请求同时在途。飞书侧的生效顺序没有保证：「已完成」快照先到、「执行中」快照后到，卡片就停在旧状态。同一份代码在另一次运行上落地正确，说明竞争结果不确定。修复：`flushRun()` 改为串行——在途期间到达的刷新只标记 `patchDue`，由在途那次落地后带上最新快照再发；快照在发送时构建，终态一定最后生效。两个后端都受益（opencode 的末段文本与终态事件同样可能挤在同一时刻）。
+2. **运行期间没有任何事件**（`src/pi.js`）。旧实现只把 stdout 攒进缓冲区，进程结束才一次性解析，运行中的卡片一次都不刷新。修复：`_streamEvent()` 逐条翻译（见 4.2 的表），文本、工具、步数、模型名、用量全部边收边发。
+3. **模型名与步数缺失**。模型：会话创建时是空的（配置没写 `backend.pi.model`），真实模型只出现在助手消息里，旧实现只在终态补一次——终态 patch 丢了就永远没有。步数：pi 后端从不发 `session.step.started`，`RunState.steps` 永远是 0，前缀的「步数」字段（`steps > 1` 才渲染）永远不出现。两条都已修（4.2 的映射表）。
+
+### 排查中被证据逼出来的第三个修点
+
+静默收尾的默认值 60 秒小于实测的模型轮间思考间隔（同一轮任务里出现过 62 秒和 107 秒的间隔）。不修的话，重启加载新代码后，多轮运行会被误判成完成：杀掉进程、把中途答案标成「已完成」。默认值因此调到 180 秒，并给「见过 `agent_settled`」加了 5 秒的快速通道（见 4.4）。
+
+### 证据怎么拿的
+
+- 卡片真状态：飞书 API 读卡片原文（标题、模板、`update_time`），比任何日志都直接；
+- pi 干了什么：`<CONFIG_DIR>/pi-sessions/<时间戳>_<会话id>.jsonl`，每条消息带时间戳；
+- 桥接做了什么：`logs/bridge.log` 的 `[group]` / `卡片回调` 行；
+- 会话绑定：`<CONFIG_DIR>/state.json` 的 `chats` 与 `inflight`。
+
+教训：**当时跑着的桥接进程是 8 小时前启动的旧代码**（launchd 的 `KeepAlive` 只保证进程活着，不会重新加载磁盘上的代码）。改完 `src/` 必须重启桥接才生效，排障时第一件事是确认进程启动时间与文件修改时间的先后。
+
+## 11. 验收
 
 离线（不消耗模型额度，不连飞书）：
 
 ```bash
-npm run test:pi        # pi JSONL 解析、合成事件、超时、中止、会话续聊
+npm run test:pi        # pi JSONL 解析、流式映射、合成事件、超时、中止、静默收尾、会话续聊
+npm run test:patch     # 卡片 patch 串行与合并（终态一定最后生效）
 node scripts/test-cards.mjs
 npm run selftest
 npm run test:init
 ```
 
-`--dry` 模式在终端里打印卡片，可直接看一次性结果长什么样：
+`--dry` 模式在终端里打印卡片，可直接看流式过程长什么样：
 
 ```bash
 OCB_CONFIG_DIR=/tmp/ocb-pi-dry node src/index.js --dry
 ```
 
-真机验收：新建一个飞书应用 → 一份 `backend.type = "pi"` 的配置 → `npm run up`（或手工带 `OCB_CONFIG_DIR` 起）→ 群里 @ 新机器人发一句话，应看到「执行中 → 已完成」两次卡片变化，后缀带 `in / out / 金额`。再发第二句验证话题内续聊。
+真机验收：群里 @ 机器人发一句需要多轮工具调用的话（例如「读一下这个项目」），应看到卡片按约 1.8 秒的节流持续刷新：正文分段长出、前缀带模型名与步数、耗时走动；终态标题变「✅ 已完成」，后缀带 `in / out / 金额`。中途再发一句，验证忙碌闸门的三选一卡片；点中止验证「已中止」且正文保留已流到的内容。
 
-## 11. 后续路线
+## 12. 后续路线
 
 1. **互 @ 轮次护栏**（优先级最高，多 agent 一起跑之前必须有）
 2. **dsh 后端**：`dsh headless "<prompt>"`，套同一套 Backend 接口与合成事件，工作量主要在解析它的输出格式
 3. **给模型的来源标注后补一行能力说明**：真 mention 的写法、群里有哪些机器人、各自的 open_id
-4. **可选流式**：pi 已经给了 `text_delta`，把合成事件从「结束时一次」改成「逐条转发」即可，不用改渲染层
+4. ~~可选流式~~（已完成，见 4.2）

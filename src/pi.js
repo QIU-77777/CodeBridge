@@ -21,6 +21,12 @@ const MAX_STDOUT_CHARS = 4 * 1024 * 1024
 const MAX_STDERR_CHARS = 64 * 1024
 
 /**
+ * 见过 agent_settled 之后的静默阈值：pi 已声明本次运行没有后续工作，这点
+ * 时间只用来让管道里缓存的数据读完，之后进程还不退就按已完成收尾。
+ */
+const SETTLED_QUIET_MS = 5_000
+
+/**
  * exit 之后等这么久再结算：直接子进程一死，已写进 stdio 管道的数据可能还没被
  * 读完，立刻结算会截断尾部输出。几百毫秒足够管道里缓存的数据全部到达。
  */
@@ -48,7 +54,9 @@ function killTree(child, signal) {
   }
 }
 
-/** 从 pi 的 message_end / turn_end 里抠出最终文本 */
+/**
+ * 从 pi 的 message_end / turn_end 里抠出最终文本
+ */
 function textOf(message) {
   const content = message?.content
   if (!Array.isArray(content)) return ''
@@ -56,6 +64,16 @@ function textOf(message) {
     .filter((c) => c && c.type === 'text' && typeof c.text === 'string')
     .map((c) => c.text)
     .join('')
+}
+
+/** tool_execution_end.result → 纯文本，供卡片工具行展示 */
+function toolOutputText(result) {
+  if (!result) return ''
+  if (typeof result === 'string') return result
+  const c = result.content
+  if (Array.isArray(c)) return c.map((x) => (typeof x === 'string' ? x : x?.text || '')).join('\n')
+  if (typeof c === 'string') return c
+  return ''
 }
 
 /** usage 在 pi 里出现过很多次，取最后一个 input/output 非零的 */
@@ -257,6 +275,100 @@ export class PiBackend {
 
   _emit(sid, type, data = {}) {
     this.eventSink?.({ type, data: { sessionID: sid, ...data } })
+  }
+
+  /**
+   * 模型名一从流里看到就补上卡片前缀，不用等跑完。
+   *
+   * 会话创建时模型是空的（配置没写 backend.pi.model 时 index.json 里
+   * model: null），真实模型只写在 pi 的助手消息里。旧实现只在进程结束时
+   * 发一次 backend.meta，中途卡片前缀一直没有模型，opencode 后端的卡片
+   * 却从头带着模型——两个机器人的卡片不一样。
+   */
+  _emitModel(sessionId, message, st) {
+    if (st.modelSent) return
+    const model = message?.model
+    if (!model) return
+    st.modelSent = true
+    const provider = message.provider || ''
+    this._emit(sessionId, 'backend.meta', { model: provider ? `${provider}/${model}` : model })
+  }
+
+  /**
+   * 把 pi 的一条 JSON 事件翻译成桥接的合成事件，边收边发。
+   *
+   * pi 的 --mode json 流里就有全部进度：message_update 带文本增量，
+   * toolcall_* / tool_execution_* 带工具调用，message_end 带权威文本、
+   * usage 和模型名，turn_start / turn_end 划出步骤。旧实现只把这些行攒进
+   * 缓冲区，进程结束才一次性解析，运行中的卡片因此一次都不刷新——用户盯着
+   * 「执行中」看好几分钟，一个字都看不到，而模型其实一直在干活。逐条翻译之后，
+   * 卡片和 opencode 后端一样按 streamIntervalMs 节流刷新，步数、模型、工具
+   * 调用也都有了。事件形状见 pi 文档 docs/json.md。
+   */
+  _streamEvent(sessionId, ev, st) {
+    switch (ev?.type) {
+      case 'turn_start':
+        st.turnSeq += 1
+        st.stepOpen = true
+        this._emit(sessionId, 'session.step.started', { assistantMessageID: `turn-${st.turnSeq}` })
+        break
+      case 'turn_end': {
+        if (!st.stepOpen) break
+        st.stepOpen = false
+        const u = pickUsage(ev.message?.usage)
+        this._emit(sessionId, 'session.step.ended', {
+          finish: ev.message?.stopReason || null,
+          tokens: u ? { input: u.input, output: u.output } : undefined,
+        })
+        break
+      }
+      case 'message_start':
+        if (ev.message?.role === 'assistant') this._emitModel(sessionId, ev.message, st)
+        break
+      case 'message_update': {
+        const a = ev.assistantMessageEvent
+        if (a?.type === 'text_delta' && typeof a.delta === 'string') {
+          st.streamedText = true
+          this._emit(sessionId, 'session.text.delta', { delta: a.delta })
+        } else if (a?.type === 'text_end' && typeof a.content === 'string') {
+          st.streamedText = true
+          this._emit(sessionId, 'session.text.ended', { text: a.content })
+        } else if (a?.type === 'thinking_delta' && typeof a.delta === 'string') {
+          this._emit(sessionId, 'session.reasoning.delta', { delta: a.delta })
+        } else if (a?.type === 'toolcall_start') {
+          this._emit(sessionId, 'session.tool.input.started', { id: a.id, name: a.toolName })
+        } else if (a?.type === 'toolcall_end') {
+          const tc = a.toolCall || {}
+          this._emit(sessionId, 'session.tool.called', { id: tc.id || a.id, name: tc.name, input: tc.args ?? tc.arguments })
+        }
+        // toolcall_delta 是参数增量，完整参数在 toolcall_end / tool_execution_start，忽略
+        break
+      }
+      case 'message_end': {
+        if (ev.message?.role !== 'assistant') break
+        this._emitModel(sessionId, ev.message, st)
+        const text = textOf(ev.message)
+        if (text) {
+          st.streamedText = true
+          this._emit(sessionId, 'session.text.ended', { text })
+        }
+        const u = pickUsage(ev.message.usage)
+        if (u) this._emit(sessionId, 'session.usage.updated', { tokens: { input: u.input, output: u.output }, cost: u.cost })
+        break
+      }
+      case 'tool_execution_start':
+        this._emit(sessionId, 'session.tool.input.started', { id: ev.toolCallId, name: ev.toolName })
+        this._emit(sessionId, 'session.tool.called', { id: ev.toolCallId, name: ev.toolName, input: ev.args })
+        break
+      case 'tool_execution_end': {
+        const out = toolOutputText(ev.result)
+        if (ev.isError) this._emit(sessionId, 'session.tool.failed', { id: ev.toolCallId, content: out, error: out })
+        else this._emit(sessionId, 'session.tool.success', { id: ev.toolCallId, content: out })
+        break
+      }
+      default:
+        break
+    }
   }
 
   // ---------- 与 OpencodeClient 同形的基础接口 ----------
@@ -489,6 +601,9 @@ export class PiBackend {
       let lineCount = 0
       let quietSettled = false
       let quietTimer = null
+      // 流式翻译的现场：模型名发过没有、步数序号。streamedText 记录有没有
+      // 流式发过文本，供排障时区分「卡片一直不刷新」和「刷新了但内容重复」
+      const st = { modelSent: false, streamedText: false, turnSeq: 0, stepOpen: false }
 
       const timer = setTimeout(() => {
         rec.timedOut = true
@@ -536,7 +651,9 @@ export class PiBackend {
         }
 
         const finalText = parsed.text || '（这次 pi 没有返回文本内容）'
-        this._emit(sessionId, 'session.text.delta', { delta: finalText })
+        // 一律用 text.ended 权威覆盖：流式期间已经发过文本增量，再发一次
+        // text.delta 会把同一段答案在卡片正文里重复两遍
+        this._emit(sessionId, 'session.text.ended', { text: finalText })
         if (parsed.usage) {
           const tokens = { input: parsed.usage.input, output: parsed.usage.output }
           s.tokens = { ...tokens, cache: { read: parsed.usage.cacheRead, write: 0 } }
@@ -575,7 +692,7 @@ export class PiBackend {
           `\n\n—— pi 产出最终回答后没有自行退出（静默 ${quietSec} 秒），` +
           '桥接按已完成收尾并终止了进程。'
         s.time.updated = Date.now()
-        this._emit(sessionId, 'session.text.delta', { delta: finalText + note })
+        this._emit(sessionId, 'session.text.ended', { text: finalText + note })
         if (parsed.usage) {
           const tokens = { input: parsed.usage.input, output: parsed.usage.output }
           s.tokens = { ...tokens, cache: { read: parsed.usage.cacheRead, write: 0 } }
@@ -599,7 +716,13 @@ export class PiBackend {
         quietTimer = setInterval(() => {
           if (settled || quietSettled) return
           if (!sawTurnEnd || !finalTurnHasText || inFlight) return
-          if (Date.now() - lastEventAt < this.settleQuietMs) return
+          // 阈值分两档。见过 agent_settled 时 pi 已明确没有后续工作，短静默
+          // 即可收尾（留时间是让管道里缓存的数据读完）；没见到时可能是模型在
+          // 两轮之间思考——实测同一轮任务里轮间间隔到过 62 秒和 107 秒，用
+          // 短阈值会把还在跑的运行误判成完成：杀掉进程、把中途答案标成
+          // 「已完成」，用户拿到的是半截结果
+          const quietMs = sawAgentSettled ? Math.min(this.settleQuietMs, SETTLED_QUIET_MS) : this.settleQuietMs
+          if (Date.now() - lastEventAt < quietMs) return
           quietSettle()
         }, 2000)
         quietTimer.unref?.()
@@ -646,6 +769,9 @@ export class PiBackend {
             providerError = err
             break
           }
+          // 逐条翻译成合成事件：文本增量、工具调用、步数、模型名边收边发，
+          // 运行中的卡片按节流刷新，不再是一张静态图
+          this._streamEvent(sessionId, ev, st)
         }
         // 扫不完的尾巴设上限：一行始终不换行时不至于无限堆积（与 stdout 同口径）
         if (lineBuf.length > MAX_STDOUT_CHARS) lineBuf = ''
