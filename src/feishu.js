@@ -28,7 +28,7 @@ function withTimeout(promise, label) {
 }
 
 export class FeishuTransport {
-  constructor(config, { onMessage, onCardAction, nameOf, onSeenNames, backendType = '', logger = console }) {
+  constructor(config, { onMessage, onCardAction, nameOf, onSeenNames, onContactKind, onSelf, backendType = '', logger = console }) {
     this.cfg = config.feishu
     // prompt 前缀配置（src/config.js 的 prompt 段）：来源标注是每条消息都带的
     // 动态数据，协作规则这类静态说明走 once 模式，每个会话只带一次
@@ -40,6 +40,10 @@ export class FeishuTransport {
     this.nameOf = nameOf
     /** 把消息 mentions 里的 (open_id, name) 交给上层攒起来 */
     this.onSeenNames = onSeenNames
+    /** 补充通讯录条目的「人是机器人」：只说它见过面的类型，不建册 */
+    this.onContactKind = onContactKind
+    /** 解析出自身 open_id 时通知上层：用于把存量数据里的「自己」清出通讯录 */
+    this.onSelf = onSelf
     /** 后端类型（opencode / pi）。pi 后端的桥接会把本实例凭证注入子进程，
      *  身份声明据此给不同文案 */
     this.backendType = backendType
@@ -75,22 +79,25 @@ export class FeishuTransport {
     if (this.self) return this.self
     if (this.cfg.botOpenId) {
       this.self = { open_id: this.cfg.botOpenId, name: this.cfg.botName || '我' }
-      return this.self
+    } else {
+      try {
+        const res = await this.client.request({ method: 'GET', url: '/open-apis/bot/v3/info' })
+        const bot = res?.bot || res?.data?.bot || {}
+        if (!bot.open_id) throw new Error('返回里没有 open_id')
+        this.self = { open_id: bot.open_id, name: bot.app_name || '我' }
+        this.log.info(`机器人身份: ${this.self.name} (${this.self.open_id})`)
+      } catch (err) {
+        // 拿不到就退化成「@ 了谁都算」，多机器人同群时会抢答，必须让用户看见
+        this.self = { open_id: null, name: this.cfg.botName || '我' }
+        this.log.warn(
+          `拿不到机器人自身 open_id（${err.message}），已退化为「@ 到任何人都会响应」。` +
+            '多机器人同群请把 feishu.botOpenId 写进配置，否则会互相抢答。',
+        )
+      }
     }
-    try {
-      const res = await this.client.request({ method: 'GET', url: '/open-apis/bot/v3/info' })
-      const bot = res?.bot || res?.data?.bot || {}
-      if (!bot.open_id) throw new Error('返回里没有 open_id')
-      this.self = { open_id: bot.open_id, name: bot.app_name || '我' }
-      this.log.info(`机器人身份: ${this.self.name} (${this.self.open_id})`)
-    } catch (err) {
-      // 拿不到就退化成「@ 了谁都算」，多机器人同群时会抢答，必须让用户看见
-      this.self = { open_id: null, name: this.cfg.botName || '我' }
-      this.log.warn(
-        `拿不到机器人自身 open_id（${err.message}），已退化为「@ 到任何人都会响应」。` +
-          '多机器人同群请把 feishu.botOpenId 写进配置，否则会互相抢答。',
-      )
-    }
+    // 身份一到手就清掉通讯录里的「自己」：机器人被 @ 时自己也在 mentions 里，
+    // 老版本没排除，存量数据留着这一条。收集端已修，这里清存量
+    if (this.self.open_id) this.onSelf?.(this.self.open_id)
     return this.self
   }
 
@@ -266,13 +273,21 @@ export class FeishuTransport {
 
     // 顺手把这条消息里被 @ 的人记下来。飞书没有「open_id 反查名字」的接口
     // （contact 对机器人 open_id 直接 41050），mentions 里的 name 是唯一免费来源。
+    // 排除自己：机器人被 @ 时自己也在 mentions 里，入册了通讯录就会把自己
+    // 列成「一个需要放行的同伴」，没有意义
     if (this.onSeenNames && mentions.length) {
       this.onSeenNames(
         mentions
           .map((x) => ({ openId: x?.id?.open_id, name: x?.name }))
-          .filter((x) => x.openId && x.name),
+          .filter((x) => x.openId && x.name && x.id?.open_id !== self.open_id),
       )
     }
+
+    // 发送者的类型（人 / 机器人）补充进通讯录。只更新已入册的条目、不建册——
+    // 入册只认被 @（见 store.learnContact）。机器人被 @ 之后通常就会在群里说话，
+    // 说过一次话它的 kind 就准了，admin 的通讯录图标才有东西可显示。
+    // 自己不入册，所以这里也不用排除
+    this.onContactKind?.(userId, isBot ? 'app' : 'user')
 
     /**
      * 给模型标一行来源。
@@ -327,15 +342,17 @@ export class FeishuTransport {
    * at 标签。写在卡片正文或普通文本里的 `@名字` 只是字面字符，不产生飞书提醒
    * ——这条规则不可能靠模型自己悟出来，而 agent 之间的每次对话都要用它。
    *
-   * open_id 按应用隔离，只能用「自己的应用」查到的那一个：给对方发过消息的
-   * 人，其 open_id 就在本消息的「发送者」标注里；没发过的，用 feishu-cli 查
-   * 群成员列表。
+   * open_id 按应用隔离，且**没有按应用查机器人 open_id 的接口**（群成员列表
+   * 只有人类；contact 是用户体系）。能拿到它的只有两类消息：它给你发过的
+   * （发送者标注）、它被 @ 到的（mentions）。桥接把这两类都存进了通讯录
+   * （state.json 的 contacts），所以「读通讯录」是唯一可靠的来源。
    */
   collabLine() {
     return (
       '[协作 · 唤醒另一个 agent 的唯一方法：用 feishu-cli 发一条新的 text 消息，' +
-      '内容里带 <at user_id="对方 open_id"></at>。给你发过消息的人，其 open_id 就在本行上方「发送者」标注里；' +
-      '没发过的用 feishu-cli 查群成员列表（open_id 按应用隔离，只能用你自己的应用查）。' +
+      '内容里带 <at user_id="对方 open_id"></at>。open_id 只认本应用视角：给你发过消息的人，其 id 就在本行上方「发送者」标注里；' +
+      '被 @ 到的人，id 在那条消息的 mentions 里。这两类桥接都已存进 $OCB_CONFIG_DIR/state.json 的 contacts，可直接读。' +
+      '从没在群里露过面的对象，飞书没有按应用查机器人 open_id 的接口，你拿不到，请人类在 admin 通讯录里放行后再 @。' +
       '写在正文或卡片里的 @名字 只是字面字符，唤不醒任何人。' +
       '话题内发言要回复话题内已有的 om_ 消息，不要新开发布到主聊天流。' +
       '你的终态回复呈现在卡片上，卡片不唤醒任何人]'

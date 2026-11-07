@@ -375,10 +375,24 @@ export class Bridge {
 
   // ---------- 消息入口 ----------
 
+  /**
+   * 放行闸门。两个名单的并集，都来自配置（启动时读一次，人在 admin 里维护）：
+   *
+   *   feishu.allowlist —— 手写的例外清单，人类也走这里；
+   *   feishu.listen    —— 通讯录里「认识且放行」的个体，admin 通讯录面板的开关
+   *                      写的就是这个列表。语义是「它的 @ 能到达我」，单向：
+   *                      A 的 listen 里有 B，则 B 的 @ 能唤醒 A；A 的 @ 能不能
+   *                      唤醒 B，看 B 自己的配置。
+   *
+   * 「认识」（通讯录 contacts，运行时自动攒）和「许可」（这两个配置名单）是
+   * 两层：被 @ 过只等于认识，不等于能唤醒我。@ 判定（requireMention）在更前面，
+   * 所以 listen 放行的是「它的 @ 消息」，不是它的任何消息。
+   */
   isAllowed(userId) {
-    const list = this.cfg.feishu.allowlist || []
-    if (!list.length) return true
-    return list.includes(userId)
+    const allow = this.cfg.feishu.allowlist || []
+    const listen = this.cfg.feishu.listen || []
+    if (!allow.length && !listen.length) return true
+    return allow.includes(userId) || listen.includes(userId)
   }
 
   /**
@@ -393,9 +407,19 @@ export class Bridge {
     return this.cfg.feishu?.names?.[openId] || this.store.getName?.(openId) || ''
   }
 
-  /** 每条消息里被 @ 的人，把 (open_id, 名字) 记下来 */
+  /** 每条消息里被 @ 的人，入通讯录（认识层）。放行与否看配置，不在这里决定 */
   learnNames(list) {
-    for (const x of list || []) this.store.setName?.(x.openId, x.name)
+    for (const x of list || []) this.store.learnContact?.(x.openId, x.name)
+  }
+
+  /** 补充通讯录条目的类型（人 / 机器人）。只更新已入册的，不建册 */
+  markContactKind(openId, kind) {
+    this.store.markContactKind?.(openId, kind)
+  }
+
+  /** 桥接解析出自身 open_id：把自己从通讯录清掉（见 store.dropContact） */
+  forgetSelf(openId) {
+    this.store.dropContact?.(openId)
   }
 
   dedupe(messageId) {

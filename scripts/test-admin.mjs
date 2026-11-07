@@ -15,7 +15,7 @@
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
-import { mkdtempSync, readFileSync, rmSync, statSync, existsSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, statSync, existsSync, writeFileSync } from 'node:fs'
 import { tmpdir, homedir } from 'node:os'
 
 let pass = 0
@@ -416,10 +416,142 @@ try {
     '生效名字顺序与 handler.js 的 nameOf() 一致',
   )
 
+  // 7b. 通讯录与 listen：store 的入册 / 类型补充 / 旧数据迁移，闸门并集
+  {
+    const { Store } = await import(join(REPO, 'src', 'store.js'))
+    const dir = mkdtempSync(join(tmpdir(), 'ocb-contacts-'))
+    const st = new Store(join(dir, 'state.json'))
+
+    // 入册只认被 @：有名字才建册
+    st.learnContact('ou_lilp', 'Lil_P')
+    ok(st.getName('ou_lilp') === 'Lil_P', '被 @ 到就入册，名字可查')
+    st.learnContact('ou_noname', '')
+    ok(!st.data.contacts?.['ou_noname'], '没有名字的 mention 不建册')
+    ok(st.getName('ou_noname') === '', '查不到的 id 返回空串')
+
+    // 类型补充：只更新已入册的，不建册
+    st.markContactKind('ou_lilp', 'app')
+    ok(st.data.contacts['ou_lilp'].kind === 'app', '类型补进已入册条目')
+    st.markContactKind('ou_never_seen', 'app')
+    ok(!st.data.contacts?.['ou_never_seen'], '类型补充不给没见过的 id 建册')
+    st.markContactKind('ou_lilp', 'user')
+    ok(st.data.contacts['ou_lilp'].kind === 'user', '类型可被后续消息更正')
+
+    // 时间戳：只记首次见到，不记最近见到（admin 通讯录只看「什么时候认识的」）
+    const firstSeen = st.data.contacts['ou_lilp'].firstSeen
+    await new Promise((r) => setTimeout(r, 5))
+    st.learnContact('ou_lilp', 'Lil_P')
+    ok(st.data.contacts['ou_lilp'].firstSeen === firstSeen, '重复见到不翻新首次时间')
+    ok(!('lastSeen' in st.data.contacts['ou_lilp']), '不再记录最近见到时间')
+
+    // 自己不入册：桥接解析出自身 open_id 时清掉存量里的「自己」
+    st.dropContact('ou_lilp')
+    ok(!st.data.contacts['ou_lilp'], 'dropContact 把自己清出通讯录')
+    ok(st.getName('ou_lilp') === '', '清掉后名字查不到')
+    st.dropContact('ou_not_there')
+    ok(true, 'dropContact 对不存在的 id 安全返回')
+
+    // 重新入册，供后面的闸门断言使用
+    st.learnContact('ou_lilp', 'Lil_P')
+
+    // 通讯录全量下发（admin 面板数据源）不带 lastSeen
+    const list = st.contactList()
+    ok(list.every((c) => !('lastSeen' in c)), 'contactList 不下发 lastSeen')
+    ok(list[0]?.openId && list[0]?.firstSeen, 'contactList 带 openId 与 firstSeen')
+
+    // 旧版平铺 names 迁移
+    const legacy = join(dir, 'legacy.json')
+    writeFileSync(legacy, JSON.stringify({ version: 1, chats: {}, names: { ou_old: '老名字' } }))
+    const st2 = new Store(legacy)
+    ok(st2.getName('ou_old') === '老名字', '旧版平铺 names 迁移后可查')
+    ok(st2.data.contacts?.['ou_old']?.name === '老名字', '迁移落进 contacts 结构')
+    ok(!st2.data.names, '迁移后旧的平铺字段被清掉')
+
+    // 闸门：allowlist 与 listen 并集，单向下放行的是「它的 @」
+    const { Bridge } = await import(join(REPO, 'src', 'handler.js'))
+    const mkBridge = (feishu) =>
+      new Bridge({
+        oc: {}, store: st, config: { behavior: {}, feishu },
+        transport: {}, capabilities: {},
+        logger: { info() {}, warn() {}, error() {} },
+      })
+    const both = mkBridge({ allowlist: ['ou_human'], listen: ['ou_lilp'] })
+    ok(both.isAllowed('ou_human'), 'allowlist 里的个体放行')
+    ok(both.isAllowed('ou_lilp'), 'listen 里的个体放行（它的 @ 能到达我）')
+    ok(!both.isAllowed('ou_stranger'), '两个名单都没有的个体挡在外面')
+    ok(
+      mkBridge({ allowlist: [], listen: [] }).isAllowed('ou_anyone') === true,
+      '两个名单都空时不限制（与旧行为一致）',
+    )
+    const listenOnly = mkBridge({ allowlist: ['ou_human'], listen: [] })
+    ok(listenOnly.isAllowed('ou_human') && !listenOnly.isAllowed('ou_lilp'), '只配 allowlist 时 listen 不放行')
+    // 通讯录里「认识」不等于「许可」：入册了但没进 listen 的，闸门照样挡
+    st.learnContact('ou_acquaintance', '只认识')
+    ok(
+      st.data.contacts['ou_acquaintance'] && !both.isAllowed('ou_acquaintance'),
+      '通讯录里认识但没放行的个体，闸门照样挡',
+    )
+
+    rmSync(dir, { recursive: true, force: true })
+  }
+
+  // 7c. 主表行模型 buildPeople：四源取并集、放行分流、排序
+  {
+    const { buildPeople, kindBadge } = await import(join(REPO, 'admin', 'entries.js'))
+    const people = buildPeople({
+      contacts: { ou_a: { name: '小A', kind: 'app', firstSeen: 100 },
+                  ou_b: { name: '小B', kind: 'user', firstSeen: 200 } },
+      allowlist: ['ou_a'],
+      listen: ['ou_c'],
+      names: { ou_d: '手写D' },
+    })
+    const byId = Object.fromEntries(people.map((p) => [p.id, p]))
+    ok(people.length === 4, '四个数据源取并集，一个体一行')
+    ok(byId.ou_a.allowed && byId.ou_a.allowedVia === 'manual', 'allowlist 里的个体放行来源是手写')
+    ok(byId.ou_c.allowed && byId.ou_c.allowedVia === 'listen', 'listen 里的个体放行来源是开关')
+    ok(!byId.ou_b.allowed && byId.ou_b.inContacts, '只在通讯录里的个体：认识但放行')
+    ok(byId.ou_d.name === '手写D' && byId.ou_d.nameSource === 'cfg' && !byId.ou_d.inContacts, '纯 names 声明也有一行')
+    ok(byId.ou_a.nameSource === 'auto' && byId.ou_b.nameSource === 'auto', '通讯录名字标记为自动攒的')
+    ok(people[0].id === 'ou_a' && people[1].id === 'ou_c', '放行行置顶，手写先于开关')
+    ok(kindBadge('app').label === '机器人' && kindBadge('user').label === '人类', '类型徽章分人/机器人')
+    ok(kindBadge('').label === '未知', '没有类型信息时是未知')
+    // 与页面内联副本必须等价：页面是给浏览器用的，模块源是给测试用的，
+    // 两边漂移就会出现「后台显示的和实际逻辑不同」。用文本断言钉住关键语义
+    // （不动态执行页面代码——本地后台也不该在测试里跑任意 JS）
+    const html = await import('node:fs').then((fs) =>
+      fs.readFileSync(join(REPO, 'admin', 'public', 'index.html'), 'utf8'),
+    )
+    ok(/function buildPeople\(/.test(html), '页面内联了 buildPeople（与 entries.js 同源）')
+    ok(/function kindBadge\(/.test(html), '页面内联了 kindBadge')
+    const inlineFn = html.match(/function buildPeople\([\s\S]*?\n\}/)[0]
+    ok(inlineFn.includes('allow.has(id)'), '内联副本按 allowlist 判手写放行')
+    ok(inlineFn.includes("lis.has(id) ? 'listen'"), '内联副本按 listen 判开关放行')
+    ok(inlineFn.includes('rank(a) - rank(b)'), '内联副本用同一套排序规则')
+    ok(html.includes('fs-gate-summary'), '页面有闸门摘要行')
+    ok(html.includes('当前不限制'), '空表时把闸门真实语义（不限制）说清楚')
+    ok(!/\u{1f916}/.test(html), '通讯录不再用 emoji 图标（设计规范禁用）')
+  }
+
   // 8. 页面结构：名字编辑入口必须真的在页面上。
   // 「加白名单只能填 open_id」「名字对照表只读」两个缺陷都出过，这里挡住回归
   ok(indexHtml.includes('id="fs-allow-add-name"'), '白名单添加行有名字输入框')
-  ok(indexHtml.includes('id="fs-name-add-btn"'), '名字对照有添加入口')
+  ok(indexHtml.includes('id="fs-allow-btn"'), '主表有添加入口')
+  ok(indexHtml.includes('id="fs-add-listen"'), '加入时可选择是否放行它唤醒')
+  // 四页重构后的新结构（总览摘要/状态行、会话页错误分支、日志页体检结论）
+  ok(indexHtml.includes('id="ov-summary"'), '总览页有健康摘要行')
+  ok(indexHtml.includes('id="ov-msg"'), '总览页写操作有归一状态行')
+  ok(/overviewHealth/.test(indexHtml), '总览页健康判定抽成了可复用函数')
+  ok(/renderSummary/.test(indexHtml), '总览页有摘要渲染')
+  ok(indexHtml.includes('id="ss-status"'), '会话页有状态行（数据时间/失败原因）')
+  ok(indexHtml.includes('id="ss-chats"'), '会话页有飞书绑定表')
+  ok(/读不到会话列表/.test(indexHtml), '会话表区分「读不到」与「没有会话」')
+  ok(/无法判断有没有卡住的卡片/.test(indexHtml), 'inflight 读取失败不再伪装成空态')
+  ok(/超过看门狗阈值/.test(indexHtml), '进行中卡片标注是否超过看门狗阈值')
+  ok(indexHtml.includes('id="lg-doctor-summary"'), '体检有结论行')
+  ok(/全部通过/.test(indexHtml), '体检结论用中文徽章（全部通过/N 项警告/N 项未通过）')
+  ok(indexHtml.includes('id="lg-doctor-raw"'), '体检保留原始输出入口')
+  ok(!/lg-instance[^>]*style/.test(indexHtml) || indexHtml.indexOf('id="lg-instance"') > indexHtml.indexOf('id="lg-doctor-card"'), '实例选择器移到体检卡（日志是机器级共享）')
+  ok(/所有实例共用同一份日志/.test(indexHtml), '日志页说明所有实例共用日志')
   // opencode 专属组的内容到「工作目录与模型」小节为止，这一片里不该有工作目录字段
   const nOcGroup = indexHtml.slice(indexHtml.indexOf('<div id="n-oc-group">'), indexHtml.indexOf('<h3>工作目录与模型</h3>'))
   ok(
