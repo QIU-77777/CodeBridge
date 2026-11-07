@@ -14,6 +14,7 @@
     "test:init": "node scripts/test-init.mjs",
     "test:identity": "node scripts/test-feishu-identity.mjs",
     "test:pi": "node scripts/test-pi.mjs",
+    "test:patch": "node scripts/test-patch-order.mjs",
     "test:admin": "node scripts/test-admin.mjs && node scripts/test-admin-api.mjs",
     "test:busy": "node scripts/test-busy.mjs",
     "test:runfail": "node scripts/test-runfail.mjs",

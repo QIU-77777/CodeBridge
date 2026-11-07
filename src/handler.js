@@ -249,34 +249,74 @@ export class Bridge {
     }, interval - elapsed)
   }
 
-  async flushRun(sid) {
+  /**
+   * 刷新卡片。同一张卡的多次更新串行发出。
+   *
+   * 为什么必须串行：终态事件和最后一条文本事件常常在同一时刻到达——pi 后端的
+   * finish() 就连发 text.delta / usage / backend.meta / succeeded 四个事件，每个都
+   * 触发一次立即刷新。旧实现每次都直接发起一次 patch，两个请求同时在途，飞书侧
+   * 的生效顺序没有保证。真实事故：任务早已完成，「已完成」快照先到、「执行中」
+   * 快照后到，卡片永远停在「⏳ 执行中」，正文却是完整答案，用户完全看不出任务
+   * 已经结束。串行之后终态一定最后生效。
+   *
+   * 在途期间到达的刷新只标记 patchDue，由在途那次收尾时带上最新快照再发一次：
+   * 同一时刻积压的多次刷新合并成一次 patch，飞书侧 QPS 压力也小一个量级。
+   */
+  flushRun(sid) {
     const run = this.runs.get(sid)
-    if (!run || !run.cardId) return
-    run.lastFlush = Date.now()
-    const card = runCard(run.state, {
-      ...run.meta,
-      maxBodyChars: this.cfg.behavior.maxBodyChars,
-      showReasoning: this.cfg.behavior.showReasoning,
-      showTools: this.cfg.behavior.showTools,
-    })
+    if (!run?.cardId) return
+    run.patchDue = true
+    // 有一次 patch 在途：交给它收尾时一起发，这里只记状态
+    if (run.patching) return
+    run.patching = true
+    this._drainPatch(sid)
+  }
+
+  /** 把在途 patch 之后积压的状态全部发完。快照在发送时构建，永远是最新的 */
+  async _drainPatch(sid) {
     try {
-      await this.t.patchCard(run.cardId, card)
-    } catch (err) {
-      // 飞书 patch 有 QPS 和「内容未变化」限制，失败不致命
-      this.log.warn?.(`卡片更新失败: ${err.message}`)
-    }
-    if (['done', 'failed', 'aborted'].includes(run.state.status)) {
-      // 卡片已经收尾，把「还有人在跑」的记录抹掉，重启时就不会误标成已中断
-      run.flushed = true
-      this.store.clearInflight?.(sid)
-      // 结束后再保留一小段时间便于清理
-      setTimeout(() => this.runs.delete(sid), 60_000)
-      // 忙等时排队或插队的消息，到这里接着发。等 1.5 秒让卡片落定、
-      // 迟到的 abort 事件过去，避免两条消息挤在同一张卡片上
-      const qk = run.meta?.key
-      if (qk && this.store.queueLength(qk) > 0) {
-        setTimeout(() => this.drainQueue(qk), 1500)
+      let run = this.runs.get(sid)
+      while (run?.cardId && run.patchDue) {
+        run.patchDue = false
+        run.lastFlush = Date.now()
+        const card = runCard(run.state, {
+          ...run.meta,
+          maxBodyChars: this.cfg.behavior.maxBodyChars,
+          showReasoning: this.cfg.behavior.showReasoning,
+          showTools: this.cfg.behavior.showTools,
+        })
+        try {
+          await this.t.patchCard(run.cardId, card)
+        } catch (err) {
+          // 飞书 patch 有 QPS 和「内容未变化」限制，失败不致命
+          this.log.warn?.(`卡片更新失败: ${err.message}`)
+        }
+        if (['done', 'failed', 'aborted'].includes(run.state.status)) this._finalizeRun(sid, run)
+        // 终态收尾会把 run 排进 60 秒后删除，这里按 id 重新取，删了就不再发
+        run = this.runs.get(sid)
       }
+    } finally {
+      const cur = this.runs.get(sid)
+      if (!cur) return
+      cur.patching = false
+      // 等待在途 patch 的过程中又来了新状态：接着发
+      if (cur.patchDue) this.flushRun(sid)
+    }
+  }
+
+  /** 终态卡片已经发过：抹掉 inflight、排进清理、把忙等队列排空 */
+  _finalizeRun(sid, run) {
+    if (run.flushed) return
+    run.flushed = true
+    // 卡片已经收尾，把「还有人在跑」的记录抹掉，重启时就不会误标成已中断
+    this.store.clearInflight?.(sid)
+    // 结束后再保留一小段时间便于清理
+    setTimeout(() => this.runs.delete(sid), 60_000)
+    // 忙等时排队或插队的消息，到这里接着发。等 1.5 秒让卡片落定、
+    // 迟到的 abort 事件过去，避免两条消息挤在同一张卡片上
+    const qk = run.meta?.key
+    if (qk && (this.store.queueLength?.(qk) || 0) > 0) {
+      setTimeout(() => this.drainQueue(qk), 1500)
     }
   }
 

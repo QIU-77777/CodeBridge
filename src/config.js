@@ -43,8 +43,11 @@ const DEFAULTS = {
       timeoutMs: 10 * 60_000,
       // 最终消息之后静默多久就按已完成收尾（毫秒）。0 = 关闭，恢复「只等
       // 进程退出」的老行为。pi 偶发「回答产出了却不退出」，实测一次卡片在
-      // 「执行中」停了 6 分 58 秒；开了它，最坏空白约等于这个值
-      settleQuietMs: 60_000,
+      // 「执行中」停了 6 分 58 秒；开了它，最坏空白约等于这个值。
+      // 默认 3 分钟：实测同一轮任务里模型轮间思考间隔到过 62 秒和 107 秒，
+      // 60 秒的阈值会把还在跑的运行误判成完成——杀掉进程、把中途答案标成
+      // 「已完成」。见过 agent_settled 之后的阈值另算（见 src/pi.js）
+      settleQuietMs: 180_000,
       // 额外启动参数，例如 ["--no-extensions"]
       extraArgs: [],
     },
@@ -152,7 +155,12 @@ export function writeExampleConfig() {
       `找不到配置模板 ${TEMPLATE_PATH}。它应该在仓库里，重新 clone 或手动新建一份 config.json。`,
     )
   }
-  const example = JSON.parse(readFileSync(TEMPLATE_PATH, 'utf8'))
+  let example
+  try {
+    example = JSON.parse(readFileSync(TEMPLATE_PATH, 'utf8'))
+  } catch (err) {
+    throw new Error(`配置模板解析失败 ${TEMPLATE_PATH}: ${err.message}`)
+  }
   // 默认目录留空没意义，直接用 home
   if (!example.opencode?.defaultDirectory) {
     example.opencode = { ...example.opencode, defaultDirectory: homedir() }
