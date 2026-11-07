@@ -295,7 +295,11 @@ export class FeishuTransport {
     // 问候以 Lil_O 的应用到达群里。声明身份之外，pi 后端的桥接还会把本实例
     // 凭证注入子进程环境（src/pi.js childEnv），两句互相印证
     const identity = this.identityLine(self)
-    const originWithIdentity = identity ? `${origin}\n${identity}` : origin
+    // 第三行（只在群里）：agent 之间的协作机制。这条规则 agent 自己猜不到——
+    // 实测 Lil_O 拿到了 Lil_P 的 open_id（就在「发送者」标注里），却在卡片上
+    // 回复，两个 agent 完全没对话上；人工告知某一个之后它才会，另一个仍然不会
+    const collab = isGroup ? this.collabLine() : ''
+    const originBlock = [origin, identity, collab].filter(Boolean).join('\n')
 
     await this.onMessage({
       chatId: m.chat_id,
@@ -305,11 +309,33 @@ export class FeishuTransport {
       isGroup,
       userId,
       isBot,
-      origin: originWithIdentity,
+      origin: originBlock,
       text,
       messageId: m.message_id,
       chatType: m.chat_type,
     })
+  }
+
+  /**
+   * 协作机制说明：怎么唤醒另一个 agent。
+   *
+   * 唯一的方法是某一方用飞书 CLI 发一条**新的 text 消息**，内容里带真正的
+   * at 标签。写在卡片正文或普通文本里的 `@名字` 只是字面字符，不产生飞书提醒
+   * ——这条规则不可能靠模型自己悟出来，而 agent 之间的每次对话都要用它。
+   *
+   * open_id 按应用隔离，只能用「自己的应用」查到的那一个：给对方发过消息的
+   * 人，其 open_id 就在本消息的「发送者」标注里；没发过的，用 feishu-cli 查
+   * 群成员列表。
+   */
+  collabLine() {
+    return (
+      '[协作 · 唤醒另一个 agent 的唯一方法：用 feishu-cli 发一条新的 text 消息，' +
+      '内容里带 <at user_id="对方 open_id"></at>。给你发过消息的人，其 open_id 就在本行上方「发送者」标注里；' +
+      '没发过的用 feishu-cli 查群成员列表（open_id 按应用隔离，只能用你自己的应用查）。' +
+      '写在正文或卡片里的 @名字 只是字面字符，唤不醒任何人。' +
+      '话题内发言要回复话题内已有的 om_ 消息，不要新开发布到主聊天流。' +
+      '你的终态回复呈现在卡片上，卡片不唤醒任何人]'
+    )
   }
 
   /**
