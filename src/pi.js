@@ -15,6 +15,7 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, readdirSync, unlinkSync, chmodSync } from 'node:fs'
 import { join } from 'node:path'
 import { CONFIG_DIR } from './config.js'
+import { githubEnv } from './github-identity.js'
 
 /** 单行 JSONL 可能包含整段 messages，限制一下，别让一条畸形输出吃光内存 */
 const MAX_STDOUT_CHARS = 4 * 1024 * 1024
@@ -175,13 +176,13 @@ export class PiBackend {
     this._index = null
   }
 
-  // ---------- 子进程环境：把本实例的飞书身份钉进去 ----------
+  // ---------- 子进程环境：把本实例的飞书身份、GitHub 身份钉进去 ----------
 
   /**
-   * 给 pi 子进程的环境：在桥接自身环境之上注入本实例的飞书凭证，并准备一份
-   * 只含本实例应用的 lark-cli 配置。
+   * 给 pi 子进程的环境：在桥接自身环境之上注入本实例的飞书凭证与 GitHub 身份，
+   * 并准备一份只含本实例应用的 lark-cli 配置。
    *
-   * 为什么必须做：代理要用飞书 CLI 发消息时，读的是机器级配置
+   * 为什么必须做（飞书）：代理要用飞书 CLI 发消息时，读的是机器级配置
    * （~/.feishu-cli/config.yaml、~/.lark-cli/config.json）。多机器人同机部署时，
    * 那个默认应用经常是另一个实例的——代理就以别人的身份发言。真实事故：
    * 用户让 Lil_P 跟 LilO 打招呼，Lil_P 的代理调 feishu-cli 发出，消息却以
@@ -190,8 +191,11 @@ export class PiBackend {
    * feishu-cli 的凭证优先级是 --bot-app-id > 环境变量 > 配置文件，所以注入
    * FEISHU_APP_ID / FEISHU_APP_SECRET 就能盖过机器级配置；lark-cli 认
    * LARKSUITE_CLI_CONFIG_DIR，给它一份只含本实例应用的配置同理。
+   *
+   * GitHub 身份同理：agent 要用自己的 `xxx[bot]` 推送和开 PR，而不是人手里
+   * 那个 gh 登录。注入块由 src/github-identity.js 生成，四路分工见那里的注释。
    */
-  childEnv() {
+  async childEnv() {
     const env = { ...process.env }
     const f = this.cfg.feishu || {}
     if (f.appId) env.FEISHU_APP_ID = f.appId
@@ -199,6 +203,13 @@ export class PiBackend {
     if (f.domain) env.FEISHU_DOMAIN = f.domain
     const larkDir = this.ensureLarkCliConfig()
     if (larkDir) env.LARKSUITE_CLI_CONFIG_DIR = larkDir
+    // GitHub 身份：取 token 失败不能拖垮整个 prompt，日志记一笔继续跑
+    try {
+      const gh = await githubEnv(this.cfg, this.configDir)
+      if (gh) Object.assign(env, gh)
+    } catch (err) {
+      this.log.warn?.(`GitHub 身份注入失败，本次运行沿用默认身份: ${err.message}`)
+    }
     return env
   }
 
@@ -561,14 +572,25 @@ export class PiBackend {
 
     this._emit(sessionId, 'session.execution.started')
 
+    // 子进程环境要先取好再进 Promise：Promise 的执行函数不是 async，不能在里面
+    // await（childEnv 要给 app 模式换 token，是异步的）。取不到环境按失败收尾，
+    // 卡片上能看到原因，不会留一张永远「执行中」的卡
+    let env
+    try {
+      env = await this.childEnv()
+    } catch (err) {
+      this._emit(sessionId, 'session.execution.failed', { error: { message: err.message } })
+      return { ok: false, error: err.message }
+    }
+
     return new Promise((resolve) => {
       let child
       try {
         child = this.spawnImpl(this.bin, args, {
           cwd: s.location?.directory || undefined,
-          // 注入本实例的飞书凭证与 lark-cli 配置：代理用 CLI 发言时用本实例
-          // 身份，不会误用机器级配置里别的机器人应用
-          env: this.childEnv(),
+          // 注入本实例的飞书凭证、GitHub 身份与 lark-cli 配置：代理用 CLI
+          // 发言时用本实例身份，不会误用机器级配置里别的机器人应用
+          env,
           stdio: ['ignore', 'pipe', 'pipe'],
           detached: true,
         })

@@ -516,7 +516,10 @@ const main = async () => {
     let events = []
     bQuiet.subscribe((ev) => events.push(ev), () => {})
     const pending = bQuiet.prompt(sQ.id, '答完不说话')
-    // spawn 在 prompt 里同步发生，先拿到 child 再等退出，避免错过 exit 事件
+    // childEnv 是异步的（app 模式要现换 GitHub token），spawn 随之落在一个微任务里：
+    // 等新 child 真的出现再挂 exit 监听，否则挂到的是上一次调用的子进程，永远等不到
+    const spawnsBefore = calls.length
+    while (calls.length === spawnsBefore) await new Promise((r) => setImmediate(r))
     const exitP = new Promise((res) => calls.at(-1).child.once('exit', () => res(true)))
     const t0 = Date.now()
     const r = await pending

@@ -668,6 +668,28 @@ OCB_INSTANCE=pi npm run up      # 之后重启、查看都要带同一个 OCB_IN
 
 两条边界：桌面版 OpenCode 自己拉起的会话不走这套注入（只有桥接经 `serve.sh`/`up.sh` 起的 serve 走）；shell 里 `lark-cli` 若前面还有别的包装器（例如 dsh-superagent 的 worker-bin），以最前面那个为准。
 
+### GitHub 操作身份：每个 agent 一个 App
+
+飞书身份管「在群里是谁」，GitHub 身份管「推送和开 PR 时是谁」。每个实例在 `config.json` 里配一段 `github`，agent 就以自己的 GitHub App（对外显示 `lil-o-bot[bot]`）行事，不占用人的账号：
+
+```json
+"github": {
+  "mode": "app",
+  "appId": 5653982,
+  "installationId": 179512681,
+  "privateKeyPath": "~/.config/opencode-feishu-bridge/github-app.pem",
+  "gitName": "Lil_O",
+  "gitEmail": "5653982+lil-o-bot[bot]@users.noreply.github.com"
+}
+```
+
+- **App 只申请一次**，私钥不过期。token 全部自动换：agent 每次操作前用私钥签 JWT（10 分钟）换 installation token（1 小时），桥接负责缓存、到期前 5 分钟刷新、401 重试。不需要人工干预。
+- **一个 App 覆盖所有仓库**：安装时选 All repositories，当前和将来的仓库自动包含，配置里不用按仓库列。
+- **四路注入**（与飞书身份同一个调用点）：`GH_TOKEN`、`GIT_AUTHOR_*`/`GIT_COMMITTER_*` 署名、git 凭证助手（每次 git 操作现取有效 token，长驻进程里过期也透明）、`PATH` 前置本实例的 gh 包装脚本。
+- `mode: "off"`（默认）时不注入任何东西，沿用机器级 gh 登录，现有部署零改动。
+
+完整的字段说明、App 创建步骤、排障命令见 [docs/pi-backend.md 第 6.1 节](docs/pi-backend.md#61-github-身份github-段)。
+
 ### 已知风险
 
 **机器人之间互 @ 目前没有轮次护栏。** 群里已经出现过两个机器人互相 @ 连聊好几轮的情况，现在靠模型自己判断「不用回了」才停。三个 agent 一起跑之前建议先补上「同一话题连续 N 轮机器人→机器人就停，人类发言重置」的闸门。

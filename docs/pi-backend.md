@@ -159,6 +159,43 @@ opencode 后端的代理跑在常驻 serve 里，桥接没法向已启动的进�
 
 `sessionDir` 不写在配置里，固定为 `<CONFIG_DIR>/pi-sessions`，跟着配置目录走，多实例不会串会话。CLI 路径可通过 `backend.pi.bin` 指定绝对路径；`bin` 支持环境变量 `OCB_PI_BIN` 覆盖。
 
+### 6.1 GitHub 身份（`github` 段）
+
+每个实例可以配一个自己的 GitHub 身份，agent 推送、开 PR 时以它行事，不占用人的账号。默认 `mode: "off"`，不注入任何东西，现有部署零改动。
+
+```json
+"github": {
+  "mode": "app",
+  "appId": 5653982,
+  "installationId": 179512681,
+  "privateKeyPath": "~/.config/opencode-feishu-bridge/github-app.pem",
+  "token": "",
+  "gitName": "Lil_O",
+  "gitEmail": "5653982+lil-o-bot[bot]@users.noreply.github.com"
+}
+```
+
+| 字段 | 说明 |
+|---|---|
+| `mode` | `off`（默认，不注入）/ `app`（GitHub App）/ `pat`（个人访问令牌） |
+| `appId` / `installationId` | GitHub App 页面与安装 URL 里的两个数字 |
+| `privateKeyPath` | App 私钥 `.pem` 路径，放实例配置目录、权限 600（与 `appSecret` 同规格） |
+| `token` | 仅 `pat` 模式使用 |
+| `gitName` / `gitEmail` | 提交署名，注入 `GIT_AUTHOR_*` / `GIT_COMMITTER_*` |
+
+**GitHub App 是什么**：在你的账号下注册的一个集成身份，对外显示 `lil-o-bot[bot]`。agent 不登录——每次操作前用 App 私钥签一个 JWT（10 分钟有效），换一个 installation token（1 小时有效）。这层换算由 `src/github-app-token.mjs` 自动完成：磁盘缓存 + 剩余 5 分钟自动换 + 401 重试一次。App 安装时选 All repositories，当前和将来的仓库都覆盖，配置里不用按仓库列。
+
+**四路注入**（`src/github-identity.js`，与飞书身份注入同一个调用点）：
+
+1. `GH_TOKEN`——启动时取一个有效的，给直接读环境变量的工具；
+2. `GIT_AUTHOR_*` / `GIT_COMMITTER_*`——提交署名，优先级高于仓库和全局配置；
+3. `GIT_CONFIG_COUNT` 等——让 git 每次操作现场调凭证助手（`src/github-app-credential.mjs`）换有效 token。长驻进程（opencode serve）里启动时导出的 token 一小时后会过期，这条路让过期对 agent 透明；
+4. `PATH` 前置本实例的 `gh` 包装脚本（`<CONFIG_DIR>/bin/gh`），gh 的每次调用同样现取 token。
+
+**pi 后端**（`src/pi.js` 的 `childEnv()`）在起子进程前注入；**opencode 后端**由 `scripts/lib/github-identity.sh` 在起 serve 前导出（`scripts/agent/serve.sh` 与 `scripts/up.sh` 各调一次）。两边语义一致。
+
+排障：`node src/github-app-token.mjs --config-dir <实例配置目录>` 可直接看当前 token 状态。
+
 ## 7. 多实例：一个机器人 = 一个应用 + 一份配置 + 一个进程
 
 ```
@@ -233,6 +270,7 @@ opencode 后端的代理跑在常驻 serve 里，桥接没法向已启动的进�
 
 ```bash
 npm run test:pi        # pi JSONL 解析、流式映射、合成事件、超时、中止、静默收尾、会话续聊
+npm run test:github     # GitHub App 身份：JWT、token 缓存刷新、四路注入、凭证助手
 npm run test:patch     # 卡片 patch 串行与合并（终态一定最后生效）
 node scripts/test-cards.mjs
 npm run selftest

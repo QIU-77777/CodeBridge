@@ -24,6 +24,15 @@
     "defaultDirectory": "",
     "defaultModel": ""
   },
+  "github": {
+    "mode": "off",
+    "appId": "",
+    "installationId": "",
+    "privateKeyPath": "",
+    "token": "",
+    "gitName": "",
+    "gitEmail": ""
+  },
   "behavior": {
     "streamIntervalMs": 1800,
     "showReasoning": false,
