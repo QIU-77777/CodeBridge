@@ -461,6 +461,7 @@ export class Bridge {
         userId: msg.userId,
         messageId: msg.messageId,
         origin: msg.origin,
+        oncePrefix: msg.oncePrefix,
         isGroup: msg.isGroup,
         chatId: ctx.chatId,
         replyTo: ctx.replyTo,
@@ -490,6 +491,7 @@ export class Bridge {
 
     // 没有绑定或不存在的会话 -> 自动建一个
     let session
+    let isNewSession = false
     try {
       if (binding?.sessionId) {
         session = await this.oc.getSession(binding.sessionId)
@@ -500,12 +502,18 @@ export class Bridge {
     }
     if (!session) {
       session = await this.createAndBind(ctx, directory)
+      isNewSession = true
     }
 
     const raw = msg.text || ''
     const promptText = raw.length > MAX_PROMPT_CHARS ? raw.slice(0, MAX_PROMPT_CHARS) : raw
-    // 来源标注只拼给模型，不参与 /命令 解析，也不计入 MAX_PROMPT_CHARS
-    const body = msg.origin ? `${msg.origin}\n\n${promptText}` : promptText
+    // 前缀分两路，只拼给模型，不参与 /命令 解析，也不计入 MAX_PROMPT_CHARS：
+    //   origin      每条消息都带（来源标注 + 身份声明 + 配置里 always 的前缀）
+    //   oncePrefix  只在该会话的第一条消息带（配置里 once 的前缀，默认是协作
+    //               规则）。规则是静态的，第一条带过之后就在会话历史里，后续
+    //               消息靠上下文记住——每轮重复只是白烧 token
+    const preamble = [msg.origin, isNewSession ? msg.oncePrefix : ''].filter(Boolean).join('\n')
+    const body = preamble ? `${preamble}\n\n${promptText}` : promptText
 
     const state = new RunState(session.id)
     const meta = {

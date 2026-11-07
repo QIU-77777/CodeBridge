@@ -40,5 +40,10 @@
     "maxBodyChars": 6000,
     "idleTimeoutMs": 900000,
     "maxParallel": 2
+  },
+  "prompt": {
+    "prefixes": [
+      { "id": "rules", "mode": "once", "text": "" }
+    ]
   }
 }

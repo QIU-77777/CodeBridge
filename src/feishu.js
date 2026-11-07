@@ -30,6 +30,9 @@ function withTimeout(promise, label) {
 export class FeishuTransport {
   constructor(config, { onMessage, onCardAction, nameOf, onSeenNames, backendType = '', logger = console }) {
     this.cfg = config.feishu
+    // prompt 前缀配置（src/config.js 的 prompt 段）：来源标注是每条消息都带的
+    // 动态数据，协作规则这类静态说明走 once 模式，每个会话只带一次
+    this.promptCfg = config.prompt || {}
     this.log = logger
     this.onMessage = onMessage
     this.onCardAction = onCardAction
@@ -295,11 +298,11 @@ export class FeishuTransport {
     // 问候以 Lil_O 的应用到达群里。声明身份之外，pi 后端的桥接还会把本实例
     // 凭证注入子进程环境（src/pi.js childEnv），两句互相印证
     const identity = this.identityLine(self)
-    // 第三行（只在群里）：agent 之间的协作机制。这条规则 agent 自己猜不到——
-    // 实测 Lil_O 拿到了 Lil_P 的 open_id（就在「发送者」标注里），却在卡片上
-    // 回复，两个 agent 完全没对话上；人工告知某一个之后它才会，另一个仍然不会
-    const collab = isGroup ? this.collabLine() : ''
-    const originBlock = [origin, identity, collab].filter(Boolean).join('\n')
+    // 第三部分：配置里的 prompt 前缀，按模式分两路。always 的（含用户自定义）
+    // 并进本条消息的前缀；once 的（协作规则）单独交给上层——它只在该会话的
+    // 第一条消息拼，之后靠上下文记住，每轮重复只是白烧 token
+    const { always, once } = this.prefixTexts(isGroup)
+    const originBlock = [origin, identity, always].filter(Boolean).join('\n')
 
     await this.onMessage({
       chatId: m.chat_id,
@@ -310,6 +313,7 @@ export class FeishuTransport {
       userId,
       isBot,
       origin: originBlock,
+      oncePrefix: once,
       text,
       messageId: m.message_id,
       chatType: m.chat_type,
@@ -336,6 +340,40 @@ export class FeishuTransport {
       '话题内发言要回复话题内已有的 om_ 消息，不要新开发布到主聊天流。' +
       '你的终态回复呈现在卡片上，卡片不唤醒任何人]'
     )
+  }
+
+  /**
+   * 把配置里的 prompt 前缀按模式分成两堆。
+   *
+   * always：每条消息都拼——静态文本（用户自定义条目）并进来源标注那段。
+   * once：每个会话的第一条消息拼一次——由上层在新建会话时决定要不要拼。
+   *
+   * 内置的 `rules` 条目：text 留空用内置默认（collabLine），填写则覆盖；
+   * 只在群里拼（私聊没有同伴）。自定义条目纯静态文本，两种模式都生效。
+   * 删掉某个条目就是关闭它——所以这里不做任何「必须有一个」的兜底。
+   */
+  prefixTexts(isGroup) {
+    const list = this.promptCfg?.prefixes || []
+    let always = ''
+    let once = ''
+    const append = (bucket, text) => {
+      if (bucket) bucket += '\n'
+      return bucket + text
+    }
+    for (const p of list) {
+      if (!p || typeof p !== 'object') continue
+      let text
+      if (p.id === 'rules') {
+        if (!isGroup) continue // 协作规则只在群里有意义
+        text = p.text || this.collabLine()
+      } else {
+        text = p.text
+      }
+      if (!text) continue
+      if (p.mode === 'once') once = append(once, text)
+      else always = append(always, text)
+    }
+    return { always, once }
   }
 
   /**
