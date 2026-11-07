@@ -279,17 +279,19 @@
       <section id="tab-overview">
         <div class="card">
           <h2>实例总览</h2>
-          <p class="lede">一个实例 = 一份配置目录 + 一个进程 + 一个飞书应用。起停转调仓库既有脚本，单实例锁语义不变。</p>
+          <p class="lede">一个实例 = 一份配置目录 + 一个进程 + 一个飞书应用。这台机器上跑着几个机器人、此刻是否都正常，看下面一行和表格。</p>
           <div class="toolbar">
             <span class="hint">再要一个机器人身份（例如把 pi 也接进群），点右侧「新建实例」，不用敲命令行。</span>
             <span class="spacer"></span>
             <button class="btn primary" id="ov-create">新建实例</button>
           </div>
+          <p class="hint" id="ov-summary"></p>
+          <span id="ov-msg"></span>
           <div class="scroll-x">
           <table id="ov-table">
             <thead><tr>
-              <th>实例</th><th>配置目录</th><th>后端</th><th>飞书应用</th><th>状态</th>
-              <th>pid / 时长</th><th>serve</th><th>会话 / 进行中</th><th>操作</th>
+              <th>实例</th><th>状态</th><th>后端</th><th>后端健康</th><th>飞书应用</th>
+              <th>配置目录</th><th>pid / 时长</th><th>会话 / 进行中</th><th>操作</th>
             </tr></thead>
             <tbody></tbody>
           </table>
@@ -297,7 +299,7 @@
           <div id="ov-error" class="err"></div>
         </div>
         <div class="card hidden" id="ov-action-card">
-          <h2>最近一次操作输出</h2>
+          <h2>最近一次脚本输出（细节）</h2>
           <pre class="out" id="ov-action-out"></pre>
         </div>
       </section>
@@ -392,25 +394,33 @@
             <span class="spacer"></span>
             <button class="btn" id="ss-refresh">刷新</button>
           </div>
+          <p class="hint" id="ss-status"></p>
           <div class="grid2">
             <div>
-              <h3>后端健康</h3>
+              <h3>后端与模型</h3>
               <dl class="kv" id="ss-backend"></dl>
-              <p class="hint">默认工作目录在「配置」页修改，保存后重启实例生效；单个会话换目录，在飞书里发 /cd &lt;绝对路径&gt;。</p>
             </div>
             <div>
               <h3>状态文件概要</h3>
               <dl class="kv" id="ss-summary"></dl>
             </div>
           </div>
-          <h3>会话列表</h3>
+          <h3>进行中的卡片</h3>
+          <div class="scroll-x">
+          <table id="ss-inflight"><thead><tr><th>会话标题</th><th>群 / 话题</th><th>模型</th><th>已运行</th><th>开始于</th><th>卡片 id</th></tr></thead><tbody></tbody></table>
+          </div>
+          <h3>飞书绑定</h3>
+          <div class="scroll-x">
+          <table id="ss-chats"><thead><tr><th>绑定键</th><th>群 / 私聊</th><th>会话 id</th><th>目录</th><th>模型</th><th>最近更新</th></tr></thead><tbody></tbody></table>
+          </div>
+          <h3>后端会话</h3>
           <div class="scroll-x">
           <table id="ss-sessions"><thead><tr><th>标题</th><th>会话 id</th><th>目录</th><th>模型</th><th>最近更新</th></tr></thead><tbody></tbody></table>
           </div>
-          <h3>模型列表</h3>
-          <div id="ss-models" class="mono dim" style="max-height:160px;overflow:auto"></div>
-          <h3>进行中的卡片（state.json inflight）</h3>
-          <table id="ss-inflight"><thead><tr><th>会话 id</th><th>卡片</th><th>目录</th><th>开始于</th></tr></thead><tbody></tbody></table>
+          <details id="ss-models-wrap">
+            <summary>可用模型（<span id="ss-models-count">0</span>）</summary>
+            <div id="ss-models" class="mono dim" style="max-height:160px;overflow:auto"></div>
+          </details>
         </div>
       </section>
 
@@ -418,27 +428,37 @@
       <section id="tab-logs" class="hidden">
         <div class="card">
           <div class="toolbar">
-            <span class="dim">实例</span>
-            <select id="lg-instance" style="min-width:240px"></select>
             <span class="dim">文件</span>
             <select id="lg-file"><option value="bridge">bridge.log</option><option value="serve">serve.log</option></select>
             <span class="spacer"></span>
             <button class="btn" id="lg-follow">暂停跟随</button>
-            <button class="btn primary" id="lg-doctor">运行体检</button>
+            <button class="btn" id="lg-jump" class="hidden">回到底部</button>
           </div>
           <div class="term">
             <div class="term-bar">
               <span class="lights"><i></i><i></i><i></i></span>
               <span class="name" id="lg-term-name">bridge.log</span>
-              <span class="state"><span class="dot green" id="lg-follow-dot"></span><span id="lg-follow-text">跟随中</span></span>
+              <span class="state"><span class="dot gray" id="lg-follow-dot"></span><span id="lg-follow-text">未开始</span></span>
+              <span class="state dim" id="lg-term-meta"></span>
             </div>
             <pre id="lg-pre">（加载中）</pre>
           </div>
-          <p class="hint" style="margin-top:10px">按字节偏移增量拉取，两秒一轮。日志文件在仓库 logs/ 目录下。</p>
+          <p class="hint" style="margin-top:10px">实时跟随最新输出，上翻自动暂停。所有实例共用同一份日志，排查时注意区分行首的实例名。</p>
         </div>
         <div class="card hidden" id="lg-doctor-card">
+          <div class="toolbar">
+            <span class="dim">实例</span>
+            <select id="lg-instance" style="min-width:240px"></select>
+            <span class="spacer"></span>
+            <button class="btn primary" id="lg-doctor">运行体检</button>
+          </div>
           <h2>体检结果</h2>
+          <p class="hint" id="lg-doctor-summary"></p>
           <div id="lg-doctor-body"></div>
+          <details id="lg-doctor-raw-wrap" style="margin-top:10px">
+            <summary>查看原始输出</summary>
+            <pre class="out" id="lg-doctor-raw"></pre>
+          </details>
         </div>
       </section>
     </main>
@@ -517,6 +537,8 @@ async function api(path, opts = {}) {
 const state = {
   instances: [],
   tab: 'overview',
+  // busy：起停操作执行中，总览轮询让路，避免操作列按钮在「启动」和「重启/停止」之间跳变
+  busy: false,
   log: { since: 0, follow: true, timer: null, name: '', file: 'bridge' },
   backends: null,
 }
@@ -604,68 +626,125 @@ function fillSelect(sel, keep) {
   else if (state.instances.length) sel.value = state.instances[0].name
 }
 
-async function loadInstances() {
-  const json = await api('/api/instances')
-  state.instances = json.instances
-  for (const id of ['cfg-instance', 'fs-instance', 'ss-instance', 'lg-instance']) fillSelect($(id), true)
-  $('head-meta').textContent = `${state.instances.length} 个实例`
-  $('head-host').textContent = location.host
-}
-
 // ---------- 总览 ----------
+// 状态徽章：运行中 / 已停止（装过常驻服务）/ 未运行（没装，停机不自动拉起）
 function statusBadge(p) {
   if (p.running) return '<span class="badge green"><span class="dot green"></span>运行中</span>'
-  if (p.via === 'launchd') return '<span class="badge amber"><span class="dot amber"></span>launchd 已装未跑</span>'
-  return '<span class="badge gray"><span class="dot gray"></span>未运行</span>'
+  if (p.via === 'launchd') return '<span class="badge amber" title="常驻服务已安装，当前没有在运行"><span class="dot amber"></span>已停止</span>'
+  return '<span class="badge gray" title="没有安装常驻服务，停机后不会自动拉起"><span class="dot gray"></span>未运行</span>'
+}
+
+/** 单个实例的健康判定：摘要行与行内徽章共用，避免两处结论漂移 */
+function overviewHealth(i) {
+  const notes = []
+  if (i.configError) notes.push('配置读取失败')
+  if (i.stateError) notes.push('状态文件读取失败')
+  if (i.process.running) { /* 正常 */ }
+  else if (i.managed) notes.push('已停止')
+  else notes.push('未安装常驻服务')
+  if (i.serve?.applicable && !i.serve.ok) notes.push('serve 无响应')
+  if (i.pi?.applicable && !i.pi.ok) notes.push('pi CLI 异常')
+  return { ok: notes.length === 0, notes }
+}
+
+/** 摘要行：一句话回答「都正常吗」，异常逐条给出并带跳转 */
+function renderSummary(instances) {
+  if (!instances.length) {
+    $('ov-summary').innerHTML = '这台机器上还没有实例。'
+    return
+  }
+  const bad = instances.filter((i) => !overviewHealth(i).ok)
+  if (!bad.length) {
+    $('ov-summary').innerHTML =
+      `<span class="badge green"><span class="dot green"></span>${instances.length} 个实例都在运行，后端正常。</span>`
+    return
+  }
+  $('ov-summary').innerHTML =
+    `<span class="badge amber"><span class="dot amber"></span>${instances.length} 个实例中 ${bad.length} 个有异常</span>` +
+    bad.map((i) => {
+      const h = overviewHealth(i)
+      const first = h.notes[0]
+      const toLogs = first === 'serve 无响应' || first === 'pi CLI 异常'
+      const jump = toLogs
+        ? ` <button class="btn" onclick="gotoInstance('logs', '${esc(i.name)}')">看日志</button>`
+        : ` <button class="btn" onclick="gotoInstance('config', '${esc(i.name)}')">看配置</button>`
+      return `<div>${esc(i.name)}：${esc(h.notes.join('；'))}${jump}</div>`
+    }).join('')
+}
+
+/** 跳到指定页签并选中该实例；体检入口在切过去后直接触发 */
+function gotoInstance(tab, name) {
+  const sel = $(tab === 'logs' ? 'lg-instance' : tab === 'sessions' ? 'ss-instance' : 'cfg-instance')
+  if (sel && [...sel.options].some((o) => o.value === name)) sel.value = name
+  switchTab(tab)
+  if (tab === 'logs') runDoctor()
+}
+
+/** 写操作结果归一到状态行；原始脚本输出另放细节卡 */
+function setOvMsg(text, isErr) {
+  $('ov-msg').innerHTML = isErr
+    ? '<span class="err">' + esc(text) + '</span>'
+    : '<span class="ok">' + esc(text) + '</span>'
 }
 
 async function loadOverview() {
-  const json = await api('/api/instances')
-  state.instances = json.instances
-  for (const id of ['cfg-instance', 'fs-instance', 'ss-instance', 'lg-instance']) fillSelect($(id), true)
-  $('head-meta').textContent = `${state.instances.length} 个实例`
-  $('head-host').textContent = location.host
-  const rows = json.instances.map((i) => {
-    const serve = !i.serve.applicable ? '<span class="faint">不适用</span>'
-      : i.serve.ok ? `<span class="badge green"><span class="dot green"></span>v${esc(i.serve.version || '?')}</span>`
-      : '<span class="badge red"><span class="dot red"></span>无响应</span>'
-    const pi = !i.pi.applicable ? '' : i.pi.ok
-      ? `<span class="badge green" title="${esc(i.pi.resolved || '')}"><span class="dot green"></span>v${esc(i.pi.version || '?')}</span>`
-      : `<span class="badge red" title="${esc(i.pi.error || '')}"><span class="dot red"></span>CLI 异常</span>`
-    const busy = i.summary?.inflight ? `<span class="badge blue"><span class="dot blue"></span>${i.summary.inflight} 张进行中</span>` : ''
-    const managed = i.managed ? '' : '<br><span class="badge gray" title="没有安装 launchd 常驻服务">未安装常驻服务</span>'
-    // 起停只对装了 plist 的实例开放：没装的实例走 down.sh 会误杀本机所有桥接进程。
-    // 按钮按运行状态给：运行中只有重启/停止，未运行只有启动——三种全列会让人误以为都能点
-    const actions = i.managed
-      ? i.process.running
-        ? `<div class="row">
-            <button class="btn" onclick="doAction('${esc(i.name)}','restart')">重启</button>
-            <button class="btn danger" onclick="doAction('${esc(i.name)}','stop')">停止</button>
-          </div>`
-        : `<div class="row">
-            <button class="btn" onclick="doAction('${esc(i.name)}','start')">启动</button>
-          </div>`
-      : `<span class="hint">安装常驻服务：<code>./scripts/install-agent.sh --instance ${esc(i.name)} --config-dir ${esc(i.dir)}</code></span>`
-    return `<tr>
-      <td><b>${esc(i.name)}</b>${managed}</td>
-      <td class="mono dim"><span class="clip" title="${esc(i.dir)}">${esc(i.dir)}</span></td>
-      <td class="mono">${esc(i.backend)}</td>
-      <td class="mono"><span class="clip" title="${esc(i.appId || '')}">${esc(i.appId || '—')}</span>${i.botOpenId ? `<br><span class="clip dim" title="${esc(i.botOpenId)}">${esc(i.botOpenId)}</span>` : ''}</td>
-      <td>${statusBadge(i.process)} ${busy}</td>
-      <td class="mono">${i.process.pid ? esc(i.process.pid) : '—'}<br><span class="dim">${esc(i.process.uptime || '')}</span></td>
-      <td>${serve}${pi ? '<br>' + pi : ''}</td>
-      <td class="mono num">${i.summary?.chats ?? 0} / ${i.summary?.inflight ?? 0}</td>
-      <td>${actions}</td>
-    </tr>`
-  }).join('')
-  document.querySelector('#ov-table tbody').innerHTML = rows || '<tr><td colspan="9" class="dim">没有发现实例</td></tr>'
-  const bad = json.instances.filter((i) => i.configError || i.stateError)
-  $('ov-error').textContent = bad.map((i) => `${i.name}: ${i.configError || i.stateError}`).join('\n')
+  if (state.busy) return // 起停操作执行中，让路，避免按钮状态跳变
+  try {
+    const json = await api('/api/instances')
+    state.instances = json.instances
+    for (const id of ['cfg-instance', 'fs-instance', 'ss-instance', 'lg-instance']) fillSelect($(id), true)
+    $('head-meta').textContent = `${state.instances.length} 个实例`
+    $('head-host').textContent = location.host
+    renderSummary(json.instances)
+    const rows = json.instances.map((i) => {
+      const serve = !i.serve.applicable ? '<span class="faint">不适用</span>'
+        : i.serve.ok ? `<span class="badge green"><span class="dot green"></span>v${esc(i.serve.version || '?')}</span>`
+        : `<span class="badge red" title="${esc(i.serve.error || '')}"><span class="dot red"></span>无响应</span>`
+      const pi = !i.pi.applicable ? '' : i.pi.ok
+        ? `<span class="badge green" title="${esc(i.pi.resolved || '')}"><span class="dot green"></span>v${esc(i.pi.version || '?')}</span>`
+        : `<span class="badge red" title="${esc(i.pi.error || '')}"><span class="dot red"></span>CLI 异常</span>`
+      const busy = i.summary?.inflight ? `<span class="badge blue"><span class="dot blue"></span>${i.summary.inflight} 张进行中</span>` : ''
+      const h = overviewHealth(i)
+      const errBadge = h.ok ? '' : `<br><span class="badge red" title="${esc(h.notes.join('；'))}"><span class="dot red"></span>${esc(h.notes[0])}</span>`
+      const actions = i.managed
+        ? i.process.running
+          ? `<div class="row">
+              <button class="btn" onclick="doAction('${esc(i.name)}','restart')">重启</button>
+              <button class="btn danger" onclick="doAction('${esc(i.name)}','stop')">停止</button>
+            </div>`
+          : `<div class="row">
+              <button class="btn" onclick="doAction('${esc(i.name)}','start')">启动</button>
+            </div>`
+        : `<span class="hint">安装常驻服务：<code>./scripts/install-agent.sh --instance ${esc(i.name)} --config-dir ${esc(i.dir)}</code></span>`
+      const nav = `<div class="row"><button class="btn" onclick="gotoInstance('logs', '${esc(i.name)}')">日志</button><button class="btn" onclick="gotoInstance('logs', '${esc(i.name)}'); runDoctor()">体检</button></div>`
+      const pidCell = i.process.pid
+        ? `${esc(i.process.pid)}<br><span class="dim">${esc(i.process.uptime || '')}</span>`
+        : '—'
+      return `<tr>
+        <td><b>${esc(i.name)}</b></td>
+        <td>${statusBadge(i.process)} ${busy}${errBadge}</td>
+        <td class="mono">${esc(i.backend)}</td>
+        <td>${serve}${pi ? '<br>' + pi : ''}</td>
+        <td class="mono"><span class="clip" title="${esc(i.appId || '')}">${esc(i.appId || '—')}</span>${i.botOpenId ? `<br><span class="clip dim" title="${esc(i.botOpenId)}">${esc(i.botOpenId)}</span>` : ''}</td>
+        <td class="mono dim"><span class="clip" title="${esc(i.dir)}">${esc(i.dir)}</span></td>
+        <td class="mono">${pidCell}</td>
+        <td class="mono num">${i.summary?.chats ?? 0} / ${i.summary?.inflight ?? 0}</td>
+        <td>${actions}${nav}</td>
+      </tr>`
+    }).join('')
+    $('ov-table').querySelector('tbody').innerHTML =
+      rows || '<tr><td colspan="9" class="dim">没有发现实例。点右上角「新建实例」创建第一个。</td></tr>'
+    $('ov-error').textContent = ''
+  } catch (err) {
+    // 刷新失败不静默停更：说清楚，旧表格保留但标注可能过期
+    $('ov-error').textContent = '刷新失败：' + err.message + '（下面显示的是上一次的数据，可能已过期）'
+  }
 }
 
 async function doAction(name, action) {
-  if (action === 'stop' && !confirm(`确定停止实例 ${name}？`)) return
+  if (action === 'stop' && !confirm(`确定停止实例 ${name}？停止后这个机器人在飞书里不再响应消息。`)) return
   if (action === 'restart' && !confirm(`确定重启实例 ${name}？进行中的任务会被中断。`)) return
+  state.busy = true
   $('ov-action-out').textContent = `${action} ${name} …`
   $('ov-action-card').classList.remove('hidden')
   try {
@@ -675,9 +754,13 @@ async function doAction(name, action) {
       body: JSON.stringify({ action }),
     })
     $('ov-action-out').textContent = json.output || '（无输出）'
-    await loadOverview()
+    setOvMsg(json.ok ? `${name} 已${action === 'stop' ? '停止' : action === 'start' ? '启动' : '重启'}` : `${name} 操作失败，看下方输出`, !json.ok)
   } catch (err) {
     $('ov-action-out').textContent = '失败: ' + err.message
+    setOvMsg('操作失败: ' + err.message, true)
+  } finally {
+    state.busy = false
+    await loadOverview()
   }
 }
 
@@ -1039,49 +1122,157 @@ async function verifyFeishu() {
 }
 
 // ---------- 会话与后端 ----------
+/** 相对时长：进行中的卡片跑了多久，用户不用自己拿绝对时间算 */
+function fmtAgo(ts) {
+  if (!ts) return '—'
+  const s = Math.max(0, Math.floor((Date.now() - ts) / 1000))
+  if (s < 60) return s + ' 秒前'
+  if (s < 3600) return Math.floor(s / 60) + ' 分钟前'
+  return Math.floor(s / 3600) + ' 小时前'
+}
+
+/**
+ * 会话页取数。三个请求都可能失败，失败必须与「空」分开说：
+ * 把失败折叠成「没有会话 / 没有进行中的卡片」会让用户把故障读成正常状态，
+ * 其中 inflight 的假空态最危险——飞书上正有一张卡片永远停在「执行中」。
+ */
 async function loadSessionsTab() {
   const name = $('ss-instance').value
   if (!name) return
+  const stamp = new Date().toLocaleTimeString('zh-CN', { hour12: false })
+  // 请求代次：快速切换实例时旧响应晚到，直接丢弃，不把上个实例的数据写进本页
+  const reqId = ++state.ssReqId
+  const safe = (p) => p.catch((err) => ({ failed: true, error: err.message }))
   try {
     const [detail, sessions, models] = await Promise.all([
       api(`/api/instances/${encodeURIComponent(name)}`),
-      api(`/api/instances/${encodeURIComponent(name)}/sessions`).catch(() => ({ applicable: false })),
-      api(`/api/instances/${encodeURIComponent(name)}/models`).catch(() => ({ applicable: false })),
+      safe(api(`/api/instances/${encodeURIComponent(name)}/sessions`)),
+      safe(api(`/api/instances/${encodeURIComponent(name)}/models`)),
     ])
+    if (reqId !== state.ssReqId) return
+    $('ss-status').innerHTML = '<span class="row"><span class="dot green"></span><span class="dim">更新于 ' + esc(stamp) + '</span></span>'
+
+    const idleMs = Number(detail.config?.behavior?.idleTimeoutMs) || 0
+    const defaultModel = detail.backend === 'pi'
+      ? (detail.config?.backend?.pi?.model || '')
+      : (detail.config?.opencode?.defaultModel || '')
+    // 状态点 + 文字标签。模板字符串里再嵌反引号会把外层字符串提前终结，
+    // 这里统一用字符串拼接
+    const dot = (ok2, text) =>
+      '<span class="row"><span class="dot ' + (ok2 ? 'green' : 'red') + '"></span>' +
+      '<span class="' + (ok2 ? 'ok' : 'err') + '">' + esc(text) + '</span></span>'
     let be = detail.backend === 'pi'
-      ? `<dt>类型</dt><dd>pi（一次性子进程）</dd>
-         <dt>CLI 可用性</dt><dd>${detail.pi?.ok ? `<span class="row"><span class="dot green"></span><span class="ok">可用 ${esc(detail.pi.version || '')}</span></span>` : `<span class="row"><span class="dot red"></span><span class="err">${esc(detail.pi?.error || '异常')}</span></span>`}</dd>`
-      : `<dt>类型</dt><dd>opencode（常驻 HTTP + SSE）</dd>
-         <dt>serve 健康</dt><dd>${detail.serve?.ok ? `<span class="row"><span class="dot green"></span><span class="ok">v${esc(detail.serve.version || '?')}，pid ${esc(detail.serve.pid)}</span></span>` : `<span class="row"><span class="dot red"></span><span class="err">${esc(detail.serve?.error || '无响应')}</span></span>`}</dd>
-         <dt>serve 地址</dt><dd class="mono">${esc(detail.config?.opencode?.url || '')}</dd>`
-    // 默认工作目录两个后端都用：pi 每次执行起在这个目录，opencode 的 /new 不带目录时也用这个。
-    // 这里只展示，修改入口在「配置」页——同一处配置不开两个编辑器
-    be += `<dt>默认工作目录</dt><dd class="mono">${esc(detail.config?.opencode?.defaultDirectory || '—')}</dd>`
+      ? '<dt>类型</dt><dd>pi（一次性子进程）</dd>' +
+        '<dt>CLI 可用性</dt><dd>' + (detail.pi?.ok
+          ? dot(true, '可用 ' + (detail.pi.version || '?'))
+          : dot(false, detail.pi?.error || '异常')) + '</dd>'
+      : '<dt>类型</dt><dd>opencode（常驻 HTTP + SSE）</dd>' +
+        '<dt>serve 健康</dt><dd>' + (detail.serve?.ok
+          ? dot(true, 'v' + (detail.serve.version || '?') + '，pid ' + (detail.serve.pid ?? '—'))
+          : dot(false, detail.serve?.error || '无响应')) + '</dd>' +
+        '<dt>serve 地址</dt><dd class="mono">' + esc(detail.config?.opencode?.url || '') + '</dd>'
+    be += '<dt>默认工作目录</dt><dd class="mono">' + esc(detail.config?.opencode?.defaultDirectory || '—') + '</dd>'
+    be += '<dt>新会话默认模型</dt><dd>' + (defaultModel
+      ? '<span class="mono">' + esc(defaultModel) + '</span>'
+      : '<span class="dim">未设置，用 coding agent 本地默认模型</span>') + '</dd>'
     $('ss-backend').innerHTML = be
-    $('ss-summary').innerHTML = `
-      <dt>绑定会话数</dt><dd class="num">${detail.summary?.chats ?? 0}</dd>
-      <dt>进行中卡片</dt><dd class="num">${detail.summary?.inflight ?? 0}</dd>
-      <dt>攒到的名字</dt><dd class="num">${detail.summary?.names ?? 0}</dd>`
-    // 两个后端的会话都在本地有记录：opencode 在 serve 里，pi 在配置目录的
-    // pi-sessions/index.json。取不到就明说取不到，不用「没有会话概念」这类
-    // 与事实不符的说法——pi 不但有会话，详细记录还在同目录的 JSONL 文件里
-    const sessionRows = (sessions.sessions || []).map((s) => `<tr>
-          <td>${esc(s.title || '（无标题）')}</td><td class="mono">${esc(s.id)}</td>
-          <td class="mono">${esc(short(s.directory, 44))}</td><td class="mono">${esc(s.model)}</td>
-          <td class="mono">${fmtTime(s.updatedAt)}</td></tr>`).join('')
-    $('ss-sessions').querySelector('tbody').innerHTML = sessions.error
-      ? `<tr><td colspan="5" class="err">${esc(sessions.error)}</td></tr>`
-      : sessionRows || '<tr><td colspan="5" class="dim">没有会话</td></tr>'
-    $('ss-models').textContent = models.applicable
-      ? (models.models || []).join('\n') || '（列表为空）'
-      : '（pi 后端不适用）'
-    const inflight = Object.entries(detail.state?.inflight || {})
-    $('ss-inflight').querySelector('tbody').innerHTML = inflight.map(([sid, v]) => `<tr>
-      <td class="mono">${esc(sid)}</td><td class="mono">${esc(v.cardId || '')}</td>
-      <td class="mono">${esc(short(v.directory, 40))}</td><td class="mono">${fmtTime(v.startedAt)}</td></tr>`).join('')
-      || '<tr><td colspan="4" class="dim">没有进行中的卡片</td></tr>'
+
+    $('ss-summary').innerHTML =
+      '<dt>绑定会话数</dt><dd class="num">' + (detail.summary?.chats ?? '—') + '</dd>' +
+      '<dt>进行中卡片</dt><dd class="num">' + (detail.summary?.inflight ?? '—') + '</dd>' +
+      '<dt>攒到的名字</dt><dd class="num">' + (detail.summary?.names ?? '—') + '</dd>'
+
+    // 进行中的卡片：先判状态文件读不读得了。读不了就说读不了，不能说「没有」
+    const inflightTbody = $('ss-inflight').querySelector('tbody')
+    if (detail.stateError) {
+      inflightTbody.innerHTML =
+        '<tr><td colspan="6" class="err">状态文件读取失败：' + esc(detail.stateError) +
+        '。无法判断有没有卡住的卡片。</td></tr>'
+    } else {
+      const inflight = Object.entries(detail.state?.inflight || {})
+      const overBadge = ' <span class="badge amber" title="已超过 behavior.idleTimeoutMs，看门狗会把它判定为卡死"><span class="dot amber"></span>超过看门狗阈值</span>'
+      inflightTbody.innerHTML = inflight.map(([sid, v]) => {
+        const ran = v.startedAt ? Date.now() - v.startedAt : 0
+        const over = idleMs > 0 && ran > idleMs
+        return '<tr>' +
+          '<td>' + esc(v.title || sid) + '</td>' +
+          '<td class="mono"><span class="clip" title="' + esc(v.chatId || '') + '">' + esc(short(v.chatId, 20) || '—') + '</span></td>' +
+          '<td class="mono">' + esc(v.model || '—') + '</td>' +
+          '<td>' + fmtAgo(v.startedAt) + (over ? overBadge : '') + '</td>' +
+          '<td class="mono dim">' + fmtTime(v.startedAt) + '</td>' +
+          '<td class="mono"><span class="clip" title="' + esc(v.cardId || '') + '">' + esc(short(v.cardId, 22)) + '</span></td>' +
+        '</tr>'
+      }).join('') || '<tr><td colspan="6" class="dim">没有进行中的卡片。所有任务都已收尾。</td></tr>'
+    }
+
+    // 飞书绑定：state.json 的 chats 才是「哪个飞书聊天用哪个会话」的真相来源
+    const chatsTbody = $('ss-chats').querySelector('tbody')
+    if (detail.stateError) {
+      chatsTbody.innerHTML =
+        '<tr><td colspan="6" class="err">状态文件读取失败：' + esc(detail.stateError) +
+        '。无法列出飞书绑定。</td></tr>'
+    } else {
+      const chats = Object.values(detail.state?.chats || {})
+      const clip = (v, n) => '<span class="clip" title="' + esc(v || '') + '">' + esc(short(v, n)) + '</span>'
+      chatsTbody.innerHTML = chats.map((c) => '<tr>' +
+          '<td class="mono">' + clip(c.key, 24) + '</td>' +
+          '<td class="mono">' + clip(c.chatId, 22) + '</td>' +
+          '<td class="mono">' + clip(c.sessionId, 20) + '</td>' +
+          '<td class="mono">' + clip(c.directory, 28) + '</td>' +
+          '<td class="mono">' + esc(c.model || '—') + '</td>' +
+          '<td class="mono dim">' + fmtTime(c.updatedAt) + '</td>' +
+        '</tr>').join('')
+        || '<tr><td colspan="6" class="dim">还没有任何飞书聊天绑定到会话。</td></tr>'
+    }
+
+    // 后端会话：失败 / 接口报错 / 真空 / 有数据，四种情况四句话
+    const stbody = $('ss-sessions').querySelector('tbody')
+    const errRow = (msg) => '<tr><td colspan="5" class="err">' + msg + '</td></tr>'
+    if (sessions.failed) {
+      stbody.innerHTML = errRow('读不到会话列表：' + esc(sessions.error))
+    } else if (sessions.error) {
+      stbody.innerHTML = errRow(esc(sessions.error))
+    } else if (!(sessions.sessions || []).length) {
+      stbody.innerHTML =
+        '<tr><td colspan="5" class="dim">还没有会话。在飞书里 @ 它并说一句话，第一个会话就会出现。</td></tr>'
+    } else {
+      const botBadge = ' <span class="badge gray"><span class="dot gray"></span>机器人</span>'
+      stbody.innerHTML = (sessions.sessions || []).map((s) => {
+        const isBot = /^飞书 · /.test(s.title || '')
+        return '<tr>' +
+          '<td>' + esc(s.title || '（无标题）') + (isBot ? botBadge : '') + '</td>' +
+          '<td class="mono"><span class="clip" title="' + esc(s.id) + '">' + esc(s.id) + '</span></td>' +
+          '<td class="mono"><span class="clip" title="' + esc(s.directory || '') + '">' + esc(short(s.directory, 40)) + '</span></td>' +
+          '<td class="mono">' + esc(s.model || '—') + '</td>' +
+          '<td class="mono dim">' + fmtTime(s.updatedAt) + '</td>' +
+        '</tr>'
+      }).join('') + '<tr><td colspan="5" class="dim">只取最近 100 条，按更新时间倒序。</td></tr>'
+    }
+
+    // 模型列表：失败 / 报错 / 空 / 有数据，都不再说「列表为空」冒充错误态
+    const modelsBox = $('ss-models')
+    if (models.failed) {
+      modelsBox.innerHTML = '<span class="err">读不到模型列表：' + esc(models.error) + '</span>'
+    } else if (models.error) {
+      modelsBox.innerHTML = '<span class="err">' + esc(models.error) + '</span>'
+    } else if (models.applicable) {
+      const list = models.models || []
+      $('ss-models-count').textContent = String(list.length)
+      modelsBox.textContent = list.length ? list.join('\n') : 'serve 里还没有可用模型。'
+    } else {
+      $('ss-models-count').textContent = '—'
+      modelsBox.innerHTML =
+        '<span class="dim">pi 后端没有模型列表接口。会话的真实模型写在助手消息里，见配置目录下 pi-sessions/*.jsonl。</span>'
+    }
   } catch (err) {
-    $('ss-backend').innerHTML = `<dt class="err">错误</dt><dd class="err">${esc(err.message)}</dd>`
+    // 一次失败要覆盖全页：只改一个容器会让其余区块留着上个实例的数据
+    if (reqId !== state.ssReqId) return
+    $('ss-status').innerHTML = '<span class="row"><span class="dot red"></span><span class="err">刷新失败：' + esc(err.message) + '</span></span>'
+    for (const id of ['ss-backend', 'ss-summary']) $(id).innerHTML = ''
+    for (const id of ['ss-inflight', 'ss-chats', 'ss-sessions']) {
+      $(id).querySelector('tbody').innerHTML = ''
+    }
+    $('ss-models').textContent = ''
   }
 }
 
@@ -1099,7 +1290,7 @@ async function loadLogsTab() {
 async function pollLog() {
   if (!state.log.name) return
   try {
-    const json = await api(`/api/instances/${encodeURIComponent(state.log.name)}/logs?file=${state.log.file}&since=${state.log.since}`)
+    const json = await api('/api/instances/' + encodeURIComponent(state.log.name) + '/logs?file=' + state.log.file + '&since=' + state.log.since)
     if (json.error) { $('lg-pre').textContent = json.error; return }
     if (json.chunk) {
       $('lg-pre').textContent += json.chunk
@@ -1131,19 +1322,67 @@ function stopFollow() {
   if (state.log.timer) { clearInterval(state.log.timer); state.log.timer = null }
 }
 
+/**
+ * 体检。三处修正：
+ * 1. 服务端返回的退出码原来被丢弃，页面平铺十几行检查项，回答不了「体检过了吗」。
+ *    现在先出结论徽章（全部通过 / N 项警告 / N 项未通过），再给明细；
+ * 2. 结果没有归属标注，切换实例后旧结果挂错页面。现在带「实例 X · 完成于 HH:MM:SS」，
+ *    切实例即清；
+ * 3. 检查项原来用英文 OK/WARN/FAIL 的 .tag，与全站「圆点加文字标签」不统一，改 badge 中文。
+ *    解析被丢弃的建议行与原始输出，放「查看原始输出」折叠区。
+ */
 async function runDoctor() {
   const name = $('lg-instance').value
+  if (!name) {
+    $('lg-doctor-summary').innerHTML = '<span class="err">没有实例，先去总览新建。</span>'
+    return
+  }
+  const btn = $('lg-doctor')
+  btn.disabled = true
+  btn.textContent = '体检中…'
   $('lg-doctor-card').classList.remove('hidden')
-  $('lg-doctor-body').textContent = '体检中（可能要用几十秒）…'
+  $('lg-doctor-summary').innerHTML =
+    '<span class="row"><span class="dot amber"></span><span class="dim">正在体检，可能要用几十秒…</span></span>'
+  $('lg-doctor-body').textContent = ''
+  $('lg-doctor-raw').textContent = ''
   try {
-    const json = await api(`/api/instances/${encodeURIComponent(name)}/doctor`)
-    const label = { ok: 'OK', warn: 'WARN', bad: 'FAIL' }
-    const html = json.sections.map((sec) => `
-      <h3>${esc(sec.name)}</h3>
-      ${sec.checks.map((c) => `<div class="check ${c.level}"><span class="tag">${label[c.level] || c.level}</span><span>${esc(c.text)}</span></div>`).join('') || '<div class="dim">（无检查项）</div>'}`).join('')
-    $('lg-doctor-body').innerHTML = html || '<div class="dim">没有解析到检查项</div>'
+    const json = await api('/api/instances/' + encodeURIComponent(name) + '/doctor')
+    const stamp = new Date().toLocaleTimeString('zh-CN', { hour12: false })
+    const sections = json.sections || []
+    let warn = 0
+    let bad = 0
+    for (const sec of sections) for (const c of sec.checks || []) {
+      if (c.level === 'warn') warn++
+      else if (c.level === 'bad') bad++
+    }
+    const sum = $('lg-doctor-summary')
+    if (bad) {
+      sum.innerHTML = '<span class="row"><span class="badge red"><span class="dot red"></span>' + bad + ' 项未通过</span>' +
+        (warn ? '<span class="badge amber"><span class="dot amber"></span>' + warn + ' 项警告</span>' : '') +
+        '<span class="dim">实例 ' + esc(name) + ' · 完成于 ' + esc(stamp) + '</span></span>'
+    } else if (warn) {
+      sum.innerHTML = '<span class="row"><span class="badge amber"><span class="dot amber"></span>' + warn + ' 项警告</span>' +
+        '<span class="dim">实例 ' + esc(name) + ' · 完成于 ' + esc(stamp) + '</span></span>'
+    } else {
+      sum.innerHTML = '<span class="row"><span class="badge green"><span class="dot green"></span>全部通过</span>' +
+        '<span class="dim">实例 ' + esc(name) + ' · 完成于 ' + esc(stamp) + '</span></span>'
+    }
+    // 明细：有 warn/bad 的节默认展开，全过的折叠
+    $('lg-doctor-body').innerHTML = sections.map((sec) => {
+      const hasIssue = (sec.checks || []).some((c) => c.level === 'warn' || c.level === 'bad')
+      const items = (sec.checks || []).map((c) => {
+        const cls = c.level === 'bad' ? 'red' : c.level === 'warn' ? 'amber' : 'green'
+        const label = c.level === 'bad' ? '未通过' : c.level === 'warn' ? '警告' : '通过'
+        return '<div class="row" style="padding:3px 0"><span class="badge ' + cls + '"><span class="dot ' + cls + '"></span>' + label + '</span><span>' + esc(c.text) + '</span></div>'
+      }).join('') || '<div class="dim">（无检查项）</div>'
+      return '<details open=' + (hasIssue ? 'open' : '') + ' style="margin:8px 0"><summary>' + esc(sec.name) + '</summary>' + items + '</details>'
+    }).join('') || '<div class="dim">没有解析到检查项</div>'
+    $('lg-doctor-raw').textContent = json.raw || '（无原始输出）'
   } catch (err) {
-    $('lg-doctor-body').innerHTML = `<span class="err">${esc(err.message)}</span>`
+    $('lg-doctor-summary').innerHTML = '<span class="err">体检失败: ' + esc(err.message) + '</span>'
+  } finally {
+    btn.disabled = false
+    btn.textContent = '运行体检'
   }
 }
 
@@ -1207,16 +1446,19 @@ async function submitCreate() {
       body: JSON.stringify(body),
     })
     if (!json.ok) {
-      $('n-msg').innerHTML = `<span class="err">${esc(json.error || '创建失败')}</span>` +
-        (json.output ? `<pre class="out" style="margin-top:8px">${esc(json.output)}</pre>` : '')
+      $('n-msg').innerHTML = '<span class="err">' + esc(json.error || '创建失败') + '</span>' +
+        (json.output ? '<pre class="out" style="margin-top:8px">' + esc(json.output) + '</pre>' : '')
+      setOvMsg('实例创建失败，看下方输出')
       return
     }
     $('ov-action-out').textContent = json.output || '（无输出）'
     $('ov-action-card').classList.remove('hidden')
     closeCreateModal()
+    setOvMsg('实例已创建。' + (json.name ? '' : ''))
     await loadOverview()
   } catch (err) {
-    $('n-msg').innerHTML = `<span class="err">${esc(err.message)}</span>`
+    $('n-msg').innerHTML = '<span class="err">' + esc(err.message) + '</span>'
+    setOvMsg('创建失败: ' + err.message, true)
   } finally {
     $('n-submit').disabled = false
   }
@@ -1252,7 +1494,7 @@ $('create-modal').addEventListener('click', (e) => { if (e.target.id === 'create
 setInterval(() => { if (state.tab === 'overview') loadOverview() }, 10_000)
 setInterval(() => { if (state.tab === 'sessions') loadSessionsTab() }, 15_000)
 
-loadInstances().then(loadOverview)
+loadOverview()
 </script>
 </body>
 </html>

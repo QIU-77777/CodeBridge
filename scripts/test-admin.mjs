@@ -537,6 +537,21 @@ try {
   ok(indexHtml.includes('id="fs-allow-add-name"'), '白名单添加行有名字输入框')
   ok(indexHtml.includes('id="fs-allow-btn"'), '主表有添加入口')
   ok(indexHtml.includes('id="fs-add-listen"'), '加入时可选择是否放行它唤醒')
+  // 四页重构后的新结构（总览摘要/状态行、会话页错误分支、日志页体检结论）
+  ok(indexHtml.includes('id="ov-summary"'), '总览页有健康摘要行')
+  ok(indexHtml.includes('id="ov-msg"'), '总览页写操作有归一状态行')
+  ok(/overviewHealth/.test(indexHtml), '总览页健康判定抽成了可复用函数')
+  ok(/renderSummary/.test(indexHtml), '总览页有摘要渲染')
+  ok(indexHtml.includes('id="ss-status"'), '会话页有状态行（数据时间/失败原因）')
+  ok(indexHtml.includes('id="ss-chats"'), '会话页有飞书绑定表')
+  ok(/读不到会话列表/.test(indexHtml), '会话表区分「读不到」与「没有会话」')
+  ok(/无法判断有没有卡住的卡片/.test(indexHtml), 'inflight 读取失败不再伪装成空态')
+  ok(/超过看门狗阈值/.test(indexHtml), '进行中卡片标注是否超过看门狗阈值')
+  ok(indexHtml.includes('id="lg-doctor-summary"'), '体检有结论行')
+  ok(/全部通过/.test(indexHtml), '体检结论用中文徽章（全部通过/N 项警告/N 项未通过）')
+  ok(indexHtml.includes('id="lg-doctor-raw"'), '体检保留原始输出入口')
+  ok(!/lg-instance[^>]*style/.test(indexHtml) || indexHtml.indexOf('id="lg-instance"') > indexHtml.indexOf('id="lg-doctor-card"'), '实例选择器移到体检卡（日志是机器级共享）')
+  ok(/所有实例共用同一份日志/.test(indexHtml), '日志页说明所有实例共用日志')
   // opencode 专属组的内容到「工作目录与模型」小节为止，这一片里不该有工作目录字段
   const nOcGroup = indexHtml.slice(indexHtml.indexOf('<div id="n-oc-group">'), indexHtml.indexOf('<h3>工作目录与模型</h3>'))
   ok(
