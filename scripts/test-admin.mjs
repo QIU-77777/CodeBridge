@@ -437,12 +437,27 @@ try {
     st.markContactKind('ou_lilp', 'user')
     ok(st.data.contacts['ou_lilp'].kind === 'user', '类型可被后续消息更正')
 
-    // 时间戳：首次见到不翻新，最近见到翻新
+    // 时间戳：只记首次见到，不记最近见到（admin 通讯录只看「什么时候认识的」）
     const firstSeen = st.data.contacts['ou_lilp'].firstSeen
     await new Promise((r) => setTimeout(r, 5))
     st.learnContact('ou_lilp', 'Lil_P')
     ok(st.data.contacts['ou_lilp'].firstSeen === firstSeen, '重复见到不翻新首次时间')
-    ok(st.data.contacts['ou_lilp'].lastSeen > firstSeen, '重复见到翻新最近时间')
+    ok(!('lastSeen' in st.data.contacts['ou_lilp']), '不再记录最近见到时间')
+
+    // 自己不入册：桥接解析出自身 open_id 时清掉存量里的「自己」
+    st.dropContact('ou_lilp')
+    ok(!st.data.contacts['ou_lilp'], 'dropContact 把自己清出通讯录')
+    ok(st.getName('ou_lilp') === '', '清掉后名字查不到')
+    st.dropContact('ou_not_there')
+    ok(true, 'dropContact 对不存在的 id 安全返回')
+
+    // 重新入册，供后面的闸门断言使用
+    st.learnContact('ou_lilp', 'Lil_P')
+
+    // 通讯录全量下发（admin 面板数据源）不带 lastSeen
+    const list = st.contactList()
+    ok(list.every((c) => !('lastSeen' in c)), 'contactList 不下发 lastSeen')
+    ok(list[0]?.openId && list[0]?.firstSeen, 'contactList 带 openId 与 firstSeen')
 
     // 旧版平铺 names 迁移
     const legacy = join(dir, 'legacy.json')
@@ -471,7 +486,11 @@ try {
     const listenOnly = mkBridge({ allowlist: ['ou_human'], listen: [] })
     ok(listenOnly.isAllowed('ou_human') && !listenOnly.isAllowed('ou_lilp'), '只配 allowlist 时 listen 不放行')
     // 通讯录里「认识」不等于「许可」：入册了但没进 listen 的，闸门照样挡
-    ok(st.data.contacts['ou_lilp'] && !both.isAllowed('ou_not_listened'), '认识不等于放行')
+    st.learnContact('ou_acquaintance', '只认识')
+    ok(
+      st.data.contacts['ou_acquaintance'] && !both.isAllowed('ou_acquaintance'),
+      '通讯录里认识但没放行的个体，闸门照样挡',
+    )
 
     rmSync(dir, { recursive: true, force: true })
   }

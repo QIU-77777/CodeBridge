@@ -42,6 +42,8 @@ export class FeishuTransport {
     this.onSeenNames = onSeenNames
     /** 补充通讯录条目的「人是机器人」：只说它见过面的类型，不建册 */
     this.onContactKind = onContactKind
+    /** 解析出自身 open_id 时通知上层：用于把存量数据里的「自己」清出通讯录 */
+    this.onSelf = null
     /** 后端类型（opencode / pi）。pi 后端的桥接会把本实例凭证注入子进程，
      *  身份声明据此给不同文案 */
     this.backendType = backendType
@@ -77,22 +79,25 @@ export class FeishuTransport {
     if (this.self) return this.self
     if (this.cfg.botOpenId) {
       this.self = { open_id: this.cfg.botOpenId, name: this.cfg.botName || '我' }
-      return this.self
+    } else {
+      try {
+        const res = await this.client.request({ method: 'GET', url: '/open-apis/bot/v3/info' })
+        const bot = res?.bot || res?.data?.bot || {}
+        if (!bot.open_id) throw new Error('返回里没有 open_id')
+        this.self = { open_id: bot.open_id, name: bot.app_name || '我' }
+        this.log.info(`机器人身份: ${this.self.name} (${this.self.open_id})`)
+      } catch (err) {
+        // 拿不到就退化成「@ 了谁都算」，多机器人同群时会抢答，必须让用户看见
+        this.self = { open_id: null, name: this.cfg.botName || '我' }
+        this.log.warn(
+          `拿不到机器人自身 open_id（${err.message}），已退化为「@ 到任何人都会响应」。` +
+            '多机器人同群请把 feishu.botOpenId 写进配置，否则会互相抢答。',
+        )
+      }
     }
-    try {
-      const res = await this.client.request({ method: 'GET', url: '/open-apis/bot/v3/info' })
-      const bot = res?.bot || res?.data?.bot || {}
-      if (!bot.open_id) throw new Error('返回里没有 open_id')
-      this.self = { open_id: bot.open_id, name: bot.app_name || '我' }
-      this.log.info(`机器人身份: ${this.self.name} (${this.self.open_id})`)
-    } catch (err) {
-      // 拿不到就退化成「@ 了谁都算」，多机器人同群时会抢答，必须让用户看见
-      this.self = { open_id: null, name: this.cfg.botName || '我' }
-      this.log.warn(
-        `拿不到机器人自身 open_id（${err.message}），已退化为「@ 到任何人都会响应」。` +
-          '多机器人同群请把 feishu.botOpenId 写进配置，否则会互相抢答。',
-      )
-    }
+    // 身份一到手就清掉通讯录里的「自己」：机器人被 @ 时自己也在 mentions 里，
+    // 老版本没排除，存量数据留着这一条。收集端已修，这里清存量
+    if (this.self.open_id) this.onSelf?.(this.self.open_id)
     return this.self
   }
 
@@ -268,17 +273,20 @@ export class FeishuTransport {
 
     // 顺手把这条消息里被 @ 的人记下来。飞书没有「open_id 反查名字」的接口
     // （contact 对机器人 open_id 直接 41050），mentions 里的 name 是唯一免费来源。
+    // 排除自己：机器人被 @ 时自己也在 mentions 里，入册了通讯录就会把自己
+    // 列成「一个需要放行的同伴」，没有意义
     if (this.onSeenNames && mentions.length) {
       this.onSeenNames(
         mentions
           .map((x) => ({ openId: x?.id?.open_id, name: x?.name }))
-          .filter((x) => x.openId && x.name),
+          .filter((x) => x.openId && x.name && x.id?.open_id !== self.open_id),
       )
     }
 
     // 发送者的类型（人 / 机器人）补充进通讯录。只更新已入册的条目、不建册——
     // 入册只认被 @（见 store.learnContact）。机器人被 @ 之后通常就会在群里说话，
-    // 说过一次话它的 kind 就准了，admin 的通讯录图标才有东西可显示
+    // 说过一次话它的 kind 就准了，admin 的通讯录图标才有东西可显示。
+    // 自己不入册，所以这里也不用排除
     this.onContactKind?.(userId, isBot ? 'app' : 'user')
 
     /**

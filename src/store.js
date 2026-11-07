@@ -46,9 +46,11 @@ export class Store {
     for (const [openId, name] of Object.entries(flat)) {
       if (typeof name !== 'string' || !name) continue
       if (c[openId]) continue
-      c[openId] = { name, kind: '', source: 'mention', firstSeen: now, lastSeen: now }
+      c[openId] = { name, kind: '', source: 'mention', firstSeen: now }
     }
     delete this.data.names
+    // 更早的实验结构可能带 lastSeen，统一清掉，不留半套字段
+    for (const v of Object.values(c)) delete v.lastSeen
     this.scheduleSave()
   }
 
@@ -96,22 +98,22 @@ export class Store {
     return this.data.contacts?.[openId]?.name || ''
   }
 
-  /** 被 @ 到 → 入册（或刷新名字）。没有名字的 mention 不入册 */
+  /**
+   * 被 @ 到 → 入册（或刷新名字）。没有名字的 mention 不入册。
+   *
+   * 只记 firstSeen：admin 通讯录要看的是「什么时候认识的」，最近见到时间
+   * 对「认识 ≠ 放行」这个模型没有决策价值，反而让表格多一列噪声
+   */
   learnContact(openId, name) {
     if (!openId || !name) return
     const c = this.data.contacts || (this.data.contacts = {})
     const prev = c[openId]
-    if (prev && prev.name === name) {
-      prev.lastSeen = Date.now()
-      this.scheduleSave()
-      return
-    }
+    if (prev && prev.name === name && !prev.lastSeen) return
     c[openId] = {
       name,
       kind: prev?.kind || '',
       source: 'mention',
       firstSeen: prev?.firstSeen || Date.now(),
-      lastSeen: Date.now(),
     }
     this.scheduleSave()
   }
@@ -129,6 +131,19 @@ export class Store {
     this.scheduleSave()
   }
 
+  /**
+   * 把自己的 open_id 从通讯录删掉。
+   *
+   * 机器人被 @ 时自己也在 mentions 里，早期版本没排除，存量数据里留着「自己」
+   * 这一条——admin 通讯录会把它列成一个需要放行的同伴，没有意义。收集端已修
+   * （feishu.js 排除自己），这里负责清存量：桥接每次解析出自身身份时调一次。
+   */
+  dropContact(openId) {
+    if (!openId || !this.data.contacts?.[openId]) return
+    delete this.data.contacts[openId]
+    this.scheduleSave()
+  }
+
   /** 通讯录全量，admin 通讯录面板用 */
   contactList() {
     return Object.entries(this.data.contacts || {}).map(([openId, v]) => ({
@@ -137,7 +152,6 @@ export class Store {
       kind: v.kind || '',
       source: v.source || '',
       firstSeen: v.firstSeen || null,
-      lastSeen: v.lastSeen || null,
     }))
   }
 

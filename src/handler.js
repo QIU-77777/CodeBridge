@@ -417,6 +417,11 @@ export class Bridge {
     this.store.markContactKind?.(openId, kind)
   }
 
+  /** 桥接解析出自身 open_id：把自己从通讯录清掉（见 store.dropContact） */
+  forgetSelf(openId) {
+    this.store.dropContact?.(openId)
+  }
+
   dedupe(messageId) {
     if (!messageId) return false
     if (this.seenMessages.has(messageId)) return true

@@ -147,6 +147,13 @@
   .btn.primary:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
   .btn.danger { color: var(--red); }
   .btn.danger:hover { background: var(--red-soft); border-color: #f3c6c2; }
+  /* listen 开关：通讯录每个个体一个，比按钮更直观地表达开 / 关 */
+  .switch { position: relative; display: inline-block; width: 40px; height: 22px; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .switch .slider { position: absolute; inset: 0; border-radius: 22px; background: var(--line, #d8dce3); cursor: pointer; transition: background .15s; }
+  .switch .slider::before { content: ''; position: absolute; width: 16px; height: 16px; left: 3px; top: 3px; border-radius: 50%; background: #fff; transition: transform .15s; box-shadow: 0 1px 2px rgba(0,0,0,.25); }
+  .switch input:checked + .slider { background: var(--accent); }
+  .switch input:checked + .slider::before { transform: translateX(18px); }
   .btn:disabled { opacity: 0.5; cursor: default; }
   select, input[type=text], input[type=password], input[type=number] {
     font: inherit; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px;
@@ -387,10 +394,13 @@
           <h2>通讯录（contacts）</h2>
           <p class="lede">
             <b>认识层</b>：任何人在群里 @ 过一个机器人，所有机器人的通讯录都会自动记下它（open_id 按应用隔离，所以每个实例看到的值不同）。
-            这里只回答「它是谁、怎么地址它」，<b>不等于能唤醒我</b>——放行看下面的 listen 开关。
+            这里只回答「它是谁、怎么地址它」，<b>不等于能唤醒我</b>——放行看右边的 listen 开关。
+          </p>
+          <p class="lede">类型图标：<span title="机器人">\u{1f916}</span> 机器人（它在本群说过话）　<span title="人类">\u{1f464}</span> 人类　<span title="未知">\u2753</span> 未知（被 @ 过但还没开口，等它说过一次话才能判定）</p>
+          <p class="lede" style="display:none">
             飞书没有按应用查机器人 open_id 的接口（群成员列表只有人类），所以通讯录是唯一可靠的地址来源。
           </p>
-          <table id="fs-contacts"><thead><tr><th>类型</th><th>名字</th><th>open_id</th><th>首次 / 最近见到</th><th>listen</th></tr></thead><tbody></tbody></table>
+          <table id="fs-contacts"><thead><tr><th>类型</th><th>名字</th><th>open_id</th><th>首次见到</th><th>listen</th></tr></thead><tbody></tbody></table>
         </div>
       </section>
       <section id="tab-sessions" class="hidden">
@@ -829,21 +839,21 @@ async function loadFeishuTab() {
 function loadContacts(contacts, listen, cfgNames) {
   const on = new Set(listen || [])
   const rows = Object.entries(contacts || {})
-    .sort((a, b) => (b[1]?.lastSeen || 0) - (a[1]?.lastSeen || 0))
+    .sort((a, b) => (b[1]?.firstSeen || 0) - (a[1]?.firstSeen || 0))
     .map(([id, v]) => {
       const icon = v?.kind === 'app' ? '\u{1f916}' : v?.kind === 'user' ? '\u{1f464}' : '\u2753'
       const kindLabel = v?.kind === 'app' ? '机器人' : v?.kind === 'user' ? '人类' : '未知'
       const name = cfgNames?.[id] || v?.name || ''
       const first = v?.firstSeen ? new Date(v.firstSeen).toLocaleString('zh-CN', { hour12: false }) : '\u2014'
-      const last = v?.lastSeen ? new Date(v.lastSeen).toLocaleString('zh-CN', { hour12: false }) : '\u2014'
       const listening = on.has(id)
       return '<tr>' +
         '<td title="' + esc(kindLabel) + '">' + icon + '</td>' +
         '<td>' + (esc(name) || '<span class="dim">（无名字）</span>') + '</td>' +
         '<td class="mono">' + esc(id) + '</td>' +
-        '<td class="dim">' + esc(first) + '<br>' + esc(last) + '</td>' +
-        '<td><button class="btn ' + (listening ? '' : 'danger') + '" onclick="toggleListen(\'' + esc(id) + '\', ' + listening + ')">' +
-        (listening ? '已放行' : '未放行') + '</button></td>' +
+        '<td class="dim">' + esc(first) + '</td>' +
+        '<td><label class="switch" title="' + (listening ? '已放行：它的 @ 能唤醒我' : '未放行：它的 @ 到不了我') + '">' +
+        '<input type="checkbox" ' + (listening ? 'checked' : '') + ' onchange="toggleListen(\'' + esc(id) + '\', ' + listening + ')">' +
+        '<span class="slider"></span></label></td>' +
       '</tr>'
     })
     .join('')
