@@ -566,6 +566,14 @@ if (process.argv.includes('--live')) {
     seen.some((x) => x.openId === 'ou_me' && x.name === 'LiLO'),
     '把消息里被 @ 的 (open_id, 名字) 交给上层攒起来',
   )
+  // 协作机制说明：只在群里拼，且必须把三条关键规则说清（真实事故：Lil_O 拿着
+  // Lil_P 的 open_id 却在卡片上回复，两个 agent 完全没对话上）
+  ok(/\[协作 ·/.test(o1), '群消息带协作机制说明', o1)
+  ok(/<at user_id="对方 open_id"><\/at>/.test(o1), '说明里给了真 mention 的写法', o1)
+  ok(/@名字 只是字面字符，唤不醒任何人/.test(o1), '说明里点明 @名字 不产生提醒', o1)
+  ok(/卡片不唤醒任何人/.test(o1), '说明里点明终态卡片不唤醒别人', o1)
+  ok(/回复话题内已有的 om_ 消息/.test(o1), '说明里给了话题内发言的落点规则', o1)
+  ok(/open_id 按应用隔离/.test(o1), '说明里点明 open_id 按应用隔离', o1)
 
   await t.handleImMessage({
     message: {
@@ -594,6 +602,7 @@ if (process.argv.includes('--live')) {
     sender: { sender_id: { open_id: 'ou_user' }, sender_type: 'user' },
   })
   ok(/私聊/.test(got[2]?.origin || ''), '私聊标注为「私聊」')
+  ok(!/\[协作 ·/.test(got[2]?.origin || ''), '私聊不带协作机制说明（群里没有其他 agent）')
 
   const cached = await t.resolveChatName('oc_g')
   ok(cached === '桥接话题探针' && t.chatNames.size === 1, '群名只取一次，后续走缓存')
@@ -606,7 +615,7 @@ if (process.argv.includes('--live')) {
   const b = new Bridge({
     oc: {
       getSession: async () => ({ id: 'ses_x', location: { directory: '/tmp' } }),
-      prompt: async (id, text) => {
+      prompt: async (_id, text) => {
         sentText = text
       },
     },
