@@ -12,6 +12,7 @@
 import { mkdirSync, writeFileSync, chmodSync, existsSync, readFileSync } from 'node:fs'
 import { join, resolve, isAbsolute } from 'node:path'
 import { homedir } from 'node:os'
+import { randomBytes } from 'node:crypto'
 import { TEMPLATE_PATH } from '../src/config.js'
 
 const CONFIG_PREFIX = 'opencode-feishu-bridge'
@@ -19,6 +20,15 @@ const NAME_RE = /^[a-z0-9][a-z0-9-]{0,30}$/i
 const APP_ID_RE = /^cli_[A-Za-z0-9]+$/
 /** opencode serve 的默认起始端口。多实例各占一个，见 nextFreeUrl */
 const SERVE_PORT_BASE = 19876
+
+/**
+ * opencode serve 密码：用户没填时生成一个。48 位十六进制，随机源是
+ * crypto.randomBytes。serve 与桥接从同一份 config.json 读它，本地回环服务，
+ * 不需要用户记诵，也就没有「填错」和「留空连错 serve」两类失败
+ */
+function generateServePassword() {
+  return randomBytes(24).toString('hex')
+}
 
 /** 实例名对应的默认配置目录：~/.config/opencode-feishu-bridge-<实例名> */
 export function defaultDirForName(name) {
@@ -109,15 +119,14 @@ export function planNewInstance(body, existing = [], ownPort = null) {
   const botOpenId = String(feishu.botOpenId || '').trim()
 
   const oc = body.opencode || {}
-  const ocPassword = String(oc.password || '').trim()
+  let ocPassword = String(oc.password || '').trim()
   let ocUrl = String(oc.url || '').trim()
   if (type === 'opencode') {
     if (ocUrl && !/^https?:\/\//.test(ocUrl)) errors.push('opencode.url 应为 http(s) 地址')
-    // 新实例的 serve 用这个密码起，桥接也用它连。静默留空时，一旦连到
-    // 别人需要密码的 serve 就报 401 退出，launchd 反复重启，实例永远起不来
-    if (!ocPassword) {
-      errors.push('opencode 后端的 serve 密码必填（新建实例的 serve 用它启动，桥接也用它连）')
-    }
+    // serve 密码留空时自动生成：新实例的 serve 用它启动、桥接用它连，两边同源
+    // 就不存在用户填错；而空密码才会连到别人需要密码的 serve 报 401、launchd
+    // 反复重启，自动生成把这类失败连根拔掉，表单也只留飞书凭证要填
+    if (!ocPassword) ocPassword = generateServePassword()
     if (ocUrl) {
       const port = /:(\d+)/.exec(ocUrl)?.[1]
       const clash = port ? instanceOnPort(existing, port) : null

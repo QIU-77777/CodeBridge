@@ -17,6 +17,7 @@ import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { existsSync, readFileSync, writeFileSync, renameSync, copyFileSync, chmodSync, unlinkSync, rmSync } from 'node:fs'
 import { collectAll, collectInstance, discoverInstances } from './instances.js'
+import { scanBackends } from './backends.js'
 import { startInstance, stopInstance, restartInstance, doctor, readLog, installInstance, rollbackService } from './control.js'
 import { planNewInstance, writeNewInstance, nextFreeUrl } from './create.js'
 import {
@@ -378,7 +379,16 @@ async function createInstanceApi(req, res) {
 
 async function handleApi(req, res, url) {
   const parts = url.pathname.split('/').filter(Boolean) // ['api','instances',name,...]
-  if (parts[0] !== 'api' || parts[1] !== 'instances') return sendError(res, 404, '未知接口')
+  if (parts[0] !== 'api') return sendError(res, 404, '未知接口')
+
+  // 本地 coding agent 扫描：配置页与新建弹窗的后端选项来源。
+  // 不绑定实例，任何页面打开时都能问一次
+  if (parts[1] === 'backends') {
+    if (req.method !== 'GET') return sendError(res, 405, '只支持 GET')
+    return sendJson(res, 200, { backends: await scanBackends() })
+  }
+
+  if (parts[1] !== 'instances') return sendError(res, 404, '未知接口')
 
   // 集合接口：列表（GET）与新建（POST）
   if (!parts[2]) {

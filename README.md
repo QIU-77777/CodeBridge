@@ -465,16 +465,15 @@ npm run admin -- --port 8080 # 换端口
 
 ### 第 2 步：改配置
 
-点左侧「配置」，在页面左上角选实例。表单分四段：
+点左侧「配置」，在页面左上角选实例。表单按配置顺序分两列加一段：
 
-- **飞书应用**：appId、appSecret、domain、botOpenId，以及群聊是否必须 @ 本机器人才响应。
-- **opencode 连接**：serve 地址、serve 密码、默认工作目录、默认模型。serve 两项仅 opencode 后端使用；**默认工作目录与默认模型两个后端都用**——pi 每次执行都起在默认工作目录里，opencode 的 `/new` 不带目录时也用这个。
+- **coding agent**（左列）：后端选择框的选项来自打开页面时对本机的自动扫描——opencode 与 pi 各带「本机版本」或「未安装」标记，下方一行说明复用的本地可执行文件、版本与来源（桌面版自带 CLI、PATH、常见用户 bin 目录）。选哪个后端显示哪组字段：opencode 显示 serve 地址与 serve 密码；pi 显示 pi.bin、pi.model、pi.timeoutMs、pi.extraArgs，pi.bin 预填扫描到的本机路径。默认工作目录与默认模型两个后端共用，留空即用 coding agent 自己的本地默认值（pi 每次执行起在默认工作目录里，opencode 的 `/new` 不带目录时也用这个）。
+- **飞书应用**（右列）：appId、appSecret、domain、botOpenId，以及群聊是否必须 @ 本机器人才响应。
 - **behavior**：卡片刷新间隔、正文上限、空闲超时、并发上限，思考过程与工具链路是否展示。
-- **backend**：后端类型与 pi 的各项参数。
 
 两个密钥字段（appSecret 与 serve 密码）只显示「已填写」，输入框留空表示保持原值，不会把密钥冲掉。保存前自动备份成 `config.json.bak`，用临时文件加重命名落盘。配置在进程启动时读取，改完必须重启实例才生效。
 
-![配置页：四段表单与掩码密钥字段](docs/images/admin/03-new-sidebar-config.png)
+![配置页：按后端显隐的表单与本地扫描结果](docs/images/admin/03-new-sidebar-config.png)
 
 ### 第 3 步：管飞书应用
 
@@ -503,12 +502,13 @@ npm run admin -- --port 8080 # 换端口
 
 ### 新建实例
 
-再要一个机器人身份（例如把 pi 也接进群协作），不用敲命令行：总览页点「新建实例」，填四组信息后点「创建并启动」。
+再要一个机器人身份（例如把 pi 也接进群协作），不用敲命令行：总览页点「新建实例」，按三步填完点「创建并启动」。
 
-- **实例**：实例名（小写字母、数字、连字符）与配置目录（留空用默认 `~/.config/opencode-feishu-bridge-实例名`），后端类型选 opencode 或 pi。
-- **飞书应用**：appId、appSecret、domain、botOpenId（选填）。飞书应用要先在开放平台建好，权限与事件订阅见「创建飞书应用」一节，admin 只收凭证。
-- **后端连接**：opencode 后端的 serve 密码必填（新建实例的 serve 用它启动，桥接也用它连，留空会连到别人需要密码的 serve 报 401）。serve 地址留空即可，admin 自动分配：配置里已被占用的端口、admin 自身的端口、探测发现有东西在跑的端口都会跳过；显式指定的端口被占用会直接拒绝并说明原因。pi 后端不连 serve，填 bin、model、timeoutMs；`backend.pi.bin` 要在 launchd 的 PATH 里找得到（`install-agent.sh` 会把系统目录和 npm 全局 bin、`~/.local/bin`、`~/.bun/bin` 写进 plist 的 PATH），装在别处就填绝对路径。
-- **工作目录与模型**：默认工作目录与默认模型两个后端都填，pi 后端也显示这一组。留空工作目录用家主目录——pi 实例建完才发现工作目录是家目录，就是留空的后果，建议建实例时直接填。
+1. **实例**：实例名（小写字母、数字、连字符）与配置目录（留空用默认 `~/.config/opencode-feishu-bridge-实例名`）。
+2. **coding agent**：打开弹窗时重新扫描本机，下拉里每个后端带「本机版本」或「未安装」标记，默认选中本机可用的第一个；下方显示复用的本地可执行文件与版本。选 opencode 显示 serve 地址与 serve 密码；选 pi 显示 pi.bin、pi.model、pi.timeoutMs，pi.bin 预填扫描到的本机路径。
+3. **飞书应用**：appId、appSecret、domain、botOpenId（选填）。飞书应用要先在开放平台建好，权限与事件订阅见「创建飞书应用」一节，admin 只收凭证。
+
+其余默认复用本地配置：默认工作目录与默认模型两个后端共用，留空工作目录用家主目录——pi 实例建完才发现工作目录是家目录，就是留空的后果，建议建实例时直接填；默认模型留空用 coding agent 自己的本地默认模型。opencode 后端的 serve 地址留空即可，admin 自动分配：配置里已被占用的端口、admin 自身的端口、探测发现有东西在跑的端口都会跳过；显式指定的端口被占用会直接拒绝并说明原因。serve 密码留空由 admin 自动生成——新建实例的 serve 用它启动、桥接用它连，两边从同一份配置读同一个值，不存在填错，也不会留空连到别人需要密码的 serve 报 401。
 
 admin 按模板生成 `config.json`（权限 600，含 appSecret）、安装 launchd 常驻服务并启动，完成后新实例出现在总览表里，可像其他实例一样起停、看日志。安装失败会自动回滚：摘掉刚装的 launchd 服务、删掉刚生成的配置，不影响其他在跑实例。
 
@@ -519,7 +519,7 @@ admin 按模板生成 `config.json`（权限 600，含 appSecret）、安装 lau
 | 页面 | 能做什么 |
 |---|---|
 | 总览 | 本机所有实例一行一条：运行状态、后端类型、配置目录、pid 与已运行时长、serve 健康、绑定会话数、进行中卡片数；已装 launchd 常驻服务的实例可一键启动、停止、重启 |
-| 配置 | 按实例编辑 `config.json` 的四段（feishu / opencode / behavior / backend）；appSecret 与 serve 密码掩码显示，留空表示保持原值；保存前备份成 `config.json.bak`，临时文件加重命名落盘 |
+| 配置 | 按实例编辑 `config.json`：左列 coding agent（后端选项来自本机自动扫描，按后端显隐字段，默认复用本地配置），右列飞书应用，下面 behavior；appSecret 与 serve 密码掩码显示，留空表示保持原值；保存前备份成 `config.json.bak`，临时文件加重命名落盘 |
 | 飞书应用 | 按实例校验 appId 与 appSecret（打 `bot/v3/info`，回显机器人名与 open_id）；allowlist 按 open_id 逐条增删，加入时可选填名字；`feishu.names` 逐条增、改、删 |
 | 会话与后端 | opencode 后端：serve 健康（`/api/info`）、模型列表（`/api/model`）、会话列表（`/api/session`）；pi 后端：CLI 版本、会话列表（读配置目录的 `pi-sessions/index.json`，详细记录在同目录 JSONL 文件）；`state.json` 只读展示（每个 chat 与话题的绑定、进行中的卡片、攒到的名字） |
 | 日志与体检 | `bridge.log` 与 `serve.log` 近实时跟随（按字节偏移增量拉取，两秒一轮）；一键跑 doctor，输出解析成逐条检查项，失败标红 |
@@ -536,9 +536,11 @@ admin 按模板生成 `config.json`（权限 600，含 appSecret）、安装 lau
 - **实例发现以 launchd plist 为准。** 扫 `~/Library/LaunchAgents/ai.qiguang.ocbridge*.plist`，label 推实例名，plist 环境变量里的 `OCB_CONFIG_DIR` 推配置目录。`install-agent.sh` 的 `--config-dir` 与 `--instance` 相互独立，从目录后缀猜实例名会猜错，plist 是唯一同时可靠的来源。
 - **起停转调既有脚本。** 带上对应实例的 `OCB_INSTANCE` 与 `OCB_CONFIG_DIR` 调 `scripts/up.sh` 与 `down.sh`，launchd 与 pid 文件两条路都走脚本里验证过的逻辑，单实例锁语义不变。
 - **doctor 按实例跑。** 传该实例的 `OCB_CONFIG_DIR`，不传查的是默认实例。
+- **后端选项来自本机扫描，不写死在页面里。** `admin/backends.js` 的 `scanBackends()` 探测本机受支持的 coding agent：opencode 走 `src/which-opencode.js` 的 `resolveOpencode`（桌面版自带 CLI 优先、PATH 兜底），pi 走 `admin/instances.js` 的 `resolveBin`（常见用户 bin 目录）加 PATH 扫描；版本号各起一次 `--version` 拿，5 秒超时。接口 `GET /api/backends` 把可用性、版本、解析路径与来源给页面，配置页与新建弹窗的选项、按后端显隐、「复用本地」说明全都以它为准。
+- **serve 密码留空自动生成。** opencode 后端不填密码时 `create.js` 生成 48 位十六进制写进配置：serve 用它启动、桥接用它连，两边同源；显式填了才用填的值。
 - **两处 bash 兼容性修复。** `install-agent.sh`、`up.sh`、`agent/bridge.sh` 里 `$BACKEND_TYPE` 后紧跟全角标点，macOS 自带 bash 3.2 会把全角字符吞进变量名，`set -u` 直接报未定义——pi 实例的安装、启动、常驻三条路全被挡着；`install-agent.sh` 末尾 `status.sh | head -12` 被 head 掐断产生 SIGPIPE，`pipefail` 会把安装成功的也判失败。两处都已修，新建实例的端到端流程据此跑通。
 
-代码在 `admin/`：`server.js`（HTTP 服务与接口）、`instances.js`（实例发现与状态采集）、`create.js`（新建实例的校验与配置生成）、`control.js`（起停、体检、日志、装服务）、`public/index.html`（单页界面）。测试：`npm run test:admin`。
+代码在 `admin/`：`server.js`（HTTP 服务与接口）、`instances.js`（实例发现与状态采集）、`backends.js`（本地 coding agent 扫描）、`create.js`（新建实例的校验与配置生成）、`control.js`（起停、体检、日志、装服务）、`public/index.html`（单页界面）。测试：`npm run test:admin`。
 
 ### 排障
 
@@ -550,8 +552,8 @@ admin 按模板生成 `config.json`（权限 600，含 appSecret）、安装 lau
 | 改了配置不生效 | 配置在进程启动时读取。在总览页点该实例的「重启」，或跑 `./scripts/up.sh` |
 | 卡片停在「执行中」不动 | 现在不会了：任何运行失败事件都会立刻把「执行中」卡片原地转成红色报错卡片（不新发消息），报错信息带原因；提示「上下文可能过长」时发 `/new` 开新会话续上。飞书 SDK 的请求另有 20 秒超时（`OCB_SDK_TIMEOUT_MS` 可调），看门狗也会收殓终态卡片更新卡死的运行，状态不会永久堆着 |
 | 报错说 The input you provided is invalid | 模型提供商拒了这次请求，多数是会话上下文过长。发 `/new` 开新会话，把上一条的结论带过去接着做 |
-| 新建实例失败 | 看总览页「最近一次操作输出」里的安装日志。常见原因：appId 或 appSecret 不对（开放平台上确认）；serve 端口被占（换一个端口，或留空让 admin 自动分配）；opencode 后端没填 serve 密码（必填） |
-| pi 实例显示「CLI 异常」 | admin 在 PATH 和常见用户 bin 目录（npm 全局 bin、`~/.local/bin`、`~/.bun/bin`）里都找不到 `backend.pi.bin`。装在别处就把绝对路径填进配置；老实例的 plist 若是修复前装的，重跑一次 `./scripts/install-agent.sh --instance <实例名> --config-dir <配置目录>` 把新 PATH 写进去 |
+| 新建实例失败 | 看总览页「最近一次操作输出」里的安装日志。常见原因：appId 或 appSecret 不对（开放平台上确认）；serve 端口被占（换一个端口，或留空让 admin 自动分配） |
+| 后端显示「未安装」 | 扫描没在本机找到该 CLI：opencode 看桌面版 OpenCode.app 自带 CLI 与 PATH，pi 看 PATH 与常见用户 bin 目录（npm 全局 bin、`~/.local/bin`、`~/.bun/bin`）。装在别处就把绝对路径填进 `backend.pi.bin`；老实例的 plist 若是修复前装的，重跑一次 `./scripts/install-agent.sh --instance <实例名> --config-dir <配置目录>` 把新 PATH 写进去 |
 
 ---
 
@@ -591,7 +593,7 @@ admin 按模板生成 `config.json`（权限 600，含 appSecret）、安装 lau
 | `feishu.botOpenId` | 机器人自己的 open_id。留空则启动时自动向飞书取；多机器人同群建议显式填 | `""` |
 | `feishu.names` | `open_id → 显示名`，只影响来源标注里显不显示名字。留空则从消息 @ 提及里自动攒；admin「飞书应用」页可逐条增、改、删 | `{}` |
 | `opencode.url` | serve 地址 | `http://127.0.0.1:19876` |
-| `opencode.password` | 与 `OPENCODE_SERVER_PASSWORD` 一致；serve 没设密码就留空 | `""` |
+| `opencode.password` | serve 密码，与 `OPENCODE_SERVER_PASSWORD` 一致。admin 新建实例时留空会自动生成；serve 没设密码才留空 | `""` |
 | `opencode.defaultDirectory` | `/new` 不带目录时用这个；pi 后端每次执行也起在这个目录。两个后端都用，admin「配置」页可改 | `$HOME` |
 | `opencode.defaultModel` | `providerID/modelID`，**建议必填** | `""` |
 | `behavior.streamIntervalMs` | 卡片刷新间隔，别低于 1200（飞书 patch 有频率限制） | `1800` |
