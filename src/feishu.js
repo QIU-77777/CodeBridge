@@ -28,7 +28,7 @@ function withTimeout(promise, label) {
 }
 
 export class FeishuTransport {
-  constructor(config, { onMessage, onCardAction, nameOf, onSeenNames, logger = console }) {
+  constructor(config, { onMessage, onCardAction, nameOf, onSeenNames, backendType = '', logger = console }) {
     this.cfg = config.feishu
     this.log = logger
     this.onMessage = onMessage
@@ -37,6 +37,9 @@ export class FeishuTransport {
     this.nameOf = nameOf
     /** 把消息 mentions 里的 (open_id, name) 交给上层攒起来 */
     this.onSeenNames = onSeenNames
+    /** 后端类型（opencode / pi）。pi 后端的桥接会把本实例凭证注入子进程，
+     *  身份声明据此给不同文案 */
+    this.backendType = backendType
 
     /** 机器人自己的身份，start() 时取一次并缓存 */
     this.self = null
@@ -287,6 +290,12 @@ export class FeishuTransport {
     const origin =
       `[飞书 · ${where}${scope ? ` · ${scope}` : ''} · ` +
       `发送者 ${sender}（${isBot ? '机器人' : '用户'}） · ${when}]`
+    // 第二行：告诉模型「你是谁」。多机器人同机时，代理用飞书 CLI 发言读的是
+    // 机器级配置，默认应用可能是别的实例的——真实事故里 Lil_P 的代理发出的
+    // 问候以 Lil_O 的应用到达群里。声明身份之外，pi 后端的桥接还会把本实例
+    // 凭证注入子进程环境（src/pi.js childEnv），两句互相印证
+    const identity = this.identityLine(self)
+    const originWithIdentity = identity ? `${origin}\n${identity}` : origin
 
     await this.onMessage({
       chatId: m.chat_id,
@@ -296,11 +305,25 @@ export class FeishuTransport {
       isGroup,
       userId,
       isBot,
-      origin,
+      origin: originWithIdentity,
       text,
       messageId: m.message_id,
       chatType: m.chat_type,
     })
+  }
+
+  /**
+   * 身份声明行：本机器人是谁、飞书应用是哪个、飞书 CLI 的身份从哪来。
+   * 拿不到名字时返回空串（不加行），老行为不变。
+   */
+  identityLine(self) {
+    const who = self?.name || this.cfg.botName || ''
+    if (!who) return ''
+    const app = this.cfg.appId ? `（飞书应用 ${this.cfg.appId}）` : ''
+    if (this.backendType === 'pi') {
+      return `[身份 · 你是 ${who}${app} · 桥接已为本进程注入你的飞书凭证，用 feishu-cli / lark-cli 发言就是以你的身份发出]`
+    }
+    return `[身份 · 你是 ${who}${app} · 本机飞书 CLI 的默认身份以机器配置为准，不一定是你的应用，发言前请核对]`
   }
 
   async handleCardAction(data) {

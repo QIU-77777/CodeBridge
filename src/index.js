@@ -206,6 +206,8 @@ ${created ? '   已为你生成模板，请填入 appId / appSecret。\n' : '   
     onCardAction: (ctx) => bridge.onCardAction(ctx),
     nameOf: (id) => bridge.nameOf(id),
     onSeenNames: (list) => bridge.learnNames(list),
+    // 身份声明按后端给文案：pi 后端的桥接会注入本实例凭证，opencode 不会
+    backendType: caps.type,
   })
   bridge.t = ft
 

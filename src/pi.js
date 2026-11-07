@@ -12,7 +12,7 @@
 
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, readdirSync, unlinkSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, readdirSync, unlinkSync, chmodSync } from 'node:fs'
 import { join } from 'node:path'
 import { CONFIG_DIR } from './config.js'
 
@@ -132,17 +132,22 @@ export class PiBackend {
    * @param {object} opts
    * @param {object} opts.cfg            完整配置
    * @param {string} [opts.sessionDir]  会话目录；默认 <CONFIG_DIR>/pi-sessions
+   * @param {string} [opts.configDir]   实例配置目录（飞书凭证所在处）；默认 CONFIG_DIR。测试传临时目录，避免碰真实配置
    * @param {Function} [opts.spawnImpl] 注入子进程工厂，测试用
    * @param {object} [opts.logger]
    */
-  constructor({ cfg, sessionDir, spawnImpl = spawn, logger = console } = {}) {
+  constructor({ cfg, sessionDir, configDir, spawnImpl = spawn, logger = console } = {}) {
     this.cfg = cfg
     this.log = logger
     this.pi = cfg.backend?.pi || {}
     this.bin = process.env.OCB_PI_BIN || this.pi.bin || 'pi'
     this.timeoutMs = Number(this.pi.timeoutMs) || 10 * 60_000
+    // 最终消息之后静默多久按已完成收尾；0 或负数 = 关闭（恢复只等进程退出）
+    const quiet = Number(this.pi.settleQuietMs)
+    this.settleQuietMs = Number.isFinite(quiet) && quiet >= 0 ? quiet : 60_000
     this.extraArgs = Array.isArray(this.pi.extraArgs) ? this.pi.extraArgs : []
     this.sessionDir = sessionDir || join(CONFIG_DIR, 'pi-sessions')
+    this.configDir = configDir || CONFIG_DIR
     this.indexPath = join(this.sessionDir, 'index.json')
     this.spawnImpl = spawnImpl
     this.procs = new Map()
@@ -150,6 +155,57 @@ export class PiBackend {
     this.statusSink = null
     this._version = null
     this._index = null
+  }
+
+  // ---------- 子进程环境：把本实例的飞书身份钉进去 ----------
+
+  /**
+   * 给 pi 子进程的环境：在桥接自身环境之上注入本实例的飞书凭证，并准备一份
+   * 只含本实例应用的 lark-cli 配置。
+   *
+   * 为什么必须做：代理要用飞书 CLI 发消息时，读的是机器级配置
+   * （~/.feishu-cli/config.yaml、~/.lark-cli/config.json）。多机器人同机部署时，
+   * 那个默认应用经常是另一个实例的——代理就以别人的身份发言。真实事故：
+   * 用户让 Lil_P 跟 LilO 打招呼，Lil_P 的代理调 feishu-cli 发出，消息却以
+   * Lil_O 的应用到达群里，看起来像 Lil_O 自己跟自己打招呼。
+   *
+   * feishu-cli 的凭证优先级是 --bot-app-id > 环境变量 > 配置文件，所以注入
+   * FEISHU_APP_ID / FEISHU_APP_SECRET 就能盖过机器级配置；lark-cli 认
+   * LARKSUITE_CLI_CONFIG_DIR，给它一份只含本实例应用的配置同理。
+   */
+  childEnv() {
+    const env = { ...process.env }
+    const f = this.cfg.feishu || {}
+    if (f.appId) env.FEISHU_APP_ID = f.appId
+    if (f.appSecret) env.FEISHU_APP_SECRET = f.appSecret
+    if (f.domain) env.FEISHU_DOMAIN = f.domain
+    const larkDir = this.ensureLarkCliConfig()
+    if (larkDir) env.LARKSUITE_CLI_CONFIG_DIR = larkDir
+    return env
+  }
+
+  /**
+   * 在实例配置目录下生成一份只含本实例应用的 lark-cli 配置，返回其目录。
+   * 没有配置飞书凭证时返回 null（子进程沿用机器级配置，与老行为一致）。
+   * appSecret 与桥接自己的 config.json 同样只落在家目录、权限 600。
+   */
+  ensureLarkCliConfig() {
+    const f = this.cfg.feishu || {}
+    if (!f.appId || !f.appSecret) return null
+    const dir = join(this.configDir, 'lark-cli')
+    const file = join(dir, 'config.json')
+    try {
+      const want = JSON.stringify({ strictMode: 'bot', apps: [{ appId: f.appId, appSecret: f.appSecret }] })
+      if (!existsSync(file) || readFileSync(file, 'utf8') !== want) {
+        mkdirSync(dir, { recursive: true })
+        writeFileSync(file, want, { mode: 0o600 })
+        chmodSync(file, 0o600)
+      }
+      return dir
+    } catch (err) {
+      this.log.warn?.(`生成 lark-cli 实例配置失败，子进程将沿用机器级配置: ${err.message}`)
+      return null
+    }
   }
 
   // ---------- 会话索引 ----------
@@ -398,7 +454,9 @@ export class PiBackend {
       try {
         child = this.spawnImpl(this.bin, args, {
           cwd: s.location?.directory || undefined,
-          env: process.env,
+          // 注入本实例的飞书凭证与 lark-cli 配置：代理用 CLI 发言时用本实例
+          // 身份，不会误用机器级配置里别的机器人应用
+          env: this.childEnv(),
           stdio: ['ignore', 'pipe', 'pipe'],
           detached: true,
         })
@@ -419,6 +477,18 @@ export class PiBackend {
       // 立即失败终态，错误原文上卡片——不再让用户等满一个超时周期
       let lineBuf = ''
       let providerError = null
+      // 静默判定的现场：最后事件时间、是否见过收尾事件、有没有在进行中的
+      // 消息 / 工具调用。pi 偶发「最终回答产出了却不退出」，进程挂住但再也不
+      // 吐事件——实测一次卡片在「执行中」停了 6 分 58 秒。有这些状态就能把
+      // 「干完活在装死」和「还在跑」区分开，不用干等进程退出
+      let lastEventAt = Date.now()
+      let sawTurnEnd = false
+      let sawAgentSettled = false
+      let finalTurnHasText = false
+      let inFlight = false
+      let lineCount = 0
+      let quietSettled = false
+      let quietTimer = null
 
       const timer = setTimeout(() => {
         rec.timedOut = true
@@ -479,8 +549,82 @@ export class PiBackend {
         return resolve({ ok: true, text: finalText })
       }
 
+      /**
+       * 最终消息之后静默超时：按已完成收尾，不等进程退出。
+       *
+       * 触发条件四条同时满足：见过带正文的 turn_end（有最终消息）、没有在进行
+       * 中的助手消息或工具调用、距最后事件超过 settleQuietMs。任一不满足都说明
+       * pi 还在干活（模型流式输出中、工具在跑、最终轮次还没有正文），不能动它。
+       *
+       * 收尾后杀掉整个进程组：pi 自己不退，留着他只会占着会话绑定。
+       */
+      const quietSettle = () => {
+        if (settled || quietSettled) return
+        quietSettled = true
+        settled = true
+        if (quietTimer) clearInterval(quietTimer)
+        clearTimeout(timer)
+        if (rec.killTimer) clearTimeout(rec.killTimer)
+        this.procs.delete(sessionId)
+
+        const parsed = parsePiJsonl(stdout)
+        const quietSec = Math.max(1, Math.round((Date.now() - lastEventAt) / 1000))
+        const finalText = parsed.text || '（这次 pi 没有返回文本内容）'
+        // 卡片上注明这是提前收尾的，用户能看出「完成了」但不是 pi 自己退的
+        const note =
+          `\n\n—— pi 产出最终回答后没有自行退出（静默 ${quietSec} 秒），` +
+          '桥接按已完成收尾并终止了进程。'
+        s.time.updated = Date.now()
+        this._emit(sessionId, 'session.text.delta', { delta: finalText + note })
+        if (parsed.usage) {
+          const tokens = { input: parsed.usage.input, output: parsed.usage.output }
+          s.tokens = { ...tokens, cache: { read: parsed.usage.cacheRead, write: 0 } }
+          s.cost = (s.cost || 0) + parsed.usage.cost
+          this._emit(sessionId, 'session.usage.updated', { tokens, cost: s.cost })
+        }
+        if (parsed.model) this._emit(sessionId, 'backend.meta', { model: parsed.model })
+        this._save()
+        this._emit(sessionId, 'session.execution.succeeded')
+        this.log.info?.(
+          `会话 ${sessionId} 最终消息后静默 ${quietSec} 秒，按已完成收尾并终止进程` +
+            `（stdout ${lineCount} 行，见过 agent_settled=${sawAgentSettled}）`,
+        )
+        killTree(child, 'SIGTERM')
+        rec.killTimer = setTimeout(() => killTree(child, 'SIGKILL'), 2000)
+        resolve({ ok: true, text: finalText, quietSettled: true })
+      }
+
+      // 静默看护：2 秒扫一次，条件够就 quietSettle。unref，不拖住桥接进程
+      if (this.settleQuietMs > 0) {
+        quietTimer = setInterval(() => {
+          if (settled || quietSettled) return
+          if (!sawTurnEnd || !finalTurnHasText || inFlight) return
+          if (Date.now() - lastEventAt < this.settleQuietMs) return
+          quietSettle()
+        }, 2000)
+        quietTimer.unref?.()
+      }
+
+      /** 用一条 stdout 事件更新静默判定的现场状态 */
+      const trackEvent = (ev) => {
+        const t = ev?.type
+        if (t === 'turn_end' || t === 'agent_settled' || t === 'agent_end') {
+          if (t === 'turn_end') {
+            sawTurnEnd = true
+            finalTurnHasText = textOf(ev.message) !== ''
+          }
+          if (t === 'agent_settled') sawAgentSettled = true
+          inFlight = false
+        } else if (t === 'message_start' || t === 'tool_execution_start') {
+          if (t === 'tool_execution_start' || ev?.message?.role === 'assistant') inFlight = true
+        } else if (t === 'message_end' || t === 'tool_execution_end') {
+          if (t === 'tool_execution_end' || ev?.message?.role === 'assistant') inFlight = false
+        }
+      }
+
       child.stdout?.on('data', (d) => {
         if (stdout.length < MAX_STDOUT_CHARS) stdout += d.toString()
+        lastEventAt = Date.now()
         if (providerError) return
         // 逐行扫 provider 报错：一行可能被拆进两个 chunk，先用行缓冲拼齐
         lineBuf += d.toString()
@@ -489,12 +633,14 @@ export class PiBackend {
           const line = lineBuf.slice(0, idx).trim()
           lineBuf = lineBuf.slice(idx + 1)
           if (!line.startsWith('{')) continue
+          lineCount++
           let ev
           try {
             ev = JSON.parse(line)
           } catch {
             continue
           }
+          trackEvent(ev)
           const err = providerErrorOf(ev)
           if (err) {
             providerError = err
@@ -521,7 +667,15 @@ export class PiBackend {
       // 工具子进程会成为孤儿进程，继续持有继承来的 stdout/stderr，中止和超时
       // 的收尾被拖住（实测中断后 29 秒才发 interrupted）。exit 只等直接子进程
       // 结束，与 stdio 无关；已写入管道的数据给一个兜底定时器再结算。
-      child.on('exit', (code) => {
+      child.on('exit', (code, signal) => {
+        // 退出时留一行现场：下次再遇到卡片停在「执行中」，这行能直接分辨是
+        // 「pi 没 settle 就退出了」还是「桥接没收到退出事件」
+        this.log.info?.(
+          `pi 会话 ${sessionId} 进程退出: code=${code} signal=${signal || '-'} ` +
+            `quietSettled=${quietSettled} stdout ${lineCount} 行 ` +
+            `turn_end=${sawTurnEnd} agent_settled=${sawAgentSettled} ` +
+            `最后事件距今 ${Date.now() - lastEventAt}ms`,
+        )
         drainTimer = setTimeout(() => finish(code), EXIT_DRAIN_MS)
       })
     })

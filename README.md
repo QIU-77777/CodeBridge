@@ -603,7 +603,8 @@ admin 按模板生成 `config.json`（权限 600，含 appSecret）、安装 lau
 | `backend.type` | `opencode`（默认，常驻 HTTP + SSE）或 `pi`（一次性子进程） | `opencode` |
 | `backend.pi.bin` | pi CLI 路径，留空用 PATH 里的 `pi` | `pi` |
 | `backend.pi.model` | 传给 `--model`，留空用 pi 自己的默认 | `""` |
-| `backend.pi.timeoutMs` | 单次执行超时（兜底值；provider 报错不等它，立即终态） | `600000` |
+| `backend.pi.timeoutMs` | 单次执行超时（从进程启动算总时长的兜底值；provider 报错不等它，立即终态） | `600000` |
+| `backend.pi.settleQuietMs` | 最终消息之后静默多久就按已完成收尾，不等进程退出；0 = 关闭（恢复老行为） | `60000` |
 | `backend.pi.extraArgs` | 额外启动参数，如 `["--no-extensions"]` | `[]` |
 
 环境变量可覆盖同名项：`FEISHU_APP_ID` `FEISHU_APP_SECRET` `OPENCODE_URL` `OPENCODE_SERVER_PASSWORD` `BRIDGE_DEFAULT_DIR` `BRIDGE_DEFAULT_MODEL` `BRIDGE_ALLOWLIST`（逗号分隔）。多实例相关的 `OCB_CONFIG_DIR` `OCB_INSTANCE` `OCB_BACKEND` `OCB_PI_BIN` `OCB_PI_MODEL` 见下一节。
@@ -623,7 +624,7 @@ admin 按模板生成 `config.json`（权限 600，含 appSecret）、安装 lau
 
 ```json
 {
-  "backend": { "type": "pi", "pi": { "bin": "pi", "model": "", "timeoutMs": 600000, "extraArgs": [] } },
+  "backend": { "type": "pi", "pi": { "bin": "pi", "model": "", "timeoutMs": 600000, "settleQuietMs": 60000, "extraArgs": [] } },
   "feishu": { "appId": "cli_<新应用>", "appSecret": "...", "botOpenId": "ou_<新机器人>", "allowlist": [], "names": {} }
 }
 ```
@@ -643,6 +644,18 @@ OCB_INSTANCE=pi npm run up      # 之后重启、查看都要带同一个 OCB_IN
 `pi -p --mode json` 跑完才出结果，所以卡片是「执行中 → 跑完一次性更新成结果」两张状态，中途不刷新正文。除此之外和 opencode 后端一致：分割线、`in / out / $金额｜@我 并发送 /help`、中止按钮、僵尸卡收尾都在。
 
 没有的：工具调用轨迹、思考过程、交互式权限卡片、`/agent`（pi 没有 opencode 的 agent 概念）。`/sessions` 列的是该实例的 pi 会话文件，`--session-id` 保证同一话题里能续聊。
+
+### 多机器人同机：发言身份是钉死的
+
+代理在群里要用飞书 CLI 发消息时，读的是**机器级配置**（`~/.feishu-cli/config.yaml`、`~/.lark-cli/config.json`）。多机器人同机时那个默认应用经常是另一个实例的——真实事故：用户让 Lil_P 跟 LilO 打招呼，Lil_P 的代理调 `feishu-cli` 发出，消息却以 Lil_O 的应用到达群里，看起来像 Lil_O 自己跟自己打招呼。
+
+pi 后端因此在起子进程时把本实例的身份钉进去（`src/pi.js` 的 `childEnv()`）：
+
+- 注入 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_DOMAIN`。`feishu-cli` 的凭证优先级是 `--bot-app-id` > 环境变量 > 配置文件，环境变量即可盖过机器级配置；
+- 在实例配置目录下生成只含本实例应用的 `lark-cli/config.json`（权限 600，与桥接自己的 `config.json` 同规格），并设 `LARKSUITE_CLI_CONFIG_DIR` 指向它；
+- 给模型的来源标注追加一行身份声明（「你是 X（飞书应用 cli_…）」），声明与注入互相印证。
+
+配置里没有飞书凭证时什么都不注入，子进程沿用机器级配置，与老行为一致。opencode 后端的代理跑在常驻的 `opencode serve` 里，桥接无法向它注入环境变量，只能拿到身份声明那一行——换机器级配置前先核对。
 
 ### 已知风险
 
@@ -666,7 +679,7 @@ OCB_INSTANCE=pi npm run up      # 之后重启、查看都要带同一个 OCB_IN
 | 报 `RegionError` | `defaultModel` 用了当前地区不可用的模型，换一个 |
 | 某个会话一直发不出消息，1 秒内就失败，错误里有 `Failed to decode message` | 这个会话的历史里有另一个 opencode 版本写入、当前版本读不出的记录。先 `npm run doctor` 看 serve 和本地 CLI 版本是否一致，一致仍报错见 [design-notes 第九节](docs/design-notes.md#opencode-升级后的历史数据兼容问题) |
 | 卡片不更新 | `streamIntervalMs` 设太低被限流，调回 1800 |
-| 卡片一直停在「执行中」 | 两种情况：① 事件流断了但进程还活着 —— 看 `logs/bridge.log` 有没有「事件流断开」，`idleTimeoutMs` 到期会自动转失败；② 桥接在执行途中重启过 —— 下次启动会把遗留卡片标成「已中止」（靠 `state.json` 的 `inflight` 记录），老版本留下的卡片没有记录，只能手动重发 |
+| 卡片一直停在「执行中」 | 三种情况：① 事件流断了但进程还活着 —— 看 `logs/bridge.log` 有没有「事件流断开」，`idleTimeoutMs` 到期会自动转失败；② pi 产出最终回答后自己不退出 —— `backend.pi.settleQuietMs` 到期会按已完成收尾（默认 60 秒），日志里有「最终消息后静默 N 秒，按已完成收尾」；③ 桥接在执行途中重启过 —— 下次启动会把遗留卡片标成「已中止」（靠 `state.json` 的 `inflight` 记录），老版本留下的卡片没有记录，只能手动重发 |
 | 同一条消息回两遍 | 跑了两个桥接实例。`./scripts/down.sh` 全停再 `./scripts/up.sh` |
 | 机器人突然不说话了，日志里也没报错 | 进程被外部杀了（nohup 起的常见）。`./scripts/status.sh` 看是不是没了；装 `install-agent.sh` 之后不需要管这个 |
 | 群里 @ 了但机器人不理会 | 先看 `logs/bridge.log`：有 `[skip] @ 的不是我` 说明闸门挡住了（多机器人同群常见）；什么都没有说明事件没进来，查飞书后台的事件订阅 |

@@ -9,7 +9,7 @@
  * 用法: npm run test:pi
  */
 import { spawn } from 'node:child_process'
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, existsSync, readFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parsePiJsonl, providerErrorOf, PiBackend, capabilitiesFor } from '../src/pi.js'
@@ -38,6 +38,16 @@ const FAKE_PI = `
 const mode = process.env.OCB_TEST_PI_MODE || 'normal'
 if (mode === 'version') { console.log('pi 1.2.3'); process.exit(0) }
 if (mode === 'fail') { console.error('boom: provider unavailable'); process.exit(2) }
+if (mode === 'dump-env') {
+  // 把桥接注入的环境变量落盘，供测试断言身份注入
+  require('node:fs').writeFileSync(process.env.OCB_TEST_ENV_DUMP, JSON.stringify({
+    FEISHU_APP_ID: process.env.FEISHU_APP_ID ?? null,
+    FEISHU_APP_SECRET: process.env.FEISHU_APP_SECRET ?? null,
+    FEISHU_DOMAIN: process.env.FEISHU_DOMAIN ?? null,
+    LARKSUITE_CLI_CONFIG_DIR: process.env.LARKSUITE_CLI_CONFIG_DIR ?? null,
+  }))
+  process.exit(0)
+}
 const usage = { input: 17, output: 3, cacheRead: 4608, cacheWrite: 0, totalTokens: 4628,
   cost: { input: 0.00002244, output: 0.00001188, cacheRead: 0.000202752, cacheWrite: 0, total: 0.000237072 } }
 const emit = (o) => console.log(JSON.stringify(o))
@@ -53,6 +63,26 @@ if (mode === 'provider-error') {
     provider: 'stepfun-platform', model: 'step-5-preview', usage,
     stopReason: 'error',
     errorMessage: 'stepfun-platform API error (429): request limited TPM reached, current: 565751, limit: 500000' } })
+  setInterval(() => {}, 1000)
+  process.stdout.write('')
+}
+else if (mode === 'quiet-final') {
+  // 复现真实故障：最终回答产出了，agent_settled 永远不来，进程也不退。
+  // 实测一次卡片在「执行中」停了 6 分 58 秒——桥接只能等进程退出
+  emit({ type: 'message_end', message: { role: 'assistant',
+    content: [{ type: 'text', text: 'QUIETDONE' }], provider: 'stepfun-platform',
+    model: 'step-5-preview', usage } })
+  emit({ type: 'turn_end', message: { role: 'assistant',
+    content: [{ type: 'text', text: 'QUIETDONE' }], usage } })
+  setInterval(() => {}, 1000)
+  process.stdout.write('')
+}
+else if (mode === 'quiet-empty') {
+  // 最终轮次没有正文：不能按已完成收尾，那可能只是还没产出回答的慢运行，
+  // 切掉会把真正的答案丢掉。继续等进程退出 / 超时
+  emit({ type: 'message_end', message: { role: 'assistant', content: [],
+    provider: 'stepfun-platform', model: 'step-5-preview', usage } })
+  emit({ type: 'turn_end', message: { role: 'assistant', content: [], usage } })
   setInterval(() => {}, 1000)
   process.stdout.write('')
 }
@@ -82,12 +112,13 @@ let forceMode = null
 const calls = []
 /** 把 (bin, args, opts) 换成「跑 FAKE_PI 的 node 子进程」 */
 function fakeSpawn(bin, args, opts = {}) {
-  calls.push({ bin, args, opts })
   const mode = forceMode || (args.includes('--version') ? 'version' : currentMode)
-  return spawn(process.execPath, ['-e', FAKE_PI], {
+  const child = spawn(process.execPath, ['-e', FAKE_PI], {
     ...opts,
     env: { ...(opts.env || process.env), OCB_TEST_PI_MODE: mode },
   })
+  calls.push({ bin, args, opts, child })
+  return child
 }
 
 const root = mkdtempSync(join(tmpdir(), 'ocb-pi-test-'))
@@ -100,7 +131,14 @@ const cfg = {
 }
 
 function makeBackend(patch = {}) {
-  return new PiBackend({ cfg: { ...cfg, ...patch }, sessionDir, spawnImpl: fakeSpawn, logger: { warn() {}, info() {} } })
+  const { configDir, ...rest } = patch
+  return new PiBackend({
+    cfg: { ...cfg, ...rest },
+    sessionDir,
+    configDir,
+    spawnImpl: fakeSpawn,
+    logger: { warn() {}, info() {} },
+  })
 }
 
 /** 把合成事件喂给 RunState，返回最终状态 */
@@ -322,6 +360,102 @@ const main = async () => {
     ok(Date.now() - t2 < 8000, `health 不再被孤儿进程拖过 5 秒超时（实际 ${Date.now() - t2}ms）`)
     forceMode = null
     delete process.env.OCB_TEST_ORPHAN_LIFE_MS
+  }
+
+  section('子进程注入本实例飞书身份')
+  {
+    // 多机器人同机：代理用飞书 CLI 发言读的是机器级配置，默认应用可能是别的
+    // 实例的（真实事故：Lil_P 的代理发出的问候以 Lil_O 的应用到达群里）。
+    // 桥接把本实例凭证注入子进程，并给一份只含本实例应用的 lark-cli 配置
+    const bPlain = makeBackend()
+    ok(bPlain.ensureLarkCliConfig() === null, '没有飞书凭证时不生成 lark-cli 实例配置')
+    ok(
+      bPlain.childEnv().FEISHU_APP_ID === (process.env.FEISHU_APP_ID || undefined),
+      '没有凭证时不注入 FEISHU_APP_ID，子进程沿用机器级配置（老部署零改动）',
+    )
+
+    const configDir = join(root, 'instance-config')
+    const b = makeBackend({
+      backend: { type: 'pi', pi: { bin: 'pi', model: '', timeoutMs: 5000, settleQuietMs: 0, extraArgs: [] } },
+      feishu: { appId: 'cli_testenv', appSecret: 'sec_testenv', domain: 'feishu' },
+      configDir,
+    })
+    const s = await b.createSession({ title: '身份', directory: root })
+    const dump = join(root, 'env-dump.json')
+    process.env.OCB_TEST_ENV_DUMP = dump
+    currentMode = 'dump-env'
+    const r = await b.prompt(s.id, '把环境变量落盘')
+    delete process.env.OCB_TEST_ENV_DUMP
+    ok(r.ok === true, 'dump-env 正常退出')
+    const env = JSON.parse(readFileSync(dump, 'utf8'))
+    ok(env.FEISHU_APP_ID === 'cli_testenv', 'feishu-cli 的 appId 环境变量用本实例的')
+    ok(env.FEISHU_APP_SECRET === 'sec_testenv', 'feishu-cli 的 appSecret 环境变量用本实例的')
+    ok(env.FEISHU_DOMAIN === 'feishu', 'domain 一并注入')
+    const larkFile = join(configDir, 'lark-cli', 'config.json')
+    ok(existsSync(larkFile), '生成了 lark-cli 实例配置')
+    const larkCfg = JSON.parse(readFileSync(larkFile, 'utf8'))
+    ok(larkCfg.apps?.length === 1 && larkCfg.apps[0].appId === 'cli_testenv', 'lark-cli 配置只含本实例应用')
+    ok(env.LARKSUITE_CLI_CONFIG_DIR === join(configDir, 'lark-cli'), 'LARKSUITE_CLI_CONFIG_DIR 指向该配置')
+    ok((statSync(larkFile).mode & 0o777) === 0o600, 'lark-cli 配置权限 600（含 appSecret，与桥接 config.json 同规格）')
+  }
+
+  section('最终消息后静默：按已完成收尾，不等进程退出')
+  {
+    // 真实故障：pi 产出最终回答后不退出（agent_settled 永远不来），卡片在
+    // 「执行中」停了 6 分 58 秒。修复前桥接只能等进程退出，用户干看着
+    const bQuiet = makeBackend({
+      backend: { type: 'pi', pi: { bin: 'pi', model: '', timeoutMs: 30000, settleQuietMs: 400, extraArgs: [] } },
+    })
+    const sQ = await bQuiet.createSession({ title: '静默', directory: root })
+    currentMode = 'quiet-final'
+    let events = []
+    bQuiet.subscribe((ev) => events.push(ev), () => {})
+    const pending = bQuiet.prompt(sQ.id, '答完不说话')
+    // spawn 在 prompt 里同步发生，先拿到 child 再等退出，避免错过 exit 事件
+    const exitP = new Promise((res) => calls.at(-1).child.once('exit', () => res(true)))
+    const t0 = Date.now()
+    const r = await pending
+    const elapsed = Date.now() - t0
+    ok(r.ok === true && r.quietSettled === true, '静默收尾返回 ok 并带 quietSettled 标记')
+    ok(
+      elapsed < 8000,
+      `最终消息后约 settleQuietMs 即收尾，不等进程退出（实际 ${elapsed}ms，进程超时设的是 30000ms）`,
+    )
+    ok(events.at(-1).type === 'session.execution.succeeded', '最后一个事件是 succeeded')
+    ok(collect(events, sQ.id).status === 'done', '静默收尾 → RunState done，不是 failed')
+    const delta = events.find((e) => e.type === 'session.text.delta')?.data?.delta || ''
+    ok(delta.includes('QUIETDONE'), '正文取最终消息的文本')
+    ok(delta.includes('静默'), '卡片注明这是提前收尾，用户看得出不是 pi 自己退的')
+    ok(
+      (await Promise.race([exitP, new Promise((res) => setTimeout(() => res(false), 3000))])) === true,
+      '收尾后进程被杀死（SIGTERM，2 秒后 SIGKILL 兜底），不会永远挂着',
+    )
+
+    // settleQuietMs=0 关闭静默收尾：恢复「只等进程退出」的老行为。没有最终
+    // 消息的挂死仍然走到超时失败，不会被误判成完成
+    const bOff = makeBackend({
+      backend: { type: 'pi', pi: { bin: 'pi', model: '', timeoutMs: 800, settleQuietMs: 0, extraArgs: [] } },
+    })
+    const sOff = await bOff.createSession({ title: '关闭静默', directory: root })
+    currentMode = 'quiet-final'
+    events = []
+    bOff.subscribe((ev) => events.push(ev), () => {})
+    const off = await bOff.prompt(sOff.id, '答完不说话')
+    ok(off.ok === false, 'settleQuietMs=0 时不会提前收尾')
+    ok(collect(events, sOff.id).status === 'failed', '关闭后仍走超时失败（老行为不变）')
+    ok(String(events.at(-1).data.error.message).includes('分钟'), '超时文案不变')
+
+    // 最终轮次没有正文时不收尾：那可能只是还没产出回答的慢运行，切掉会丢答案
+    const bEmpty = makeBackend({
+      backend: { type: 'pi', pi: { bin: 'pi', model: '', timeoutMs: 800, settleQuietMs: 400, extraArgs: [] } },
+    })
+    const sEmpty = await bEmpty.createSession({ title: '空正文', directory: root })
+    currentMode = 'quiet-empty'
+    events = []
+    bEmpty.subscribe((ev) => events.push(ev), () => {})
+    const empty = await bEmpty.prompt(sEmpty.id, '没正文')
+    ok(empty.ok === false && empty.quietSettled === undefined, '最终轮次没有正文时不做静默收尾')
+    ok(collect(events, sEmpty.id).status === 'failed', '仍走超时失败，不会把慢运行误判成完成')
   }
 
   section('卡片按后端能力降级')
