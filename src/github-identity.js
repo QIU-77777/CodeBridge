@@ -25,9 +25,9 @@ import { getInstallationToken } from './github-app-token.mjs'
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
 /** git 凭证助手：每次 git 操作现场调它换有效 token */
-export const GITHUB_CREDENTIAL_HELPER = join(REPO, 'src', 'github-app-credential.mjs')
+const GITHUB_CREDENTIAL_HELPER = join(REPO, 'src', 'github-app-credential.mjs')
 /** token 模块：gh 包装脚本用它现取 token */
-export const GITHUB_TOKEN_CLI = join(REPO, 'src', 'github-app-token.mjs')
+const GITHUB_TOKEN_CLI = join(REPO, 'src', 'github-app-token.mjs')
 
 /** 家目录展开：配置里写 ~/.config/... 与写绝对路径等价 */
 export function expandHome(p) {
@@ -61,7 +61,7 @@ export function resolveRealGh(env = process.env, skipDir = '') {
  * 每次调用现取一个有效的 installation token 再 exec 真正的 gh，所以长驻进程
  * （opencode serve）里也不会用到过期 token。路径全部焊死，脚本自包含。
  */
-export function writeGhShim(configDir, { nodeBin = process.execPath, ghBin } = {}) {
+function writeGhShim(configDir, { nodeBin = process.execPath, ghBin } = {}) {
   const binDir = join(configDir, 'bin')
   const real = ghBin || resolveRealGh(process.env, binDir)
   if (!real) return '' // 机器上没有 gh：不写包装，PATH 也不改
@@ -123,10 +123,18 @@ export async function githubEnv(cfg, configDir, { withShim = true, fetchImpl } =
     return null
   }
 
-  // git 每次操作现场调凭证助手换有效 token，长驻进程里也不会拿到过期 token
-  env.GIT_CONFIG_COUNT = '1'
-  env.GIT_CONFIG_KEY_0 = 'credential.https://github.com.helper'
-  env.GIT_CONFIG_VALUE_0 = `!${process.execPath} ${GITHUB_CREDENTIAL_HELPER}`
+  // git 每次操作现场调凭证助手换有效 token，长驻进程里也不会拿到过期 token。
+  // 助手列表按「系统 → 全局 → 本地 → 环境变量」累积，第一个同时给出用户名和
+  // 密码的助手就赢。机器上只要有 gh auth login 过的全局配置（装过 gh 的都有），
+  // 它排在环境变量前面，我们的助手永远不会被调用——实测 GIT_TRACE 里只有
+  // osxkeychain 和 gh 助手在跑。而 gh 助手不校验 token 是否过期，GH_TOKEN 不在
+  // 环境里时还会返回人的 keychain 账号。所以第一条先用空值把前面累积的助手列表
+  // 清掉（空值重置是 git 凭证助手的既有语义），第二条装真助手
+  env.GIT_CONFIG_COUNT = '2'
+  env.GIT_CONFIG_KEY_0 = 'credential.helper'
+  env.GIT_CONFIG_VALUE_0 = ''
+  env.GIT_CONFIG_KEY_1 = 'credential.https://github.com.helper'
+  env.GIT_CONFIG_VALUE_1 = `!${process.execPath} ${GITHUB_CREDENTIAL_HELPER}`
   // 凭证助手靠它知道读哪份实例配置
   env.OCB_CONFIG_DIR = configDir
 

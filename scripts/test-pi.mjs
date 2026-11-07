@@ -39,12 +39,23 @@ const mode = process.env.OCB_TEST_PI_MODE || 'normal'
 if (mode === 'version') { console.log('pi 1.2.3'); process.exit(0) }
 if (mode === 'fail') { console.error('boom: provider unavailable'); process.exit(2) }
 if (mode === 'dump-env') {
-  // 把桥接注入的环境变量落盘，供测试断言身份注入
+  // 把桥接注入的环境变量落盘，供测试断言身份注入（飞书 + GitHub）
   require('node:fs').writeFileSync(process.env.OCB_TEST_ENV_DUMP, JSON.stringify({
     FEISHU_APP_ID: process.env.FEISHU_APP_ID ?? null,
     FEISHU_APP_SECRET: process.env.FEISHU_APP_SECRET ?? null,
     FEISHU_DOMAIN: process.env.FEISHU_DOMAIN ?? null,
     LARKSUITE_CLI_CONFIG_DIR: process.env.LARKSUITE_CLI_CONFIG_DIR ?? null,
+    GH_TOKEN: process.env.GH_TOKEN ?? null,
+    GIT_AUTHOR_NAME: process.env.GIT_AUTHOR_NAME ?? null,
+    GIT_AUTHOR_EMAIL: process.env.GIT_AUTHOR_EMAIL ?? null,
+    GIT_COMMITTER_NAME: process.env.GIT_COMMITTER_NAME ?? null,
+    GIT_COMMITTER_EMAIL: process.env.GIT_COMMITTER_EMAIL ?? null,
+    GIT_CONFIG_COUNT: process.env.GIT_CONFIG_COUNT ?? null,
+    GIT_CONFIG_KEY_0: process.env.GIT_CONFIG_KEY_0 ?? null,
+    GIT_CONFIG_VALUE_0: process.env.GIT_CONFIG_VALUE_0 ?? null,
+    GIT_CONFIG_KEY_1: process.env.GIT_CONFIG_KEY_1 ?? null,
+    GIT_CONFIG_VALUE_1: process.env.GIT_CONFIG_VALUE_1 ?? null,
+    OCB_CONFIG_DIR: process.env.OCB_CONFIG_DIR ?? null,
   }))
   process.exit(0)
 }
@@ -466,7 +477,7 @@ const main = async () => {
     const bPlain = makeBackend()
     ok(bPlain.ensureLarkCliConfig() === null, '没有飞书凭证时不生成 lark-cli 实例配置')
     ok(
-      bPlain.childEnv().FEISHU_APP_ID === (process.env.FEISHU_APP_ID || undefined),
+      (await bPlain.childEnv()).FEISHU_APP_ID === (process.env.FEISHU_APP_ID || undefined),
       '没有凭证时不注入 FEISHU_APP_ID，子进程沿用机器级配置（老部署零改动）',
     )
 
@@ -474,6 +485,14 @@ const main = async () => {
     const b = makeBackend({
       backend: { type: 'pi', pi: { bin: 'pi', model: '', timeoutMs: 5000, settleQuietMs: 0, extraArgs: [] } },
       feishu: { appId: 'cli_testenv', appSecret: 'sec_testenv', domain: 'feishu' },
+      // GitHub 身份一起进同一份配置：pi 侧的接线（childEnv → spawn env → 子进程
+      // 环境）要有覆盖，不能只有 githubEnv 的单测
+      github: {
+        mode: 'pat',
+        token: 'ghp_test_dump',
+        gitName: 'Lil_P',
+        gitEmail: '5654062+lil-p-bot[bot]@users.noreply.github.com',
+      },
       configDir,
     })
     const s = await b.createSession({ title: '身份', directory: root })
@@ -502,6 +521,14 @@ const main = async () => {
     ok(larkCfg?.apps?.length === 1 && larkCfg.apps[0].appId === 'cli_testenv', 'lark-cli 配置只含本实例应用')
     ok(env.LARKSUITE_CLI_CONFIG_DIR === join(configDir, 'lark-cli'), 'LARKSUITE_CLI_CONFIG_DIR 指向该配置')
     ok((statSync(larkFile).mode & 0o777) === 0o600, 'lark-cli 配置权限 600（含 appSecret，与桥接 config.json 同规格）')
+
+    // GitHub 四路注入：GH_TOKEN、署名、git 配置两段式、OCB_CONFIG_DIR
+    ok(env.GH_TOKEN === 'ghp_test_dump', 'GitHub 身份注入 GH_TOKEN（子进程真的拿到了）')
+    ok(env.GIT_AUTHOR_NAME === 'Lil_P' && env.GIT_COMMITTER_NAME === 'Lil_P', '提交署名注入 author/committer')
+    ok(env.GIT_AUTHOR_EMAIL.includes('lil-p-bot'), '署名邮箱用 bot 的 noreply 地址')
+    ok(env.GIT_CONFIG_COUNT === '2' && env.GIT_CONFIG_KEY_0 === 'credential.helper' && env.GIT_CONFIG_VALUE_0 === '', 'git 配置两段式：第一条空值清掉机器上累积的助手列表')
+    ok(String(env.GIT_CONFIG_VALUE_1).includes('github-app-credential.mjs'), '第二条装真助手，指向凭证助手脚本')
+    ok(env.OCB_CONFIG_DIR === configDir, '凭证助手靠 OCB_CONFIG_DIR 找到实例配置')
   }
 
   section('最终消息后静默：按已完成收尾，不等进程退出')

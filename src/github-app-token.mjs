@@ -10,7 +10,7 @@
  * 只用 Node 自带 crypto 和 fetch，不加依赖。凭证三件套来自实例配置：
  *   github.appId / github.installationId / github.privateKeyPath
  */
-import { readFileSync, writeFileSync, mkdirSync, chmodSync, existsSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, chmodSync, existsSync, rmSync } from 'node:fs'
 import { createSign } from 'node:crypto'
 import { dirname, join } from 'node:path'
 
@@ -120,9 +120,9 @@ function writeCache(path, token, expiresAt) {
 
 function removeCache(path) {
   try {
-    if (existsSync(path)) writeFileSync(path, '{}')
+    if (existsSync(path)) rmSync(path)
   } catch {
-    /* noop */
+    /* 删不掉也不影响：readCache 会把残留内容判废 */
   }
 }
 

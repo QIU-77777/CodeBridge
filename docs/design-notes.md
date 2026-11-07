@@ -355,9 +355,9 @@ sqlite3 ~/.local/share/opencode/opencode.db "
 | 组件级 | `scripts/probe-card.mjs` | 平台收不收这种结构 |
 | 行为探针 | `scripts/probe-thread.mjs` | 飞书话题的 `thread_id` / `root_id` 到底是什么 |
 | 单元级 | `scripts/test-cards.mjs`（134 项） | Markdown 解析、卡片结构、大小、看门狗、错误提示、二进制选择、话题绑定、并行上限、@ 判定 |
-| 单元级 | `scripts/test-pi.mjs`（130 项） | pi JSONL 解析、流式事件映射、合成事件、超时、中止、静默收尾、会话续聊 |
+| 单元级 | `scripts/test-pi.mjs`（137 项） | pi JSONL 解析、流式事件映射、合成事件、超时、中止、静默收尾、会话续聊、飞书与 GitHub 身份注入 |
 | 单元级 | `scripts/test-patch-order.mjs`（24 项） | 卡片 patch 串行与合并：终态一定最后生效，在途积压的刷新合并且带最新快照 |
-| 单元级 | `scripts/test-github-app.mjs`（50 项） | GitHub App 身份：JWT 形状与签名、token 缓存与到期刷新、401 重试、四路环境注入、git 凭证助手、gh 包装脚本、未配置时零改动 |
+| 单元级 | `scripts/test-github-app.mjs`（55 项） | GitHub App 身份：JWT 形状与签名、token 缓存与到期刷新、401 重试、四路环境注入、真实 git 下注入助手压过机器级助手、凭证助手协议、gh 包装脚本、未配置时零改动 |
 | 单元级 | `scripts/test-runfail.mjs` / `test-wedge.mjs` / `test-busy.mjs` / `test-render.mjs` | 失败即转红、patch 挂死与看门狗收殓、忙等三选一与队列、RunState 分段保留 |
 | 集成级 | `scripts/selftest.mjs`（23 项） | 真实建会话、真实 prompt、流式聚合、命令、回调、白名单 |
 | 端到端 | `scripts/e2e-table.mjs` | 真实模型输出 → 真实事件流 → 真实卡片 |
