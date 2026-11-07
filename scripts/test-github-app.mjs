@@ -160,10 +160,11 @@ const main = async () => {
     ok(env.GH_TOKEN === 'ghs_env_test', 'GH_TOKEN 是现换的有效 token')
     ok(env.GIT_AUTHOR_NAME === 'Lil_P' && env.GIT_COMMITTER_NAME === 'Lil_P', 'author/committer 署名都注入')
     ok(env.GIT_AUTHOR_EMAIL.includes('lil-p-bot'), '署名邮箱用 app 的 noreply 地址（提交关联到 bot）')
-    ok(env.GIT_CONFIG_COUNT === '1', '用 GIT_CONFIG_COUNT 注入 git 配置（不碰用户全局配置）')
-    ok(env.GIT_CONFIG_KEY_0 === 'credential.https://github.com.helper', '注入的是凭证助手')
-    ok(String(env.GIT_CONFIG_VALUE_0).includes('github-app-credential.mjs'), '凭证助手指向本仓库的脚本')
-    ok(String(env.GIT_CONFIG_VALUE_0).startsWith('!' + process.execPath), '助手用绝对 node 路径，不依赖 PATH')
+    ok(env.GIT_CONFIG_COUNT === '2', '用 GIT_CONFIG_COUNT 注入 git 配置（不碰用户全局配置）')
+    ok(env.GIT_CONFIG_KEY_0 === 'credential.helper' && env.GIT_CONFIG_VALUE_0 === '', '第一条用空值清掉机器上累积的助手列表（否则全局 gh 助手挡在前面，我们的助手永不被调用）')
+    ok(env.GIT_CONFIG_KEY_1 === 'credential.https://github.com.helper', '第二条装真助手')
+    ok(String(env.GIT_CONFIG_VALUE_1).includes('github-app-credential.mjs'), '凭证助手指向本仓库的脚本')
+    ok(String(env.GIT_CONFIG_VALUE_1).startsWith('!' + process.execPath), '助手用绝对 node 路径，不依赖 PATH')
     ok(env.PATH.split(':')[0] === join(configDir, 'bin'), 'PATH 前置本实例 bin 目录')
     ok(env.OCB_CONFIG_DIR === configDir, '带上 OCB_CONFIG_DIR，凭证助手知道读哪份配置')
 
@@ -231,6 +232,70 @@ const main = async () => {
     mkdirSync(offDir, { recursive: true })
     writeFileSync(join(offDir, 'config.json'), JSON.stringify({ github: { mode: 'off' } }))
     ok(run('protocol=https\nhost=github.com\n\n', offDir) === '', 'github.mode=off 的实例不注入任何凭证')
+  }
+
+  section('真实 git：注入的助手必须压过机器级助手')
+  {
+    // 评审实测发现的真问题：git 的助手列表按「系统 → 全局 → 本地 → 环境变量」
+    // 累积，第一个同时给出用户名和密码的助手就赢。只注入一条助手时它排在最后，
+    // 机器上 gh auth login 过的全局助手（装过 gh 的都有）挡在前面——我们的助手
+    // 永远不被调用，而 gh 助手不校验 token 过期，GH_TOKEN 不在环境里时还会返回
+    // 人的 keychain 账号。修复：第一条用空值清掉累积的助手列表。这里用真实 git
+    // 验证，临时 HOME 里放一个冒充「机器级助手」的全局配置
+    const home = join(root, 'fake-home')
+    const configDir = join(root, 'real-git-instance')
+    mkdirSync(home, { recursive: true })
+    mkdirSync(configDir, { recursive: true })
+    writeFileSync(
+      join(home, '.gitconfig'),
+      // 助手输出必须一行一个 key=value，全放一行会被 git 当成单个值
+      '[credential]\n\thelper = "!printf \'username=MACHINE_DEFAULT\\npassword=machine\\n\'"\n',
+    )
+    writeFileSync(
+      join(configDir, 'config.json'),
+      JSON.stringify({
+        github: {
+          mode: 'app',
+          appId: 5654062,
+          installationId: 179514181,
+          privateKeyPath: pemPath,
+          gitName: 'Lil_P',
+          gitEmail: 'x@y',
+        },
+      }),
+    )
+    // 预热 token 缓存，助手脚本直接读缓存（测试不碰网络）
+    writeFileSync(
+      join(configDir, 'github-app-token.json'),
+      JSON.stringify({ token: 'ghs_realtest', expiresAt: Date.now() + 3600_000 }),
+    )
+    const env = await githubEnv({ github: { mode: 'app', appId: 5654062, installationId: 179514181, privateKeyPath: pemPath } }, configDir, {
+      withShim: false,
+      fetchImpl: async () => ({
+        ok: true,
+        status: 201,
+        json: async () => ({ token: 'ghs_realtest', expires_at: new Date(Date.now() + 3600_000).toISOString() }),
+      }),
+    })
+    const fill = (extraEnv) => {
+      const r = execFileSync('git', ['credential', 'fill'], {
+        input: 'protocol=https\nhost=github.com\n\n',
+        // GIT_CONFIG_NOSYSTEM：真机的系统级 osxkeychain 里存着本人的 GitHub
+        // 凭证，不屏蔽的话它会先跑并索要密码，把测试带偏
+        env: { ...process.env, HOME: home, GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_NOSYSTEM: '1', ...extraEnv },
+        encoding: 'utf8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+      })
+      return r
+    }
+    // 不注入：机器级助手赢（复现问题）
+    const machine = fill({})
+    ok(/username=MACHINE_DEFAULT/.test(machine), '不注入时机器级助手给出凭证（问题复现）')
+    // 注入后：我们的助手赢，且给出的是 bot token
+    const injected = fill(env)
+    ok(/username=x-access-token/.test(injected), '注入后凭证来自我们的助手，不是机器级助手')
+    ok(/password=ghs_realtest/.test(injected), '拿到的是有效 installation token')
+    ok(!/MACHINE_DEFAULT/.test(injected), '机器级助手被完全压过，没有漏出来')
   }
 
   rmSync(root, { recursive: true, force: true })

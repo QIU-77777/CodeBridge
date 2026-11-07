@@ -196,6 +196,16 @@ opencode 后端的代理跑在常驻 serve 里，桥接没法向已启动的进�
 
 排障：`node src/github-app-token.mjs --config-dir <实例配置目录>` 可直接看当前 token 状态。
 
+「注入之后到底谁生效」用这条命令确认——它会打印 git 实际调用了哪个凭证助手：
+
+```bash
+while IFS= read -r l; do [ -z "$l" ] && continue; export "${l%%=*}=${l#*=}"; done \
+  < <(node src/github-identity.js --config-dir <实例配置目录>)
+printf 'protocol=https\nhost=github.com\n\n' | GIT_TRACE=1 git credential fill
+```
+
+trace 里应该只有我们的助手在跑（`github-app-credential.mjs get`）。如果看到 `gh auth git-credential` 或 `git-credential-osxkeychain` 跑在我们前面，说明机器级助手没被清掉——`GIT_CONFIG_COUNT` 第一条的空值重置就是为这个存在的（真实事故：不重置时我们的助手永远排在最后，一次都不被调用）。
+
 ## 7. 多实例：一个机器人 = 一个应用 + 一份配置 + 一个进程
 
 ```
