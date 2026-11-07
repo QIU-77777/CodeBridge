@@ -206,6 +206,8 @@ printf 'protocol=https\nhost=github.com\n\n' | GIT_TRACE=1 git credential fill
 
 trace 里应该只有我们的助手在跑（`github-app-credential.mjs get`）。如果看到 `gh auth git-credential` 或 `git-credential-osxkeychain` 跑在我们前面，说明机器级助手没被清掉——`GIT_CONFIG_COUNT` 第一条的空值重置就是为这个存在的（真实事故：不重置时我们的助手永远排在最后，一次都不被调用）。
 
+重置用的是 URL 作用域的键（`credential.https://github.com.helper`），**只清 github.com 上累积的助手，不影响其他主机**。git 的凭证配置按 URL 组件逐级匹配，所以这个空值的作用范围与助手键完全一致。早期版本用过不带 URL 的通用键，会把所有主机的助手都清掉：agent 操作内部 GitLab、Gitee 时机器上原本的凭证来源被静默抹掉，只剩一句「读不到用户名」——那类远端的 git 操作会直接失败。想确认某个非 GitHub 主机没被影响，把命令里的 `host=github.com` 换成那个主机即可。
+
 ## 7. 多实例：一个机器人 = 一个应用 + 一份配置 + 一个进程
 
 ```
