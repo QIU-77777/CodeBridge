@@ -211,6 +211,51 @@ try {
     ok(/已中止/.test(TITLE(h.landed.at(-1))), '中止后落地的终态是已中止')
     ok(/半句/.test(JSON.stringify(h.landed.at(-1))), '中止卡片带上已经流到的正文，不是空白')
   }
+
+  // 5. 同一会话 60 秒内连跑两次：旧 run 的清理定时器不能删掉新 run
+  {
+    // 真实事故（2026-11-07 22:13）：run A 22:12:19 收尾时排了个 60 秒后执行的
+    // runs.delete(sid)；同一会话 22:13:10 又起了 run B（用户连着发了第二句），
+    // 定时器只认 sid，22:13:19 到点时把 run B 的对象删掉。run B 的文本增量与
+    // 终态事件随后全被 onEvent 的「找不到 run 就丢弃」吃掉，卡片永远停在
+    // 「执行中 · 耗时 7s · 正在等待模型响应…」，而答案早就产出了
+    const realSetTimeout = global.setTimeout
+    const cleanupTimers = []
+    global.setTimeout = (fn, ms, ...args) => {
+      // 只截 60 秒的清理定时器；传输桩的自动落地等照常放行
+      if (ms === 60_000) {
+        cleanupTimers.push(fn)
+        return { unref() {} }
+      }
+      return realSetTimeout(fn, ms, ...args)
+    }
+    try {
+      const h = makeHarness({ autoLandMs: 5 })
+      // run A：跑完并收尾，排进 60 秒清理
+      h.startRun('ses_x', 'k1')
+      h.bridge.onEvent({ type: 'session.execution.succeeded', data: { sessionID: 'ses_x' } })
+      await sleep(30)
+      ok(cleanupTimers.length === 1, 'run A 收尾时排了一个 60 秒清理定时器')
+      ok(/已完成/.test(TITLE(h.landed.at(-1))), 'run A 的终态 patch 已落地')
+
+      // run B：同一会话，60 秒内又来一个（this.runs.set 覆盖旧条目）
+      h.startRun('ses_x', 'k1')
+      h.bridge.onEvent({ type: 'session.text.delta', data: { sessionID: 'ses_x', delta: '第二句的答案' } })
+      await sleep(30)
+      ok(/第二句的答案/.test(JSON.stringify(h.landed.at(-1))), 'run B 的流式 patch 正常落地')
+
+      // 触发 run A 的清理定时器（模拟 60 秒到点）
+      cleanupTimers.forEach((fn) => fn())
+      ok(h.bridge.runs.get('ses_x') != null, '清理定时器没有把 run B 的对象删掉')
+
+      // run B 的终态事件必须还能落地
+      h.bridge.onEvent({ type: 'session.execution.succeeded', data: { sessionID: 'ses_x' } })
+      await sleep(30)
+      ok(/已完成/.test(TITLE(h.landed.at(-1))), 'run B 的终态 patch 正常落地（修复前会被静默丢弃，卡片永远停在执行中）')
+    } finally {
+      global.setTimeout = realSetTimeout
+    }
+  }
 } catch (err) {
   fail++
   console.log(`❌ 测试本身出错: ${err.stack || err.message}`)
