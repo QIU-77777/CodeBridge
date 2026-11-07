@@ -140,6 +140,48 @@ try {
     '截断样式超出宽度时显示省略号',
   )
 
+  // 4d. 配置页按后端显隐：opencode 连接与 pi 参数各自成组，随后端类型切显隐。
+  // 用户原话：「配置的明明是 pi，右侧还给我 open code 连接的选项」——
+  // 常驻显示的 opencode 分区与写死的后端清单都不允许回来
+  ok(indexHtml.includes('id="c-oc-group"'), '配置页有 opencode 字段组')
+  ok(indexHtml.includes('id="c-pi-group"'), '配置页有 pi 字段组')
+  ok(indexHtml.includes('id="c-backendType"'), '配置页有后端选择框')
+  ok(indexHtml.includes('id="c-backend-scan"'), '配置页有「复用本地」说明行')
+  ok(!indexHtml.includes('<h3>opencode 连接</h3>'), '配置页没有常驻显示的 opencode 连接分区')
+  ok(!indexHtml.includes('<h3>backend</h3>'), '配置页底部没有独立的后端分区（已并入 coding agent 组）')
+  const cfgToggle = indexHtml.slice(indexHtml.indexOf('function toggleConfigBackend'))
+  ok(
+    cfgToggle.includes("$('c-pi-group').classList.toggle('hidden', !pi)") &&
+      cfgToggle.includes("$('c-oc-group').classList.toggle('hidden', pi)"),
+    'toggleConfigBackend 按后端类型切换两组的显隐',
+  )
+  ok(
+    /async function loadConfigTab[\s\S]*?loadBackends\(\)/.test(indexHtml),
+    '配置页加载时一并取本地 coding agent 扫描',
+  )
+  ok(
+    /fillBackendSelect\(\$\(['"]c-backendType['"]\)/.test(indexHtml),
+    '配置页的后端选项由扫描结果填充',
+  )
+
+  // 4e. 新建实例弹窗：后端选项来自扫描，默认落在本机可用的那个上
+  const createModal = indexHtml.slice(indexHtml.indexOf('id="create-modal"'))
+  ok(createModal.includes('id="n-backend-scan"'), '新建弹窗有「复用本地」说明行')
+  ok(!/<option value="opencode">/.test(createModal), '新建弹窗不再写死后端选项')
+  const openCreate = indexHtml.slice(indexHtml.indexOf('async function openCreateModal'))
+  ok(
+    openCreate.includes("loadBackends(true)") && openCreate.includes("fillBackendSelect($('n-backend')"),
+    '打开弹窗时重扫并填充后端选项',
+  )
+  ok(
+    /backends\.find\(\(b\) => b\.available\)/.test(openCreate),
+    '默认选中本机可用的后端',
+  )
+  ok(
+    !indexHtml.includes('opencode 后端要填 serve 密码'),
+    '新建弹窗不再前置拦截空 serve 密码（服务端自动生成）',
+  )
+
   // 5. 可执行文件解析：PATH 找不到时去常见用户 bin 目录找
   // （pi 装在 ~/.npm-global/bin，而 admin 进程的 PATH 里没有它，实测踩过）
   const { resolveBin } = await import(join(REPO, 'admin', 'instances.js'))
@@ -184,6 +226,30 @@ try {
   }
   const phOpen = await piCliHealth({ backend: { type: 'opencode' } })
   ok(phOpen.applicable === false, 'opencode 实例的 pi 健康检查不适用')
+
+  // 5d. 本地 coding agent 扫描：形状稳定，与本机装没装无关。
+  // 配置页与新建弹窗的后端选项全部来自这一次扫描，字段契约在这里钉住
+  const { scanBackends } = await import(join(REPO, 'admin', 'backends.js'))
+  const scanned = await scanBackends()
+  ok(Array.isArray(scanned) && scanned.length === 2, '扫描返回两个受支持的后端')
+  ok(
+    scanned.map((b) => b.type).join(',') === 'opencode,pi',
+    '后端顺序固定：opencode、pi',
+    scanned.map((b) => b.type).join(','),
+  )
+  for (const b of scanned) {
+    ok(
+      typeof b.summary === 'string' && b.summary.length > 0 &&
+      typeof b.available === 'boolean' && typeof b.bin === 'string' &&
+      typeof b.version === 'string' && typeof b.detail === 'string' && typeof b.reason === 'string',
+      `${b.type} 条目字段完整`,
+      JSON.stringify(b).slice(0, 160),
+    )
+    ok(
+      b.available ? b.bin.length > 0 : b.reason.length > 0,
+      b.available ? `${b.type} 可用时给出解析路径` : `${b.type} 不可用时给出原因`,
+    )
+  }
 
   // 6. 新建实例：校验、端口避让、配置生成与落盘
   const { planNewInstance, writeNewInstance, nextFreeUrl, defaultDirForName } = await import(
@@ -253,14 +319,20 @@ try {
     'admin 自身占用的端口也避让',
   )
 
-  // opencode 后端密码必填：静默留空会连到别人需要密码的 serve 报 401
+  // opencode 后端的 serve 密码留空时自动生成：serve 与桥接从同一份配置读它，
+  // 两边同源就不存在用户填错；空密码才会连到别人需要密码的 serve 报 401
+  const autoPw = planNewInstance({ name: 'pw', feishu: goodBody.feishu }, [])
+  ok(autoPw.errors.length === 0, 'opencode 后端不填 serve 密码也能建（自动生成）')
+  const generated = autoPw.plan?.config.opencode?.password || ''
+  ok(generated.length >= 32, '自动生成的 serve 密码足够长', `len=${generated.length}`)
   ok(
-    planNewInstance({ name: 'pw', feishu: goodBody.feishu }, []).errors.some((e) => e.includes('密码必填')),
-    'opencode 后端不填 serve 密码被拒绝',
+    planNewInstance({ name: 'pw2', feishu: goodBody.feishu }, []).plan?.config.opencode?.password !== generated,
+    '每次生成的密码不同',
   )
   ok(
-    planNewInstance({ name: 'pw', feishu: goodBody.feishu, opencode: { password: 's3cret' } }, []).errors.length === 0,
-    'opencode 后端填了密码通过校验',
+    planNewInstance({ name: 'pw', feishu: goodBody.feishu, opencode: { password: 's3cret' } }, []).plan?.config
+      .opencode?.password === 's3cret',
+    '显式填了 serve 密码时尊重输入',
   )
   // 显式指定已被占用的端口要拒绝：两个实例共用一个端口必然有一个 serve 绑不上
   ok(

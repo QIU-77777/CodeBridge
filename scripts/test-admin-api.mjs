@@ -151,6 +151,31 @@ try {
   writeFileSync(join(INSTANCE_DIR, 'pi-sessions', 'index.json'), '{ 这不是 JSON')
   const sessionsBad = await fetch(`${BASE}/api/instances/${NAME}/sessions`, { headers: { Accept: 'application/json' } }).then((x) => x.json())
   ok(sessionsBad.applicable === true && sessionsBad.error && sessionsBad.sessions?.length === 0, '会话索引损坏时带回错误')
+
+  // 本地 coding agent 扫描：配置页与新建弹窗的选项来源。GET，不需要写操作头
+  const backends = await fetch(`${BASE}/api/backends`, { headers: { Accept: 'application/json' } }).then((x) => x.json())
+  ok(Array.isArray(backends.backends) && backends.backends.length === 2, 'GET /api/backends 返回两个后端')
+  ok(
+    backends.backends.every((b) => typeof b.type === 'string' && typeof b.available === 'boolean' && typeof b.summary === 'string'),
+    '每个后端带类型、可用性与一句话说明',
+  )
+  ok(
+    backends.backends.filter((b) => b.available).every((b) => typeof b.bin === 'string' && b.bin.length > 0),
+    '可用的后端带解析到的路径',
+  )
+  ok(
+    backends.backends.filter((b) => !b.available).every((b) => typeof b.reason === 'string' && b.reason.length > 0),
+    '不可用的后端带原因',
+  )
+  ok(
+    (
+      await fetch(`${BASE}/api/backends`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-OCB-Admin': '1' },
+      })
+    ).status === 405,
+    'backends 接口只接受 GET',
+  )
 } catch (err) {
   fail++
   console.log(`❌ 测试本身出错: ${err.stack || err.message}`)

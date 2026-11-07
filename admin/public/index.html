@@ -307,6 +307,26 @@
           <div id="cfg-msg"></div>
           <div class="grid2">
             <div>
+              <h3>coding agent</h3>
+              <label class="fld"><span>后端（打开页面时自动扫描本机支持的本地 coding agent）</span>
+                <select id="c-backendType"></select>
+              </label>
+              <div id="c-backend-scan" class="hint" style="margin-bottom:8px"></div>
+              <div id="c-oc-group">
+                <label class="fld"><span>serve 地址（仅 opencode 后端）</span><input type="text" id="c-ocUrl"></label>
+                <label class="fld"><span>serve 密码（仅 opencode 后端，留空保持不变）</span><input type="password" id="c-ocPassword" placeholder="已填写时显示掩码"></label>
+              </div>
+              <div id="c-pi-group" class="hidden">
+                <label class="fld"><span>pi.bin（留空用 PATH 里的 pi）</span><input type="text" id="c-piBin" placeholder="pi"></label>
+                <label class="fld"><span>pi.model（留空用 pi 本地默认模型）</span><input type="text" id="c-piModel"></label>
+                <label class="fld"><span>pi.timeoutMs</span><input type="number" id="c-piTimeout"></label>
+                <label class="fld"><span>pi.extraArgs（逗号分隔）</span><input type="text" id="c-piExtra"></label>
+              </div>
+              <label class="fld"><span>默认工作目录（两个后端都用，留空用家主目录）</span><input type="text" id="c-defaultDirectory"></label>
+              <label class="fld"><span>默认模型（两个后端都用，留空用 coding agent 本地默认模型）</span><input type="text" id="c-defaultModel"></label>
+              <p class="hint">选哪个后端显示哪组字段：opencode 连本机 serve，pi 起一次性子进程，两者的配置都默认复用本机已装的那一个。默认工作目录与默认模型留空即用 coding agent 自己的本地默认值。</p>
+            </div>
+            <div>
               <h3>飞书应用</h3>
               <label class="fld"><span>appId（cli_ 开头）</span><input type="text" id="c-appId"></label>
               <label class="fld"><span>appSecret（留空保持不变）</span><input type="password" id="c-appSecret" placeholder="已填写时显示掩码"></label>
@@ -315,14 +335,6 @@
               </label>
               <label class="fld"><span>botOpenId（机器人自己的 open_id，多机器人同群必填）</span><input type="text" id="c-botOpenId"></label>
               <label class="chk"><input type="checkbox" id="c-requireMention"> 群聊必须 @ 本机器人才响应</label>
-            </div>
-            <div>
-              <h3>opencode 连接</h3>
-              <label class="fld"><span>serve 地址（仅 opencode 后端）</span><input type="text" id="c-ocUrl"></label>
-              <label class="fld"><span>serve 密码（仅 opencode 后端，留空保持不变）</span><input type="password" id="c-ocPassword" placeholder="已填写时显示掩码"></label>
-              <label class="fld"><span>默认工作目录（两个后端都用，/new 不带目录时用这个）</span><input type="text" id="c-defaultDirectory"></label>
-              <label class="fld"><span>默认模型（两个后端都用，providerID/modelID）</span><input type="text" id="c-defaultModel"></label>
-              <p class="hint">pi 后端不连 serve，serve 两项不生效；默认工作目录与默认模型对两个后端都生效，pi 每次执行都起在这个目录里。</p>
             </div>
           </div>
           <h3>behavior</h3>
@@ -333,16 +345,6 @@
             <label class="fld"><span>maxParallel（0 不限）</span><input type="number" id="c-maxParallel"></label>
             <label class="chk"><input type="checkbox" id="c-showReasoning"> showReasoning</label>
             <label class="chk"><input type="checkbox" id="c-showTools"> showTools</label>
-          </div>
-          <h3>backend</h3>
-          <div class="grid3">
-            <label class="fld"><span>type</span>
-              <select id="c-backendType"><option value="opencode">opencode（流式）</option><option value="pi">pi（一次性）</option></select>
-            </label>
-            <label class="fld"><span>pi.bin</span><input type="text" id="c-piBin"></label>
-            <label class="fld"><span>pi.model（留空用 pi 默认）</span><input type="text" id="c-piModel"></label>
-            <label class="fld"><span>pi.timeoutMs</span><input type="number" id="c-piTimeout"></label>
-            <label class="fld"><span>pi.extraArgs（逗号分隔）</span><input type="text" id="c-piExtra"></label>
           </div>
           <p class="hint">保存前自动备份为 config.json.bak，临时文件加重命名落盘。密钥字段留空表示保持原值。修改后需重启实例生效。</p>
         </div>
@@ -448,18 +450,26 @@
 <div class="modal-mask hidden" id="create-modal">
   <div class="modal">
     <h2>新建实例</h2>
-    <p class="lede">一个实例 = 一份配置目录 + 一个进程 + 一个飞书应用。飞书应用要先在开放平台建好（权限与事件订阅见 README「创建飞书应用」），这里只填凭证；admin 负责生成配置、安装 launchd 常驻服务并启动。</p>
+    <p class="lede">三步：选一个本机已装的 coding agent，填飞书应用的 ID 与 Secret，其余默认复用本地配置。一个实例 = 一份配置目录 + 一个进程 + 一个飞书应用；飞书应用要先在开放平台建好（权限与事件订阅见 README「创建飞书应用」），admin 负责生成配置、安装 launchd 常驻服务并启动。</p>
     <div class="grid2">
       <div>
         <h3>实例</h3>
         <label class="fld"><span>实例名（小写字母、数字、连字符，字母或数字开头）</span><input type="text" id="n-name" placeholder="pi"></label>
         <label class="fld"><span>配置目录（留空用默认 ~/.config/opencode-feishu-bridge-实例名）</span><input type="text" id="n-dir" placeholder="~/.config/opencode-feishu-bridge-pi"></label>
-        <label class="fld"><span>后端类型</span>
-          <select id="n-backend">
-            <option value="opencode">opencode（常驻流式）</option>
-            <option value="pi">pi（一次性子进程）</option>
-          </select>
+        <h3>coding agent</h3>
+        <label class="fld"><span>后端（打开时自动扫描本机支持的本地 coding agent）</span>
+          <select id="n-backend"></select>
         </label>
+        <div id="n-backend-scan" class="hint" style="margin-bottom:8px"></div>
+        <div id="n-oc-group">
+          <label class="fld"><span>serve 地址（留空自动分配，避开已占用端口）</span><input type="text" id="n-ocUrl" placeholder="http://127.0.0.1:19876"></label>
+          <label class="fld"><span>serve 密码（留空由 admin 自动生成，serve 与桥接共用）</span><input type="password" id="n-ocPassword" placeholder="留空自动生成"></label>
+        </div>
+        <div id="n-pi-group" class="hidden">
+          <label class="fld"><span>pi.bin（默认用扫描到的本机 pi）</span><input type="text" id="n-piBin" placeholder="pi"></label>
+          <label class="fld"><span>pi.model（留空用 pi 本地默认模型）</span><input type="text" id="n-piModel"></label>
+          <label class="fld"><span>pi.timeoutMs</span><input type="number" id="n-piTimeout" placeholder="600000"></label>
+        </div>
       </div>
       <div>
         <h3>飞书应用</h3>
@@ -469,28 +479,9 @@
           <select id="n-domain"><option value="feishu">feishu</option><option value="lark">lark</option></select>
         </label>
         <label class="fld"><span>botOpenId（选填，留空则启动时自动向飞书取）</span><input type="text" id="n-botOpenId" placeholder="ou_..."></label>
-      </div>
-    </div>
-    <div id="n-oc-group">
-      <h3>opencode serve 连接</h3>
-      <div class="grid2">
-        <label class="fld"><span>serve 地址（留空自动分配，避开已占用端口）</span><input type="text" id="n-ocUrl" placeholder="http://127.0.0.1:19876"></label>
-        <label class="fld"><span>serve 密码（opencode 后端必填）</span><input type="password" id="n-ocPassword" placeholder="新建实例的 serve 用它启动，桥接也用它连"></label>
-      </div>
-    </div>
-    <div>
-      <h3>工作目录与模型</h3>
-      <div class="grid2">
+        <h3>工作目录与模型</h3>
         <label class="fld"><span>默认工作目录（两个后端都用，留空用家主目录）</span><input type="text" id="n-defaultDirectory" placeholder="留空用家主目录"></label>
-        <label class="fld"><span>默认模型（providerID/modelID，可留空）</span><input type="text" id="n-defaultModel" placeholder="stepfun-step-plan/step-5-preview"></label>
-      </div>
-    </div>
-    <div id="n-pi-group" class="hidden">
-      <h3>pi 参数</h3>
-      <div class="grid2">
-        <label class="fld"><span>pi.bin</span><input type="text" id="n-piBin" placeholder="pi"></label>
-        <label class="fld"><span>pi.model（留空用 pi 默认）</span><input type="text" id="n-piModel"></label>
-        <label class="fld"><span>pi.timeoutMs</span><input type="number" id="n-piTimeout" placeholder="600000"></label>
+        <label class="fld"><span>默认模型（留空用 coding agent 本地默认模型）</span><input type="text" id="n-defaultModel" placeholder="providerID/modelID"></label>
       </div>
     </div>
     <div class="row" style="margin-top:16px">
@@ -528,6 +519,51 @@ const state = {
   instances: [],
   tab: 'overview',
   log: { since: 0, follow: true, timer: null, name: '', file: 'bridge' },
+  backends: null,
+}
+
+// ---------- 本地 coding agent 扫描 ----------
+// 后端选项不写死在页面里：打开时问一次 /api/backends，本机装了哪些受支持的
+// coding agent、各是什么版本、解析到哪个路径，全都以扫描结果为准。
+// 扫描失败时退回静态清单：表单少一行说明也能用，不能变成空下拉框
+const FALLBACK_BACKENDS = [
+  { type: 'opencode', summary: '常驻 serve，流式输出', available: false, bin: '', version: '', detail: '', reason: '扫描失败，按默认选项显示' },
+  { type: 'pi', summary: '一次性子进程，跑完一张结果卡片', available: false, bin: '', version: '', detail: '', reason: '扫描失败，按默认选项显示' },
+]
+
+async function loadBackends(refresh = false) {
+  if (!state.backends || refresh) {
+    try {
+      const json = await api('/api/backends')
+      state.backends = json.backends || []
+    } catch {
+      state.backends = null
+    }
+  }
+  return state.backends || FALLBACK_BACKENDS
+}
+
+function backendOptionLabel(b) {
+  const mark = b.available ? `本机${b.version ? ' ' + b.version : '可用'}` : '未安装'
+  return `${b.type}（${b.summary}）· ${mark}`
+}
+
+function fillBackendSelect(sel, backends) {
+  sel.innerHTML = backends.map((b) => `<option value="${esc(b.type)}">${esc(backendOptionLabel(b))}</option>`).join('')
+}
+
+/** 选中后端下方那行「复用本地」的说明：可用给路径与版本，不可用给原因 */
+function backendScanHtml(b) {
+  if (!b) return '<span class="dim">扫描中…</span>'
+  if (!b.available) return `<span class="err">${esc(b.reason)}</span>`
+  const detail = [b.version ? `v${esc(b.version)}` : '', b.detail].filter(Boolean).join('，')
+  return `复用本地 <span class="mono">${esc(b.bin)}</span>${detail ? `（${detail}）` : ''}`
+}
+
+function refreshBackendScan(selectId, lineId) {
+  const b = (state.backends || []).find((x) => x.type === $(selectId).value)
+  $(lineId).innerHTML = backendScanHtml(b)
+  return b
 }
 
 // 页签标题。左侧功能栏与页头顶部各司其职，不重复堆标签
@@ -690,7 +726,11 @@ async function loadConfigTab() {
   if (!name) return
   $('cfg-msg').textContent = ''
   try {
-    const json = await api(`/api/instances/${encodeURIComponent(name)}`)
+    // 实例配置与本地 coding agent 扫描并行拉：后者是后端选项与「复用本地」行的来源
+    const [json, backends] = await Promise.all([
+      api(`/api/instances/${encodeURIComponent(name)}`),
+      loadBackends(),
+    ])
     if (json.configError) { $('cfg-msg').innerHTML = `<span class="err">配置读取失败: ${esc(json.configError)}</span>`; return }
     const c = json.config
     $('c-appId').value = c.feishu?.appId || ''
@@ -710,14 +750,27 @@ async function loadConfigTab() {
     $('c-maxParallel').value = c.behavior?.maxParallel ?? 2
     $('c-showReasoning').checked = !!c.behavior?.showReasoning
     $('c-showTools').checked = !!c.behavior?.showTools
+    fillBackendSelect($('c-backendType'), backends)
     $('c-backendType').value = c.backend?.type || 'opencode'
-    $('c-piBin').value = c.backend?.pi?.bin || 'pi'
+    // pi.bin 只在没显式配置时替上扫描到的本机路径：显式写过绝对路径的不动
+    const piBin = c.backend?.pi?.bin || ''
+    const scannedPi = backends.find((b) => b.type === 'pi')
+    $('c-piBin').value = piBin && piBin !== 'pi' ? piBin : scannedPi?.bin || 'pi'
     $('c-piModel').value = c.backend?.pi?.model || ''
     $('c-piTimeout').value = c.backend?.pi?.timeoutMs ?? 600000
     $('c-piExtra').value = (c.backend?.pi?.extraArgs || []).join(',')
+    toggleConfigBackend()
   } catch (err) {
     $('cfg-msg').innerHTML = `<span class="err">${esc(err.message)}</span>`
   }
+}
+
+/** 配置页按后端显隐：opencode 只显示 serve 两项，pi 只显示 pi 参数，共用两组不动 */
+function toggleConfigBackend() {
+  const pi = $('c-backendType').value === 'pi'
+  $('c-pi-group').classList.toggle('hidden', !pi)
+  $('c-oc-group').classList.toggle('hidden', pi)
+  refreshBackendScan('c-backendType', 'c-backend-scan')
 }
 
 async function saveConfig() {
@@ -978,11 +1031,20 @@ function toggleBackendGroup() {
   const pi = $('n-backend').value === 'pi'
   $('n-pi-group').classList.toggle('hidden', !pi)
   $('n-oc-group').classList.toggle('hidden', pi)
+  const b = refreshBackendScan('n-backend', 'n-backend-scan')
+  // pi.bin 预填扫描到的本机路径：只填空字段，用户改过的不覆盖
+  if (pi && !$('n-piBin').value.trim()) $('n-piBin').value = b?.bin || ''
 }
 
-function openCreateModal() {
+async function openCreateModal() {
   $('create-modal').classList.remove('hidden')
   $('n-msg').textContent = ''
+  // 每次打开重扫一次：用户可能刚装好一个 CLI
+  const backends = await loadBackends(true)
+  fillBackendSelect($('n-backend'), backends)
+  // 默认落在本机可用的第一个后端上，「选一个就好」从已装的那个开始
+  const first = backends.find((b) => b.available) || backends[0]
+  if (first) $('n-backend').value = first.type
   toggleBackendGroup()
 }
 
@@ -1013,11 +1075,8 @@ async function submitCreate() {
       timeoutMs: $('n-piTimeout').value.trim() === '' ? undefined : Number($('n-piTimeout').value),
     },
   }
-  // 与服务端同一条规则：opencode 后端的 serve 密码必填，提前挡掉，别等几十秒后才报错
-  if (body.backend.type === 'opencode' && !body.opencode.password) {
-    $('n-msg').innerHTML = '<span class="err">opencode 后端要填 serve 密码：新建实例的 serve 用它启动，桥接也用它连。</span>'
-    return
-  }
+  // opencode 后端的 serve 密码留空时由服务端自动生成（serve 与桥接共用同一个值），
+  // 这里不再前置拦截；要指定密码就填，表单只强依赖飞书凭证
   $('n-msg').textContent = '创建中：写配置、装常驻服务并等待就绪，约几十秒…'
   $('n-submit').disabled = true
   try {
@@ -1050,6 +1109,7 @@ $('btn-refresh').addEventListener('click', () => {
   if (state.tab === 'sessions') loadSessionsTab()
 })
 $('cfg-instance').addEventListener('change', loadConfigTab)
+$('c-backendType').addEventListener('change', toggleConfigBackend)
 $('cfg-save').addEventListener('click', saveConfig)
 $('fs-instance').addEventListener('change', loadFeishuTab)
 $('fs-verify').addEventListener('click', verifyFeishu)

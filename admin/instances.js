@@ -264,8 +264,9 @@ export async function serveHealth(cfg) {
  * 常见用户 bin 目录。admin 进程的 PATH 未必包含它们——admin 常由 npm 启动，
  * PATH 里只有 node_modules/.bin 和系统目录；而用户装的 CLI（pi 这类）多在
  * npm 全局 bin 里。PATH 直接找不到时去这些目录找，别误报「CLI 异常」。
+ * 导出给 backends.js 的扫描用：找不到 pi 时的原因说明要列出这些目录。
  */
-const USER_BIN_DIRS = [
+export const USER_BIN_DIRS = [
   join(homedir(), '.npm-global', 'bin'),
   join(homedir(), '.local', 'bin'),
   join(homedir(), '.bun', 'bin'),
