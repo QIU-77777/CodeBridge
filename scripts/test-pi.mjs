@@ -526,7 +526,7 @@ const main = async () => {
     ok(env.GH_TOKEN === 'ghp_test_dump', 'GitHub 身份注入 GH_TOKEN（子进程真的拿到了）')
     ok(env.GIT_AUTHOR_NAME === 'Lil_P' && env.GIT_COMMITTER_NAME === 'Lil_P', '提交署名注入 author/committer')
     ok(env.GIT_AUTHOR_EMAIL.includes('lil-p-bot'), '署名邮箱用 bot 的 noreply 地址')
-    ok(env.GIT_CONFIG_COUNT === '2' && env.GIT_CONFIG_KEY_0 === 'credential.helper' && env.GIT_CONFIG_VALUE_0 === '', 'git 配置两段式：第一条空值清掉机器上累积的助手列表')
+    ok(env.GIT_CONFIG_COUNT === '2' && env.GIT_CONFIG_KEY_0 === 'credential.https://github.com.helper' && env.GIT_CONFIG_VALUE_0 === '', 'git 配置两段式：第一条空值只清 github.com 上累积的助手列表')
     ok(String(env.GIT_CONFIG_VALUE_1).includes('github-app-credential.mjs'), '第二条装真助手，指向凭证助手脚本')
     ok(env.OCB_CONFIG_DIR === configDir, '凭证助手靠 OCB_CONFIG_DIR 找到实例配置')
   }

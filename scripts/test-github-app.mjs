@@ -161,7 +161,7 @@ const main = async () => {
     ok(env.GIT_AUTHOR_NAME === 'Lil_P' && env.GIT_COMMITTER_NAME === 'Lil_P', 'author/committer 署名都注入')
     ok(env.GIT_AUTHOR_EMAIL.includes('lil-p-bot'), '署名邮箱用 app 的 noreply 地址（提交关联到 bot）')
     ok(env.GIT_CONFIG_COUNT === '2', '用 GIT_CONFIG_COUNT 注入 git 配置（不碰用户全局配置）')
-    ok(env.GIT_CONFIG_KEY_0 === 'credential.helper' && env.GIT_CONFIG_VALUE_0 === '', '第一条用空值清掉机器上累积的助手列表（否则全局 gh 助手挡在前面，我们的助手永不被调用）')
+    ok(env.GIT_CONFIG_KEY_0 === 'credential.https://github.com.helper' && env.GIT_CONFIG_VALUE_0 === '', '第一条用空值清掉 github.com 上累积的助手列表（否则全局 gh 助手挡在前面，我们的助手永不被调用）')
     ok(env.GIT_CONFIG_KEY_1 === 'credential.https://github.com.helper', '第二条装真助手')
     ok(String(env.GIT_CONFIG_VALUE_1).includes('github-app-credential.mjs'), '凭证助手指向本仓库的脚本')
     ok(String(env.GIT_CONFIG_VALUE_1).startsWith('!' + process.execPath), '助手用绝对 node 路径，不依赖 PATH')
@@ -277,9 +277,9 @@ const main = async () => {
         json: async () => ({ token: 'ghs_realtest', expires_at: new Date(Date.now() + 3600_000).toISOString() }),
       }),
     })
-    const fill = (extraEnv) => {
+    const fill = (extraEnv, host = 'github.com') => {
       const r = execFileSync('git', ['credential', 'fill'], {
-        input: 'protocol=https\nhost=github.com\n\n',
+        input: `protocol=https\nhost=${host}\n\n`,
         // GIT_CONFIG_NOSYSTEM：真机的系统级 osxkeychain 里存着本人的 GitHub
         // 凭证，不屏蔽的话它会先跑并索要密码，把测试带偏
         env: { ...process.env, HOME: home, GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_NOSYSTEM: '1', ...extraEnv },
@@ -296,6 +296,18 @@ const main = async () => {
     ok(/username=x-access-token/.test(injected), '注入后凭证来自我们的助手，不是机器级助手')
     ok(/password=ghs_realtest/.test(injected), '拿到的是有效 installation token')
     ok(!/MACHINE_DEFAULT/.test(injected), '机器级助手被完全压过，没有漏出来')
+    // 非 GitHub 主机：机器级助手不受影响。重置用的是 URL 作用域的键，只清
+    // github.com 下面各级累积的助手；用不带 URL 的通用键会把所有主机的助手都
+    // 清掉，agent 操作内部 GitLab、Gitee 时机器上原本的凭证来源被静默抹掉
+    // （真机实测：只剩一句「读不到用户名」）。git 找不到凭证时会以非零退出，
+    // 所以这里包 try/catch——那正是这个问题的回归测试
+    let other = ''
+    try {
+      other = fill(env, 'gitlab.internal.example.com')
+    } catch (err) {
+      other = `退出码 ${err.status}: ${String(err.stderr).trim()}`
+    }
+    ok(/username=MACHINE_DEFAULT/.test(other), '非 GitHub 主机不受影响：机器级助手照旧给出凭证', other)
   }
 
   rmSync(root, { recursive: true, force: true })

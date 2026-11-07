@@ -128,10 +128,15 @@ export async function githubEnv(cfg, configDir, { withShim = true, fetchImpl } =
   // 密码的助手就赢。机器上只要有 gh auth login 过的全局配置（装过 gh 的都有），
   // 它排在环境变量前面，我们的助手永远不会被调用——实测 GIT_TRACE 里只有
   // osxkeychain 和 gh 助手在跑。而 gh 助手不校验 token 是否过期，GH_TOKEN 不在
-  // 环境里时还会返回人的 keychain 账号。所以第一条先用空值把前面累积的助手列表
-  // 清掉（空值重置是 git 凭证助手的既有语义），第二条装真助手
+  // 环境里时还会返回人的 keychain 账号。所以第一条先用空值把 github.com 上累积的
+  // 助手列表清掉（空值重置是 git 凭证助手的既有语义），第二条装真助手。
+  // 重置也用 URL 作用域的键：git 的凭证配置按 URL 组件逐级匹配，URL 作用域的
+  // 空值只清 github.com 下面各级（含更具体的路径作用域）累积的助手，与助手键
+  // 的匹配范围完全一致。用不带 URL 的通用键会把所有主机的助手都清掉——agent
+  // 操作内部 GitLab、Gitee 时机器上原本的凭证来源被静默抹掉，只剩一句看不懂的
+  // 「读不到用户名」
   env.GIT_CONFIG_COUNT = '2'
-  env.GIT_CONFIG_KEY_0 = 'credential.helper'
+  env.GIT_CONFIG_KEY_0 = 'credential.https://github.com.helper'
   env.GIT_CONFIG_VALUE_0 = ''
   env.GIT_CONFIG_KEY_1 = 'credential.https://github.com.helper'
   env.GIT_CONFIG_VALUE_1 = `!${process.execPath} ${GITHUB_CREDENTIAL_HELPER}`
