@@ -44,7 +44,7 @@ export class OpencodeClient {
         throw new Error(
           `opencode 认证失败（401）：配置里的 opencode.password 与 serve 实际使用的不一致。` +
             `serve 启动时把密码定格在进程环境里，之后改配置不会生效——重启 serve 让两边一致：` +
-            `launchctl kickstart -k gui/501/$(launchctl list | grep -o 'ai.qiguang.ocbridge.serve' | head -1)`,
+            `launchctl kickstart -k gui/$(id -u)/$(launchctl list | grep -o 'ai.qiguang.ocbridge.serve' | head -1)`,
         )
       }
       const err = new Error(`${method} ${path} -> ${res.status}: ${msg}`)

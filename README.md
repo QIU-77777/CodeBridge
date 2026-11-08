@@ -229,7 +229,7 @@ npm run init -- --add-allow=ou_你的openid
     "showReasoning": false,
     "showTools": false,
     "maxBodyChars": 6000,
-    "idleTimeoutMs": 900000
+    "idleTimeoutMs": 300000
   }
 }
 ```
@@ -601,7 +601,7 @@ admin 按模板生成 `config.json`（权限 600，含 appSecret）、安装 lau
 | `behavior.showReasoning` | 是否把模型思考过程推到卡片 | `false` |
 | `behavior.showTools` | 是否展示工具调用链路 | `false` |
 | `behavior.maxBodyChars` | 卡片正文最大字符数，超出保留尾部 | `6000` |
-| `behavior.idleTimeoutMs` | 多久没收到事件就判定卡死并收尾卡片；设 0 关闭 | `900000`（15 分钟） |
+| `behavior.idleTimeoutMs` | 多久没收到事件就判定卡死并收尾卡片；设 0 关闭 | `300000`（5 分钟） |
 | `behavior.maxParallel` | 同时最多跑几个任务（群里每话题一个会话，彼此并行）；0 = 不限 | `2` |
 | `backend.type` | `opencode`（默认，常驻 HTTP + SSE）或 `pi`（一次性子进程） | `opencode` |
 | `backend.pi.bin` | pi CLI 路径，留空用 PATH 里的 `pi` | `pi` |

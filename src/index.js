@@ -164,7 +164,7 @@ ${created ? '   已为你生成模板，请填入 appId / appSecret。\n' : '   
         // 成因是密码不一致：serve 启动时把密码定格在进程环境里，之后改配置
         // 不会跟着变，重启 serve 才能让两边重新一致
         console.error('   serve 在跑，但两边密码不一致。重启 serve 让配置里的密码生效：')
-        console.error('   launchctl kickstart -k gui/501/ai.qiguang.ocbridge.serve')
+        console.error('   launchctl kickstart -k gui/$(id -u)/ai.qiguang.ocbridge.serve')
         console.error(`   配置里的 opencode.password：${cfg.opencode.password ? '已填写' : '为空'}`)
       } else {
         console.error('   请先启动：opencode serve --port 19876 --hostname 127.0.0.1')
