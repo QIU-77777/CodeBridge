@@ -965,6 +965,9 @@ function drawPeople() {
       : '<span class="dim">（群里显示 open_id）</span>'
     const first = r.firstSeen ? new Date(r.firstSeen).toLocaleString('zh-CN', { hour12: false }) : '\u2014'
     // 放行状态的呈现：开关本身表达「能否唤醒」，手写行额外给一个徽章说明来源
+    // 有人工配置（白名单 / listen / 名字声明）才给「移除」：纯通讯录条目是
+    // 运行时自动攒的事实，不给删——删了下次被 @ 还会回来，给了反而误导
+    const managed = (r) => r.allowedVia === 'manual' || r.allowedVia === 'listen' || r.nameSource === 'cfg'
     const gate = '<label class="switch" title="' +
       (r.allowed ? '已放行：它的 @ 能唤醒这个机器人' : '未放行：它的 @ 到不了这个机器人') + '">' +
       '<input type="checkbox" ' + (r.allowed ? 'checked' : '') +
@@ -978,8 +981,8 @@ function drawPeople() {
       '<td>' + gate + '</td>' +
       '<td class="row">' +
         '<button class="btn" onclick="startNameEdit(\'' + esc(r.id) + '\')">改名</button>' +
-        (r.allowedVia === 'manual'
-          ? '<button class="btn danger" onclick="removeAllow(\'' + esc(r.id) + '\')">移除</button>'
+        (managed(r)
+          ? '<button class="btn danger" onclick="removePerson(\'' + esc(r.id) + '\')">移除</button>'
           : '') +
       '</td>' +
     '</tr>'
@@ -1088,14 +1091,32 @@ async function addAllow() {
   } catch (err) { setFsMsg('加入失败: ' + err.message, true) }
 }
 
-async function removeAllow(openId) {
-  if (!confirm('移除后，这个 open_id 的 @ 不能再唤醒这个机器人。名字声明会保留，群里的来源标注不受影响。确定移除？')) return
-  try {
-    await api(`/api/instances/${encodeURIComponent($('fs-instance').value)}/allowlist`, {
+/**
+ * 移除一个个体。三个名单一起删，条目才真的从表上消失：
+ * 只删白名单的话，名字声明（names）或通讯录（contacts）会让同一行继续留在
+ * 「并集」表里，用户看到的就是「点了移除，条目还在」——实测过的困惑。
+ *
+ * 通讯录条目删不掉也不该删：那是运行时自动攒的事实（被 @ 过就会记下），
+ * 下次它再被 @ 还会回来。所以移除后若那一行仍在，是通讯录还在记着它，
+ * 开关是关的，它的 @ 到不了这个机器人。
+ */
+async function removePerson(openId) {
+  if (!confirm(
+    '移除后，这个 open_id 会从白名单、监听名单和名字声明里删除，它的 @ 不能再唤醒这个机器人。' +
+    '如果它还被通讯录自动记着（被 @ 过就会记），那一行会保留、开关是关的。确定移除？'
+  )) return
+  const inst = $('fs-instance').value
+  const post = (sub, body) =>
+    api(`/api/instances/${encodeURIComponent(inst)}/${sub}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ op: 'remove', openId }),
+      body: JSON.stringify(body),
     })
-    setFsMsg('已移出手写白名单。重启实例后生效。')
+  try {
+    // 三个端点都是幂等的：不在名单里时原样返回，不会报错
+    await post('allowlist', { op: 'remove', openId })
+    await post('listen', { op: 'remove', openId })
+    await post('names', { op: 'remove', openId })
+    setFsMsg('已移除。重启实例后生效。')
     await loadFeishuTab()
   } catch (err) { setFsMsg('移除失败: ' + err.message, true) }
 }
