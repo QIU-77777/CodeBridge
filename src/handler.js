@@ -10,7 +10,8 @@ import {
   statusCard,
   textCard,
   queuedCard,
-  fmtAgo,
+  queuedSentCard,
+  queuedDroppedCard,
 } from './cards.js'
 import { truncate } from './render.js'
 
@@ -349,6 +350,8 @@ export class Bridge {
     }
     const msg = this.store.dequeue(key)
     if (!msg) return
+    // 翻新排队卡片：它还挂着「已加入队列」和两个按钮，而消息已经发出去了
+    this.refreshQueuedCard(msg, queuedSentCard)
     const ctx = { key, chatId: msg.chatId, replyTo: msg.replyTo || null }
     try {
       await this.runPrompt(msg, ctx)
@@ -356,7 +359,7 @@ export class Bridge {
       this.log.error?.(`排队消息发送失败: ${err.message}`)
       this.t
         .sendText(ctx.chatId, `排队的内容发送失败: ${err.message}`, { replyTo: ctx.replyTo })
-        ?.catch?.(() => {})
+        ?.catch?.(() => { })
     }
   }
 
@@ -374,6 +377,23 @@ export class Bridge {
     if (running) return
     const t = setTimeout(() => this.drainQueue(key), delay)
     t.unref?.()
+  }
+
+  /**
+   * 翻新一张排队卡片。卡片旧着不影响消息本身发出去，所以失败只记日志。
+   *
+   * 没有 cardId 的条目（改动之前入的队、重启前留下的）跳过——那些卡只能
+   * 靠人工忽略，或者下次任务结束时由 reconcile 兜底
+   */
+  refreshQueuedCard(item, build) {
+    if (!item?.cardId) return
+    const card = build({
+      preview: item.text,
+      from: this.nameOf(item.userId) || item.userId,
+    })
+    this.t
+      .patchCard(item.cardId, card)
+      .catch((e) => this.log.warn?.(`排队卡片翻新失败: ${e.message}`))
   }
 
   // ---------- 消息入口 ----------
@@ -483,7 +503,7 @@ export class Bridge {
       // qid 是这条排队消息的身份证：卡片上的两个按钮只对得上同一条
       const qid = this.store.qidOf(item)
       const position = this.store.enqueue(ctx.key, { ...item, qid })
-      return this.t.sendCard(
+      const cardId = await this.t.sendCard(
         ctx.chatId,
         queuedCard({
           preview: msg.text,
@@ -495,6 +515,10 @@ export class Bridge {
         }),
         { replyTo: ctx.replyTo },
       )
+      // 记住这张卡的 ID：消息出队或取消时要翻新它，不然它会一直挂着
+      // 「已加入队列」和两个点不动的按钮，而消息早就处理完了
+      this.store.setQueuedCard(ctx.key, qid, cardId)
+      return cardId
     }
 
     // 话题之间可以并行，但不能无限并行：每个会话都在真跑 bash / node，开太多会打满本机
@@ -1034,6 +1058,8 @@ export class Bridge {
           // 取消 = 把这条已排队的消息从队列里摘掉。摘不到说明它已经发出去了
           const p = this.store.removeQueued(key, a.q)
           if (!p) return { toast: { type: 'error', content: '这条消息不在队列里（可能已经发出）' } }
+          // 翻新那张「已加入队列」：消息已经取消，按钮也该撤掉
+          this.refreshQueuedCard(p, queuedDroppedCard)
           return { toast: { type: 'info', content: '已取消，消息没有发送' } }
         }
         case 'noop':

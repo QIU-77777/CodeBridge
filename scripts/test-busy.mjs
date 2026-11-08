@@ -46,16 +46,20 @@ function busyRun(h, key, sessionId = 'ses_run') {
 function makeHarness({ interruptOk = true } = {}) {
   const store = new Store(join(root, `state-${Math.random().toString(36).slice(2)}.json`))
   const sent = []
+  const patched = []
   const transport = {
     sendCard: async (chatId, card, opts) => {
       sent.push({ kind: 'card', chatId, card, opts })
-      return 'card-1'
+      return `card-${sent.length}`
     },
     sendText: async (chatId, text, opts) => {
       sent.push({ kind: 'text', chatId, text, opts })
       return 'text-1'
     },
-    patchCard: async () => true,
+    patchCard: async (messageId, card) => {
+      patched.push({ messageId, card })
+      return true
+    },
   }
   const prompts = []
   const oc = {
@@ -87,7 +91,7 @@ function makeHarness({ interruptOk = true } = {}) {
     behavior: { streamIntervalMs: 1800, maxParallel: 0, idleTimeoutMs: 0, maxBodyChars: 6000 },
   }
   const bridge = new Bridge({ oc, store, config: cfg, transport, capabilities: { type: 'opencode', label: 'opencode' } })
-  return { store, transport, oc, bridge, prompts, sent }
+  return { store, transport, oc, bridge, prompts, sent, patched }
 }
 
 try {
@@ -114,6 +118,8 @@ try {
     ok(btnLabels.length === 2, '整张卡片只有两个按钮', JSON.stringify(btnLabels))
     ok(!btnLabels.some((l) => l.includes('加入队列')), '没有「加入队列」按钮——它已经是默认动作，不用点')
     ok(h.store.queueLength(key) === 1, '消息默认进队列，不需要用户点任何按钮')
+    // 排队条目要记下这张卡的 ID，否则消息发出去后没人能翻新它
+    ok(Boolean(h.store.data.queue[key]?.[0]?.cardId), '排队条目记下了卡片的 ID')
     ok(h.store.dequeue(key)?.text === '帮我改个 bug', '队列里就是这条消息')
     ok(h.prompts.length === 0, '忙等时没有真发消息给后端')
     h.store.flush()
@@ -155,10 +161,16 @@ try {
     h.store.enqueue(key, { text: '算了', userId: 'ou_x', messageId: 'm4', chatId: key })
     h.store.enqueue(key, { text: '还要', userId: 'ou_x', messageId: 'm4b', chatId: key })
     const qid = h.store.data.queue[key][0].qid
+    h.store.setQueuedCard(key, h.store.data.queue[key][0].qid, 'card-drop')
     const r = await h.bridge.onCardAction({ chatId: key, userId: 'ou_x', action: { a: 'drop', k: key, q: qid }, messageId: 'c1' })
     ok(r?.toast?.content?.includes('已取消'), '取消有提示')
     ok(h.store.queueLength(key) === 1, '只摘掉被点的那条')
     ok(h.store.dequeue(key)?.text === '还要', '队列里剩下的那条没被动')
+    // 取消后那张「已加入队列」也得翻新，不然它还挂着两个点不动的按钮
+    const patch = h.patched.find((p) => p.messageId === 'card-drop')
+    ok(Boolean(patch), '取消时翻新了排队卡片')
+    ok(patch?.card?.header?.title?.content?.includes('已取消'), '翻新后的标题说明已取消', patch?.card?.header?.title?.content)
+    ok(!JSON.stringify(patch?.card).includes('引导'), '翻新后撤掉「引导」')
   }
 
   // 5. 按钮点的是已经发出去的消息：明确提示，不静默
@@ -175,9 +187,41 @@ try {
     const key = 'chat-drain'
     h.store.set(key, { sessionId: 'ses_run', chatId: key, directory: '/tmp' })
     h.store.enqueue(key, { text: '排队内容', userId: 'ou_x', messageId: 'm5', chatId: key, origin: '[来源]' })
+    h.store.setQueuedCard(key, h.store.data.queue[key][0].qid, 'card-queued')
     await h.bridge.drainQueue(key)
     ok(h.prompts.some((p) => p.text?.includes('排队内容')), 'drainQueue 把排队消息发给后端')
     ok(h.store.queueLength(key) === 0, '发过后队列清空')
+
+    // 排队卡片要翻新：它还挂着「已加入队列」和两个按钮，而消息已经发出去了
+    const patch = h.patched.find((p) => p.messageId === 'card-queued')
+    ok(Boolean(patch), '出队时翻新了排队卡片')
+    ok(patch?.card?.header?.title?.content?.includes('已开始处理'), '翻新后的标题说明已开始处理', patch?.card?.header?.title?.content)
+    ok(!JSON.stringify(patch?.card).includes('引导'), '翻新后撤掉「引导」——消息已发出，点不动了')
+    ok(!JSON.stringify(patch?.card).includes('取消'), '翻新后撤掉「取消」')
+  }
+
+  // 6b. 排队卡片翻新失败不影响消息发出
+  {
+    const h = makeHarness()
+    const key = 'chat-drain-fail'
+    h.store.set(key, { sessionId: 'ses_run', chatId: key, directory: '/tmp' })
+    h.store.enqueue(key, { text: '内容', userId: 'ou_x', messageId: 'm6', chatId: key })
+    h.store.setQueuedCard(key, h.store.data.queue[key][0].qid, 'card-x')
+    h.transport.patchCard = async () => {
+      throw new Error('飞书 400')
+    }
+    await h.bridge.drainQueue(key)
+    ok(h.prompts.some((p) => p.text?.includes('内容')), '卡片翻新失败消息照样发出去')
+  }
+
+  // 6c. 没有 cardId 的存量条目（改动前入的队）不翻新，也不报错
+  {
+    const h = makeHarness()
+    const key = 'chat-drain-nocard'
+    h.store.set(key, { sessionId: 'ses_run', chatId: key, directory: '/tmp' })
+    h.store.enqueue(key, { text: '老条目', userId: 'ou_x', messageId: 'm7', chatId: key })
+    await h.bridge.drainQueue(key)
+    ok(h.patched.length === 0, '没有 cardId 的条目跳过翻新')
   }
 
   // 7. 任务结束后才点改发：补一次排空，不用等下一次任务
@@ -223,7 +267,6 @@ try {
 
   // 10. 落盘：队列重新 load 不丢，qid 也带回来（按钮还点得动）
   {
-    const h = makeHarness()
     const path = join(root, 'state-persist.json')
     const s1 = new Store(path)
     s1.enqueue('k1', { text: '排队', userId: 'ou_x', messageId: 'm7', chatId: 'k1' })
