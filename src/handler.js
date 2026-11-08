@@ -59,15 +59,25 @@ export class Bridge {
         else this.log.warn(`${label} 事件通道断开: ${s.reason || ''}`)
       },
     )
-    // 看门狗：事件流静默太久就判定卡死，否则卡片会永远停在「执行中」。
-    // 扫描间隔跟着阈值缩：固定 60 秒的话，120 秒阈值的最坏检测延迟是
-    // 180 秒（错过一次扫描就得多等一个周期）。取阈值的 1/4，最短 15 秒
-    const idleMs = Number(this.cfg.behavior.idleTimeoutMs) || 0
-    if (idleMs > 0) {
-      const tick = Math.min(60_000, Math.max(15_000, Math.floor(idleMs / 4)))
-      this.watchdog = setInterval(() => this.checkIdle(idleMs), tick)
-      this.watchdog.unref?.()
-    }
+    // 看门狗：事件流静默太久就判定卡死，否则卡片会永远停在「执行中」。——
+    // 只对 opencode 有意义。它的事件来自 SSE 流，流断了就不会再有事件，而运行
+    // 可能还挂着；实测一次模型流 7 秒后断掉，卡片在「执行中」挂了 16 分钟。
+    //
+    // pi 后端不适用：pi 的事件从子进程 stdout 逐行解析，跑 npm install 这类
+    // 「一直刷进度但产不出 JSON 事件」的命令时，stdout 在流动、事件却长时间
+    // 没有——按事件静默判定卡死会误杀健康的运行。pi 的卡死由
+    // backend.pi.timeoutMs 按 stdout 静默判定（见 src/pi.js 的 bump），而且
+    // 它触发时会真的杀进程；看门狗只翻新卡片不碰进程，会留下「卡片显示失败、
+    // 进程还在跑」的误导状态。两层对 pi 是重复且有害的，所以这里直接跳过。
+    //
+    // 扫描间隔跟着阈值缩：固定 60 秒的话，120 秒阈值的最坏检测延迟是 180 秒
+    // （错过一次扫描就得多等一个周期）。取阈值的 1/4，最短 15 秒。
+    // 扫描本身对两个后端都要常开——即使 idleMs 为 0（关了静默判定），checkIdle
+    // 里的「终态卡片 patch 卡死」安全网仍然要跑，否则 pi 会丢掉那层保护
+    const idleMs = this.watchdogIdleMs()
+    const tick = idleMs > 0 ? Math.min(60_000, Math.max(15_000, Math.floor(idleMs / 4))) : 60_000
+    this.watchdog = setInterval(() => this.checkIdle(idleMs), tick)
+    this.watchdog.unref?.()
 
     // 上一个进程可能死在半路，飞书上留着没收尾的卡片，先统一标注掉
     await this.reconcileInflight()
@@ -117,20 +127,39 @@ export class Bridge {
     }
   }
 
-  /** 扫描所有运行中的 run，把长时间没有事件的标成失败并收尾卡片 */
+  /**
+   * 看门狗的「事件静默」阈值（毫秒）。pi 后端返回 0 = 不按事件静默判定。
+   *
+   * 抽成方法是为了能直接断言这个分流：pi 的事件从子进程 stdout 逐行解析，
+   * 「stdout 在刷但产不出 JSON 事件」的命令（npm install、长 bash）会让事件
+   * 长时间没有而进程完全健康，按事件静默判定就是误杀。详见 start() 里的注释。
+   */
+  watchdogIdleMs() {
+    return this.caps.type === 'opencode' ? Number(this.cfg.behavior.idleTimeoutMs) || 0 : 0
+  }
+
+  /**
+   * 看门狗的扫描体，两个独立职责：
+   *   1. 事件静默判定卡死——只对 opencode 生效（idleMs > 0 时）。pi 跳过，
+   *      理由见 start() 里那段注释：它会把「stdout 在刷但没事件」的健康运行
+   *      误判成卡死
+   *   2. 终态卡片 patch 卡死的安全网——两个后端都要
+   */
   checkIdle(idleMs) {
     const now = Date.now()
-    for (const [sid, run] of this.runs) {
-      if (run.state.status !== 'running') continue
-      const idle = now - (run.state.updatedAt || run.state.startedAt)
-      if (idle < idleMs) continue
-      const mins = Math.round(idleMs / 60000)
-      run.state.status = 'failed'
-      run.state.error = {
-        message: `超过 ${mins} 分钟没有收到任何事件，判定为卡死。\n常见原因：模型长时间无响应、opencode serve 挂了、或事件流断开。\n发 /stop 中止后重试，或检查 serve 日志。`,
+    if (idleMs > 0) {
+      for (const [sid, run] of this.runs) {
+        if (run.state.status !== 'running') continue
+        const idle = now - (run.state.updatedAt || run.state.startedAt)
+        if (idle < idleMs) continue
+        const mins = Math.round(idleMs / 60000)
+        run.state.status = 'failed'
+        run.state.error = {
+          message: `超过 ${mins} 分钟没有收到任何事件，判定为卡死。\n常见原因：模型长时间无响应、opencode serve 挂了、或事件流断开。\n发 /stop 中止后重试，或检查 serve 日志。`,
+        }
+        this.log.warn(`会话 ${sid} 空闲 ${Math.round(idle / 1000)}s，判定卡死并收尾`)
+        this.flushRun(sid)
       }
-      this.log.warn(`会话 ${sid} 空闲 ${Math.round(idle / 1000)}s，判定卡死并收尾`)
-      this.flushRun(sid)
     }
     // 安全网：终态已到但终态 patch 始终没完成（飞书 SDK 请求挂死过），
     // runs 表项和 inflight 记录会永远堆着。超过 2 分钟直接收殓状态——

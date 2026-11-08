@@ -110,12 +110,14 @@ export const DEFAULTS = {
     showTools: false,
     // 单次卡片正文最大字符数
     maxBodyChars: 6000,
-    // 事件流静默多久判定卡死（毫秒）。0 = 关闭。卡片停在「执行中」比
-    // 报错更难发现，所以阈值要短；但不能误杀合法长任务：opencode 实测
-    // 一条 sleep 170 的 bash，tool.progress 之后 120 秒零事件；pi 后端长
-    // bash 期间 stdout 静默，没有行就没有事件，看门狗照杀。2 分钟会杀掉
-    // 它们，取 5 分钟：最坏检测 6 分钟（阈值 + 60 秒 tick），仍远快于
-    // 原来的 15 分钟
+    // 事件流静默多久判定卡死（毫秒）。0 = 关闭。**只对 opencode 后端生效**——
+    // pi 的事件从子进程 stdout 逐行解析，跑「stdout 在刷但产不出 JSON 事件」的
+    // 命令时（npm install、长 bash），事件会长时间没有而进程完全健康，按事件
+    // 静默判定就是误杀；pi 的卡死由 backend.pi.timeoutMs 按 stdout 静默判定。
+    //
+    // opencode 这里也要留足余量：实测一条 sleep 170 的 bash，tool.progress
+    // 之后 120 秒零事件，2 分钟会把它误判成卡死。取 5 分钟：最坏检测 6 分钟
+    // （阈值 + 60 秒 tick），仍远快于原来的 15 分钟
     idleTimeoutMs: 5 * 60 * 1000,
     // 同时最多跑几个任务（群里每个话题是一个独立会话，彼此并行）。
     // 设 0 = 不限。每个会话都在真跑 bash/node，开太多会打满本机，建议 2–3
