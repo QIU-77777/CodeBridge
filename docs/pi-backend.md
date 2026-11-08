@@ -102,7 +102,8 @@ cwd: <directory>                                          # 话题绑定的项�
 ### 4.4 超时、中止与静默收尾
 
 - `timeoutMs`（默认 10 分钟）**按活跃度算**：pi 每吐一行 stdout 就把计时器重置，只有连续 10 分钟没有任何输出才到点——先 `SIGTERM`，2 秒后 `SIGKILL`，并合成 `execution.failed`。原实现从进程启动算总时长，会把一直在干活的运行误杀（真实事故：一个运行 10 分钟里产出 16290 行、12 步，超时前一刻还在查东西）。真挂住的运行不再吐任何行，计时器到点照杀；
-  - 三层兜底方向不同，互不替代：本层看「有没有 stdout 输出」；`behavior.idleTimeoutMs`（默认 5 分钟）看「有没有桥接事件」——进程在吐输出但吐的不是可翻译事件时，只有它能收到；`settleQuietMs`（下面那条）看「最终答案出来了没有」。
+  - pi 侧只有两层兜底，方向不同、互不替代：本层看「有没有 stdout 输出」；`settleQuietMs`（下面那条）看「最终答案出来了没有」。
+  - **`behavior.idleTimeoutMs` 对 pi 不生效**（`handler.js` 的 `watchdogIdleMs()` 按后端类型分流）。原因是 pi 的事件从子进程 stdout 逐行解析，跑「stdout 在刷但产不出 JSON 事件」的命令（npm install、长 bash）时事件会长时间没有而进程完全健康——按事件静默判定就是误杀；而且看门狗只翻新卡片不杀进程，会留下「卡片显示失败、进程还在跑」的误导状态。该看门狗只服务 opencode（事件来自 SSE 流，流断了才需要它）。
 - `interrupt(id)` 找到在跑的子进程 kill 掉，标记 `aborted`，**不抛出**，避免 `runPrompt` 的 catch 把 `aborted` 覆盖成 `failed`；
 - 子进程 `rc !== 0` 且非主动中止 → 合成 `execution.failed`，把 stderr 尾部放进错误区；
 - **静默收尾**（`settleQuietMs`，默认 180 秒）：pi 偶发「最终回答产出了却不退出」——`agent_settled` 永远不来，进程挂住但不再吐事件。实测一次卡片在「执行中」停了 6 分 58 秒。桥接逐行读 stdout 维护几个现场（最后事件时间、是否见过 `turn_end`、有没有在进行中的助手消息或工具调用、是否见过 `agent_settled`），满足「见过最终消息、无进行中事项、静默超时」就按已完成收尾：正文取 `parsePiJsonl` 的最终文本并附一行说明，随后杀掉整个进程组。设 0 关闭，恢复「只等进程退出」的老行为。

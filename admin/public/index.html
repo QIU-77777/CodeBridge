@@ -328,7 +328,7 @@
               <div id="c-pi-group" class="hidden">
                 <label class="fld"><span>pi.bin（留空用 PATH 里的 pi）</span><input type="text" id="c-piBin" placeholder="pi"></label>
                 <label class="fld"><span>pi.model（留空用 pi 本地默认模型）</span><input type="text" id="c-piModel"></label>
-                <label class="fld"><span>pi.timeoutMs</span><input type="number" id="c-piTimeout"></label>
+                <label class="fld"><span>pi.timeoutMs（多久没有 stdout 就终止；stdout 一直在刷但产不出事件的命令不算）</span><input type="number" id="c-piTimeout"></label>
                 <label class="fld"><span>pi.extraArgs（逗号分隔）</span><input type="text" id="c-piExtra"></label>
               </div>
               <label class="fld"><span>默认工作目录（两个后端都用，留空用家主目录）</span><input type="text" id="c-defaultDirectory"></label>
@@ -350,7 +350,7 @@
           <div class="grid3">
             <label class="fld"><span>streamIntervalMs（不低于 1200）</span><input type="number" id="c-streamIntervalMs"></label>
             <label class="fld"><span>maxBodyChars</span><input type="number" id="c-maxBodyChars"></label>
-            <label class="fld"><span>idleTimeoutMs</span><input type="number" id="c-idleTimeoutMs"></label>
+            <label class="fld"><span>idleTimeoutMs（仅 opencode 后端：多久没有事件算卡死；pi 走 pi.timeoutMs）</span><input type="number" id="c-idleTimeoutMs"></label>
             <label class="fld"><span>maxParallel（0 不限）</span><input type="number" id="c-maxParallel"></label>
             <label class="chk"><input type="checkbox" id="c-showReasoning"> showReasoning</label>
             <label class="chk"><input type="checkbox" id="c-showTools"> showTools</label>
@@ -487,7 +487,7 @@
         <div id="n-pi-group" class="hidden">
           <label class="fld"><span>pi.bin（默认用扫描到的本机 pi）</span><input type="text" id="n-piBin" placeholder="pi"></label>
           <label class="fld"><span>pi.model（留空用 pi 本地默认模型）</span><input type="text" id="n-piModel"></label>
-          <label class="fld"><span>pi.timeoutMs</span><input type="number" id="n-piTimeout" placeholder="600000"></label>
+          <label class="fld"><span>pi.timeoutMs（多久没有 stdout 就终止；stdout 一直在刷但产不出事件的命令不算）</span><input type="number" id="n-piTimeout" placeholder="600000"></label>
         </div>
       </div>
       <div>

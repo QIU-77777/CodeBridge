@@ -302,6 +302,46 @@ for (const [name, card] of Object.entries({
   ok(/15 分钟/.test(stale.error?.message || ''), '错误信息里写明超时时长')
   ok(!flushed.includes('ses_fresh'), '活跃 run 没被误收尾')
 
+  // 阈值只对 opencode 生效：pi 的事件从子进程 stdout 逐行解析，跑 npm
+  // install 这类「stdout 在刷但产不出 JSON 事件」的命令时事件会长时间没有，
+  // 而进程完全健康——按事件静默判定就是误杀。pi 的卡死由 pi.timeoutMs 按
+  // stdout 静默判定，见 src/pi.js 的 bump
+  const mkB = (caps) =>
+    new Bridge({
+      oc: {}, store: {}, config: { behavior: { idleTimeoutMs: 300000 } },
+      transport: {}, capabilities: caps,
+      logger: { info() {}, warn() {}, error() {} },
+    })
+  ok(mkB({ type: 'opencode' }).watchdogIdleMs() === 300000, 'opencode 后端启用事件静默判定')
+  ok(mkB({ type: 'pi' }).watchdogIdleMs() === 0, 'pi 后端不按事件静默判定（交给 pi.timeoutMs）')
+  ok(mkB({}).watchdogIdleMs() === 0, '未声明后端类型时保守跳过，不误杀')
+
+  // idleMs = 0 时静默判定整段跳过，但「终态卡片 patch 卡死」的安全网照跑——
+  // 那层保护与后端无关，不能因为关了静默判定一起丢掉
+  {
+    const b2 = mkB({ type: 'pi' })
+    const s2 = new RunState('ses_pi')
+    s2.status = 'running'
+    s2.updatedAt = Date.now() - 30 * 60 * 1000
+    b2.runs.set('ses_pi', { state: s2, cardId: 'c', chatId: 'x', meta: {} })
+    b2.flushRun = () => {}
+    b2.checkIdle(0)
+    ok(s2.status === 'running', 'pi 的 run 不因事件静默被判失败', s2.status)
+  }
+  {
+    const b3 = mkB({ type: 'pi' })
+    const s3 = new RunState('ses_wedge')
+    s3.status = 'failed'
+    s3.updatedAt = Date.now() - 5 * 60 * 1000
+    s3.terminalAt = Date.now() - 5 * 60 * 1000
+    b3.runs.set('ses_wedge', { state: s3, cardId: 'c', chatId: 'x', meta: {}, flushed: false })
+    const store = { clearInflight: (sid) => cleared.push(sid) }
+    b3.store = store
+    const cleared = []
+    b3.checkIdle(0)
+    ok(cleared.includes('ses_wedge'), '安全网对 pi 仍然生效（终态卡片卡死照样收殓）')
+  }
+
   // 默认 5 分钟：2 分钟会误杀合法长任务——opencode 实测一条 sleep 170 的
   // bash，tool.progress 之后 120 秒零事件；pi 后端长 bash 期间 stdout
   // 静默，没有行就没有事件。人类要求过「有些任务就是会让她运行很长时间，
