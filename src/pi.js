@@ -627,17 +627,28 @@ export class PiBackend {
       // 流式发过文本，供排障时区分「卡片一直不刷新」和「刷新了但内容重复」
       const st = { modelSent: false, streamedText: false, turnSeq: 0, stepOpen: false }
 
-      const timer = setTimeout(() => {
-        rec.timedOut = true
-        killTree(child, 'SIGTERM')
-        rec.killTimer = setTimeout(() => killTree(child, 'SIGKILL'), 2000)
-      }, this.timeoutMs)
-      timer.unref?.()
+      // 超时按活跃度算：pi 每吐一行就把计时器重置，只有长时间没有任何输出才杀。
+      // 原来从进程启动算总时长，会把一直在干活的运行误杀——真实事故：一个运行
+      // 10 分钟里产出 16290 行、12 步，超时前一刻还在查东西，按总时长被杀。
+      // 真挂住的运行不再吐任何行，计时器到点照杀。另有一层 behavior.idleTimeoutMs
+      // 看门狗按事件静默兜底（15 分钟无事件），两层方向不同，互不替代
+      let idleTimer = null
+      const bump = () => {
+        if (settled || quietSettled) return
+        if (idleTimer) clearTimeout(idleTimer)
+        idleTimer = setTimeout(() => {
+          rec.timedOut = true
+          killTree(child, 'SIGTERM')
+          rec.killTimer = setTimeout(() => killTree(child, 'SIGKILL'), 2000)
+        }, this.timeoutMs)
+        idleTimer.unref?.()
+      }
+      bump()
 
       const finish = (code) => {
         if (settled) return
         settled = true
-        clearTimeout(timer)
+        if (idleTimer) clearTimeout(idleTimer)
         if (rec.killTimer) clearTimeout(rec.killTimer)
         if (drainTimer) clearTimeout(drainTimer)
         this.procs.delete(sessionId)
@@ -660,7 +671,11 @@ export class PiBackend {
         }
 
         if (rec.timedOut) {
-          const msg = `pi 超过 ${Math.round(this.timeoutMs / 60000)} 分钟没有结束，已强制终止。\n可以用 /stop 主动中止，或调大 backend.pi.timeoutMs。`
+          const mins = Math.round(this.timeoutMs / 60000)
+          const msg =
+            `pi ${mins} 分钟没有任何输出，已强制终止。\n` +
+            '长时间不吐输出的命令（构建、测试、长模型调用）也会触发这条。\n' +
+            '可以调大 backend.pi.timeoutMs，或用 /stop 主动中止。'
           this._emit(sessionId, 'session.execution.failed', { error: { message: msg } })
           return resolve({ ok: false, error: msg })
         }
@@ -702,7 +717,7 @@ export class PiBackend {
         quietSettled = true
         settled = true
         if (quietTimer) clearInterval(quietTimer)
-        clearTimeout(timer)
+        if (idleTimer) clearTimeout(idleTimer)
         if (rec.killTimer) clearTimeout(rec.killTimer)
         this.procs.delete(sessionId)
 
@@ -779,6 +794,8 @@ export class PiBackend {
           lineBuf = lineBuf.slice(idx + 1)
           if (!line.startsWith('{')) continue
           lineCount++
+          // 每吐一行就重置超时计时器：超时按活跃度算，不按总时长
+          bump()
           let ev
           try {
             ev = JSON.parse(line)

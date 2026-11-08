@@ -95,6 +95,26 @@ else if (mode === 'quiet-empty') {
   setInterval(() => {}, 1000)
   process.stdout.write('')
 }
+else if (mode === 'slow-but-alive') {
+  // 复现真实事故（2026-11-08 11:41）：一个运行 10 分钟里产出 16290 行、12 步，
+  // 一直在干活，被「按总时长算的超时」杀掉。修复后超时按活跃度算：每隔 200ms
+  // 吐一片同一段答案的文本增量，8 片之后给出这段的权威全文并正常退出——
+  // 总时长远超 timeoutMs 也不该被杀
+  const pieces = ['我先', '读了桥接状态', '，确认进程在跑', '，又核了对', '一遍版本', '与注入', '，全部正常', '。']
+  let n = 0
+  const timer = setInterval(() => {
+    emit({ type: 'message_update', usage, assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: pieces[n] } })
+    n++
+    if (n >= pieces.length) {
+      clearInterval(timer)
+      emit({ type: 'message_end', message: { role: 'assistant',
+        content: [{ type: 'text', text: pieces.join('') }],
+        provider: 'stepfun-platform', model: 'step-5-preview', usage } })
+      emit({ type: 'agent_settled', aborted: false })
+      process.exit(0)
+    }
+  }, 200)
+}
 else if (mode === 'stream') {
   // 复现真实多轮运行的事件序列（形状见 pi 文档 docs/json.md）：两轮助手
   // 消息，第一轮带 bash 工具调用，文本分片流出，模型名写在消息里。
@@ -339,7 +359,10 @@ const main = async () => {
 
     const st = collect(events, s.id)
     ok(st.status === 'done', 'RunState 收尾为 done')
-    ok(st.text === '目录里有 a.js 和 b.js。', `正文只保留最后一段（实际 ${st.text}）`)
+    ok(
+      st.text === '我先看一下。\n\n目录里有 a.js 和 b.js。',
+      `两段中间回复都上卡，中间空一行（实际 ${JSON.stringify(st.text)}）`,
+    )
     ok((st.text.match(/目录里有/g) || []).length === 1, '终态的权威覆盖不会把答案重复两遍')
     ok(st.steps === 2, '步数记到 RunState 上')
     ok(st.tools.length === 1 && st.tools[0].name === 'bash', '工具调用记到 RunState 上')
@@ -414,6 +437,27 @@ const main = async () => {
     ok(collect(events, sFast.id).status === 'failed', 'provider 报错 → RunState failed')
     ok(events.at(-1).type === 'session.execution.failed', '发出 execution.failed')
     ok(String(events.at(-1).data.error.message).includes('TPM'), '错误原文（429 限流信息）上卡片')
+
+    // 超时按活跃度算：一直在吐输出的长运行不被杀，彻底静默的才杀。
+    // 复现真实事故：一个运行 10 分钟产出 16290 行、12 步，被按总时长算的
+    // 超时杀掉——她没卡住，只是活没干完
+    const bSlow = makeBackend({
+      backend: { type: 'pi', pi: { bin: 'pi', model: '', timeoutMs: 1200, extraArgs: [] } },
+    })
+    const sSlow = await bSlow.createSession({ title: '慢但活着', directory: root })
+    currentMode = 'slow-but-alive'
+    events = []
+    bSlow.subscribe((ev) => events.push(ev), () => {})
+    const tSlow0 = Date.now()
+    const slow = await bSlow.prompt(sSlow.id, '跑很久但一直在输出')
+    const slowElapsed = Date.now() - tSlow0
+    ok(slow.ok === true, '一直在输出的长运行正常跑完，不被超时杀', JSON.stringify(slow.error || ''))
+    ok(collect(events, sSlow.id).status === 'done', '长运行终态是 done，不是 failed')
+    ok(slowElapsed > 1200, `总时长超过 timeoutMs 也照样跑完（实际 ${slowElapsed}ms，超时设 1200ms）`)
+    ok(
+      String(collect(events, sSlow.id).text).includes('全部正常'),
+      '长运行的最终答案完整上卡',
+    )
   }
 
   section('孤儿进程不再拖住收尾')

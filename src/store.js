@@ -113,36 +113,18 @@ export class Store {
 
   // ---------- 忙等挡下的消息 ----------
   //
-  // 上一条任务还在跑时新消息不会被丢弃：先存进 pending（每个 key 一条，
-  // 后来的覆盖先来的），同时回一张三选一的卡片——加入队列、中止当前改发
-  // 这条、取消。选「加入队列」或「插队」时消息进 queue（FIFO），当前任务
-  // 收尾后逐条自动发出。两块都落盘，桥接重启不丢。
+  // 上一条任务还在跑时新消息不会被丢弃：直接排进 queue（follow-up 是默认
+  // 动作，不用用户点），同时回一张卡片告诉用户排在第几位，带两个按钮——
+  // 「引导」把它提到队首并中止当前任务，「取消」把它从队列
+  // 摘掉。队列落盘，桥接重启不丢。
 
-  setPending(key, msg) {
-    if (!key || !msg?.text) return null
-    // 已有一条没处理的：按到达顺序排进队列，不丢。旧卡片按钮带的是旧消息的
-    // qid，点击时会对不上而被拒并提示，不会出现「卡片预览是一条、发出去是
-    // 另一条」。qid 优先用飞书消息 id，天然唯一
-    const prev = this.data.pending?.[key]
-    if (prev) this.enqueue(key, prev)
-    const m = this.data.pending || (this.data.pending = {})
-    m[key] = {
-      ...msg,
-      qid: msg.qid || msg.messageId || `q${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
-      at: Date.now(),
-    }
-    this.scheduleSave()
-    return m[key]
-  }
-
-  getPending(key) {
-    return this.data.pending?.[key] || null
-  }
-
-  clearPending(key) {
-    if (!this.data.pending?.[key]) return
-    delete this.data.pending[key]
-    this.scheduleSave()
+  /** 一条排队消息的身份：优先用飞书消息 id，天然唯一 */
+  qidOf(msg) {
+    return (
+      msg?.qid ||
+      msg?.messageId ||
+      `q${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
+    )
   }
 
   /** front=true 时插到队首（「中止当前改发这条」用） */
@@ -150,7 +132,7 @@ export class Store {
     if (!key || !msg?.text) return 0
     const q = this.data.queue || (this.data.queue = {})
     const list = Array.isArray(q[key]) ? q[key] : (q[key] = [])
-    const item = { ...msg, at: Date.now() }
+    const item = { ...msg, qid: this.qidOf(msg), at: Date.now() }
     if (front) list.unshift(item)
     else list.push(item)
     this.scheduleSave()
@@ -168,6 +150,30 @@ export class Store {
 
   queueLength(key) {
     return this.data.queue?.[key]?.length || 0
+  }
+
+  /** 按 qid 从队列里摘掉一条（「取消」用）。返回摘到的那条，没摘到返回 null */
+  removeQueued(key, qid) {
+    const list = this.data.queue?.[key]
+    if (!Array.isArray(list) || !list.length || !qid) return null
+    const idx = list.findIndex((m) => m.qid === qid)
+    if (idx === -1) return null
+    const [item] = list.splice(idx, 1)
+    if (!list.length) delete this.data.queue[key]
+    this.scheduleSave()
+    return item
+  }
+
+  /** 按 qid 把队列里的一条提到队首（「引导」用） */
+  promoteQueued(key, qid) {
+    const list = this.data.queue?.[key]
+    if (!Array.isArray(list) || !list.length || !qid) return null
+    const idx = list.findIndex((m) => m.qid === qid)
+    if (idx === -1) return null
+    const [item] = list.splice(idx, 1)
+    list.unshift(item)
+    this.scheduleSave()
+    return item
   }
 
   scheduleSave() {

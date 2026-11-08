@@ -26,7 +26,10 @@ export class RunState {
     this.updatedAt = Date.now()
     this.reasoning = ''
     this.text = ''
-    this.pendingReset = false
+    // 当前这一段的文本缓冲（delta 往这里累加，text.ended 用它做整段替换）
+    this.seg = ''
+    // 下一段文本要另起一段：前面已有内容就先空一行
+    this.pendingBreak = false
     this.tools = []
     this.status = 'running'
     this.error = null
@@ -38,6 +41,39 @@ export class RunState {
 
   get elapsed() {
     return Date.now() - this.startedAt
+  }
+
+  /**
+   * 开一段新叙述：前面已有内容就先空一行。
+   *
+   * 空行由 `\n\n` 表达，渲染层按 markdown 段落处理，两张段之间就是一行空白。
+   */
+  _breakLine() {
+    if (!this.pendingBreak) return
+    this.pendingBreak = false
+    this.seg = ''
+    if (this.text) this.text += '\n\n'
+  }
+
+  /** 文本增量：累加进当前这一段 */
+  _pushText(s) {
+    if (!s) return
+    this._breakLine()
+    this.seg += s
+    this.text += s
+  }
+
+  /**
+   * 一段叙述的权威全文（`session.text.ended`）。
+   *
+   * 用它替换掉 delta 累加出来的同一段，避免同一段答案在正文里出现两遍。
+   * 比当前段还短的全文忽略：那是残包，覆盖上去会丢内容。
+   */
+  _endSegment(full) {
+    this._breakLine()
+    if (full.length < this.seg.length) return
+    this.text = this.text.slice(0, this.text.length - this.seg.length) + full
+    this.seg = full
   }
 
   /** 只处理属于本 session 的事件，返回是否命中 */
@@ -54,43 +90,27 @@ export class RunState {
 
       case 'session.step.started':
         this.steps += 1
-        // 新的一段助手叙述开始：等这段真的产出内容时，再清掉上一段累加的
-        // 文本与思考，卡片只保留最新一段。人类要求终态卡片只要结论，中间
-        // 过程的叙述不拼进正文。清空延迟到首个内容事件，是防止运行的最后
-        // 一段没有文本产出时，卡片变成空白
+        // 新的一段助手叙述开始：它产出的文本接在旧段后面，中间空一行。
+        // 人类要求看到每一步的中间回复，挤在一起分不清哪句是哪步的，
+        // 所以段与段之间空一行。思考过程仍然只保留最新一段——它默认不
+        // 显示，开了也截断到尾部，攒起来没有意义
         if (d.assistantMessageID && d.assistantMessageID !== this.assistantMessageID) {
           this.assistantMessageID = d.assistantMessageID
-          this.pendingReset = true
+          this.pendingBreak = true
+          this.reasoning = ''
         }
         break
 
       case 'session.reasoning.delta':
-        if (this.pendingReset) {
-          this.text = ''
-          this.reasoning = ''
-          this.pendingReset = false
-        }
         this.reasoning += d.delta || ''
         break
 
       case 'session.text.delta':
-        if (this.pendingReset) {
-          this.text = ''
-          this.reasoning = ''
-          this.pendingReset = false
-        }
-        this.text += d.delta || ''
+        this._pushText(d.delta || '')
         break
 
       case 'session.text.ended':
-        if (typeof d.text === 'string') {
-          if (this.pendingReset) {
-            this.text = ''
-            this.reasoning = ''
-            this.pendingReset = false
-          }
-          if (d.text.length >= this.text.length) this.text = d.text
-        }
+        if (typeof d.text === 'string') this._endSegment(d.text)
         break
 
       // 工具名在 input.started 里给，参数在 called 里给，要分两步拼

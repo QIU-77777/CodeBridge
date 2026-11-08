@@ -9,7 +9,7 @@ import {
   sessionsCard,
   statusCard,
   textCard,
-  busyCard,
+  queuedCard,
   fmtAgo,
 } from './cards.js'
 import { truncate } from './render.js'
@@ -464,9 +464,10 @@ export class Bridge {
     // 一个会话同时只跑一个任务。否则新 run 会覆盖旧的，旧卡片永远停在「执行中」
     const busy = binding?.sessionId ? this.runs.get(binding.sessionId) : null
     if (busy?.state?.status === 'running') {
-      // 不再直接丢弃：消息存进 pending，回一张三选一的卡片（加入队列 /
-      // 中止当前改发这条 / 取消）。队列在任务收尾后自动排空
-      const pending = this.store.setPending(ctx.key, {
+      // 加塞的消息默认按 follow-up 处理：直接排进队列，不用用户点任何按钮。
+      // 回一张卡片告诉用户排在第几位，附两个改主意的按钮——中止当前改发这条
+      // （提到队首并中止）、取消（从队列摘掉）。队列在任务收尾后自动排空
+      const item = {
         text: msg.text,
         userId: msg.userId,
         messageId: msg.messageId,
@@ -475,13 +476,17 @@ export class Bridge {
         isGroup: msg.isGroup,
         chatId: ctx.chatId,
         replyTo: ctx.replyTo,
-      })
+      }
+      // qid 是这条排队消息的身份证：卡片上的两个按钮只对得上同一条
+      const qid = this.store.qidOf(item)
+      const position = this.store.enqueue(ctx.key, { ...item, qid })
       return this.t.sendCard(
         ctx.chatId,
-        busyCard({
+        queuedCard({
           preview: msg.text,
           from: this.nameOf(msg.userId) || msg.userId,
-          qid: pending?.qid,
+          qid,
+          position,
           k: ctx.key,
           rt: ctx.replyTo,
         }),
@@ -998,39 +1003,12 @@ export class Bridge {
           const label = a.d === 'reject' ? '已拒绝' : a.d === 'always' ? '已允许（永久）' : '已允许一次'
           return replyNew({ type: 'success', content: label }, textCard('🔐 授权已处理', label, a.d === 'reject' ? 'red' : 'green'))
         }
-        case 'enqueue': {
-          const p = this.store.getPending(key)
-          if (!p) return { toast: { type: 'error', content: '没有待处理的消息（可能已被处理过）' } }
-          if (a.q && p.qid !== a.q) {
-            return { toast: { type: 'info', content: '这条消息已被更新的消息取代，旧消息已加入队列' } }
-          }
-          this.store.clearPending(key)
-          const n = this.store.enqueue(key, p)
-          // 任务可能已经结束了（用户盯着卡片看半天才点）：没有收尾事件会来，
-          // 这里补一次排空，与 steer 路径的兜底保持一致
-          this.scheduleDrainIfIdle(key)
-          return replyNew(
-            { type: 'success', content: `已加入队列（第 ${n} 位）` },
-            textCard(
-              '⏳ 已加入队列',
-              [
-                `**内容** ${truncate(p.text, 120)}`,
-                '',
-                '当前任务结束后自动发送。队列里排在前面的消息会先发。',
-              ].join('\n'),
-              'yellow',
-            ),
-          )
-        }
         case 'steer': {
-          const p = this.store.getPending(key)
-          if (!p) return { toast: { type: 'error', content: '没有待处理的消息（可能已被处理过）' } }
-          if (a.q && p.qid !== a.q) {
-            return { toast: { type: 'info', content: '这条消息已被更新的消息取代，旧消息已加入队列' } }
-          }
-          this.store.clearPending(key)
+          // 加塞的消息默认已排队，这里是改主意：把它提到队首并中止当前任务。
+          // 按 qid 找，找不到说明它已经发出去（或被取消了），按钮点不动
+          const p = this.store.promoteQueued(key, a.q)
+          if (!p) return { toast: { type: 'error', content: '这条消息不在队列里（可能已经发出或被取消）' } }
           // 插到队首并中止当前任务：abort 事件收尾时 drainQueue 会把它发出去
-          this.store.enqueue(key, p, true)
           const binding = this.store.get(key)
           const stopped = binding?.sessionId ? await this.oc.interrupt(binding.sessionId) : false
           // 当前任务已经不在了（刚点过 /stop、或已结束）：没有 abort 事件会来，
@@ -1050,11 +1028,9 @@ export class Bridge {
           )
         }
         case 'drop': {
-          const p = this.store.getPending(key)
-          if (p && a.q && p.qid !== a.q) {
-            return { toast: { type: 'info', content: '这条消息已被更新的消息取代，旧消息已加入队列' } }
-          }
-          this.store.clearPending(key)
+          // 取消 = 把这条已排队的消息从队列里摘掉。摘不到说明它已经发出去了
+          const p = this.store.removeQueued(key, a.q)
+          if (!p) return { toast: { type: 'error', content: '这条消息不在队列里（可能已经发出）' } }
           return { toast: { type: 'info', content: '已取消，消息没有发送' } }
         }
         case 'noop':

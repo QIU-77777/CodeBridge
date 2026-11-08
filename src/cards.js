@@ -322,28 +322,29 @@ export function permissionCard({ request, sessionTitle, k = '', rt = '' }) {
 }
 
 /**
- * 忙等卡片：上一条任务还在跑，新消息没有被丢弃，给三个处理选项。
- * 消息正文存在服务端（store 的 pending），卡片只带绑定键，所以再长的
- * 消息也不会把卡片撑爆。
+ * 加塞消息的卡片：消息已经排进队列（follow-up 是默认动作，不用用户点），
+ * 告诉用户排在第几位，给两个改主意的按钮——中止当前改发这条、取消。
+ * 消息正文存在服务端（store 的 queue），卡片只带绑定键与 qid，所以再长的
+ * 消息也不会把卡片撑爆；qid 保证按钮只对得上同一条排队消息。
  */
-export function busyCard({ preview, from, qid, k = '', rt = '' }) {
+export function queuedCard({ preview, from, qid, position = 1, k = '', rt = '' }) {
   const nav = navOf({ k, rt })
-  // qid 是这条消息的身份证：按钮只对得上同一条 pending，旧卡片点不动新消息
   const val = { ...nav, q: qid }
-  return card('⏳ 上一条任务还在执行', 'yellow', [
+  const where =
+    position <= 1 ? '下一个就发它' : `排在队列第 ${position} 位，前面的发完才到它`
+  return card('⏳ 已加入队列', 'yellow', [
     div(
       [
         from ? `**来自** ${from}` : '',
         `**内容** ${truncate(preview, 240) || '(空)'}`,
         '',
-        '当前话题的上一条任务还在跑，这条消息没有丢弃。选一个处理方式：',
+        `当前话题的上一条任务还在跑，这条消息没有丢弃，${where}。想改主意：`,
       ]
         .filter(Boolean)
         .join('\n'),
     ),
     buttonRow([
-      button('加入队列', { a: 'enqueue', ...val }, 'primary'),
-      button('中止当前，改发这条', { a: 'steer', ...val }, 'default'),
+      button('引导', { a: 'steer', ...val }, 'default'),
       button('取消', { a: 'drop', ...val }, 'default'),
     ]),
   ])
