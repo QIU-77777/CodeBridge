@@ -39,7 +39,7 @@
     "showReasoning": false,
     "showTools": false,
     "maxBodyChars": 6000,
-    "idleTimeoutMs": 900000,
+    "idleTimeoutMs": 300000,
     "maxParallel": 2
   },
   "prompt": {

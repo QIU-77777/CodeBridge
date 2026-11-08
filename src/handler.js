@@ -58,10 +58,13 @@ export class Bridge {
         else this.log.warn(`${label} 事件通道断开: ${s.reason || ''}`)
       },
     )
-    // 看门狗：事件流静默太久就判定卡死，否则卡片会永远停在「执行中」
+    // 看门狗：事件流静默太久就判定卡死，否则卡片会永远停在「执行中」。
+    // 扫描间隔跟着阈值缩：固定 60 秒的话，120 秒阈值的最坏检测延迟是
+    // 180 秒（错过一次扫描就得多等一个周期）。取阈值的 1/4，最短 15 秒
     const idleMs = Number(this.cfg.behavior.idleTimeoutMs) || 0
     if (idleMs > 0) {
-      this.watchdog = setInterval(() => this.checkIdle(idleMs), 60_000)
+      const tick = Math.min(60_000, Math.max(15_000, Math.floor(idleMs / 4)))
+      this.watchdog = setInterval(() => this.checkIdle(idleMs), tick)
       this.watchdog.unref?.()
     }
 

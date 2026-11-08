@@ -274,6 +274,7 @@ for (const [name, card] of Object.entries({
 // ---------- 3. 看门狗（idleTimeout） ----------
 {
   const { Bridge } = await import('../src/handler.js')
+  const { DEFAULTS } = await import('../src/config.js')
   const b = new Bridge({
     oc: {},
     store: {},
@@ -300,6 +301,22 @@ for (const [name, card] of Object.entries({
   ok(fresh.status === 'running', '看门狗不动还在活动的 run', fresh.status)
   ok(/15 分钟/.test(stale.error?.message || ''), '错误信息里写明超时时长')
   ok(!flushed.includes('ses_fresh'), '活跃 run 没被误收尾')
+
+  // 默认 5 分钟：2 分钟会误杀合法长任务——opencode 实测一条 sleep 170 的
+  // bash，tool.progress 之后 120 秒零事件；pi 后端长 bash 期间 stdout
+  // 静默，没有行就没有事件。人类要求过「有些任务就是会让她运行很长时间，
+  // 她又不是卡住了」
+  ok(DEFAULTS.behavior.idleTimeoutMs === 5 * 60 * 1000, '默认空闲阈值 5 分钟')
+  ok(/5 分钟/.test((() => {
+    const b2 = new Bridge({ oc: {}, store: {}, config: { behavior: { idleTimeoutMs: 300000 } }, transport: {}, logger: { info() {}, warn() {}, error() {} } })
+    const s = new RunState('ses_x')
+    s.status = 'running'
+    s.updatedAt = Date.now() - 6 * 60 * 1000
+    b2.runs.set('ses_x', { state: s, cardId: 'c', chatId: 'x', meta: {} })
+    b2.flushRun = () => {}
+    b2.checkIdle(300000)
+    return s.error?.message || ''
+  })()), '5 分钟阈值的错误信息写 5 分钟')
 }
 
 // ---------- 4. 真实发送 + patch ----------

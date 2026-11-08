@@ -460,7 +460,16 @@ async function handleApi(req, res, url) {
       }
     }
     writeConfigAtomic(join(found.dir, 'config.json'), next)
-    return sendJson(res, 200, { ok: true, config: maskConfig(next), backup: 'config.json.bak' })
+    // 密码变了要重启 serve 才生效：serve 是长跑进程，启动时把密码读进自己的
+    // 环境里，之后改配置不会跟着变。不提示的话，用户会以为改完就生效，
+    // 而桥接拿着新密码去连旧 serve，全程 401——现象是「毫无反应」
+    const pwChanged = next.opencode?.password && next.opencode.password !== current.opencode?.password
+    return sendJson(res, 200, {
+      ok: true,
+      config: maskConfig(next),
+      backup: 'config.json.bak',
+      ...(pwChanged ? { notice: 'serve 密码已更改，需要重启 serve 才生效（它启动时把密码定格在进程环境里）' } : {}),
+    })
   }
 
   // 白名单快捷增删。加的时候可以顺手填名字：写进 feishu.names，

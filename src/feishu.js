@@ -85,7 +85,7 @@ export class FeishuTransport {
         this.self = { open_id: null, name: this.cfg.botName || '我' }
         this.log.warn(
           `拿不到机器人自身 open_id（${err.message}），已退化为「@ 到任何人都会响应」。` +
-            '多机器人同群请把 feishu.botOpenId 写进配置，否则会互相抢答。',
+          '多机器人同群请把 feishu.botOpenId 写进配置，否则会互相抢答。',
         )
       }
     }
@@ -175,7 +175,7 @@ export class FeishuTransport {
         this.membersDenied = true
         this.log.warn(
           '群成员列表不可用（大概是缺 im:chat.members:read），名字改为从 @ 提及里攒: ' +
-            (err?.message || err),
+          (err?.message || err),
         )
       }
       this.members.set(chatId, map)
@@ -253,7 +253,7 @@ export class FeishuTransport {
     if (isGroup) {
       this.log.info(
         `[group] chat=${String(m.chat_id).slice(-6)} key=${key} thread=${threadId || '-'} ` +
-          `root=${m.root_id || '-'} parent=${m.parent_id || '-'} msg=${m.message_id}`,
+        `root=${m.root_id || '-'} parent=${m.parent_id || '-'} msg=${m.message_id}`,
       )
     }
 

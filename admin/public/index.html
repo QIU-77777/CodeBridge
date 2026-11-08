@@ -863,7 +863,9 @@ async function saveConfig() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(formToConfig()),
     })
-    $('cfg-msg').innerHTML = `<span class="ok">已保存（备份 ${esc(json.backup)}）。重启实例后生效。</span>`
+    $('cfg-msg').innerHTML =
+      `<span class="ok">已保存（备份 ${esc(json.backup)}）。重启实例后生效。</span>` +
+      (json.notice ? `<br><span class="warn">${esc(json.notice)}</span>` : '')
     await loadConfigTab()
   } catch (err) {
     $('cfg-msg').innerHTML = `<span class="err">保存失败: ${esc(err.message)}</span>`
