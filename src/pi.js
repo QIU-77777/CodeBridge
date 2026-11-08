@@ -12,8 +12,22 @@
 
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, readdirSync, unlinkSync, chmodSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+  renameSync,
+  readdirSync,
+  unlinkSync,
+  chmodSync,
+  openSync,
+  readSync,
+  closeSync,
+  statSync,
+} from 'node:fs'
 import { join } from 'node:path'
+import { homedir } from 'node:os'
 import { CONFIG_DIR } from './config.js'
 import { githubEnv } from './github-identity.js'
 
@@ -32,6 +46,18 @@ const SETTLED_QUIET_MS = 5_000
  * 读完，立刻结算会截断尾部输出。几百毫秒足够管道里缓存的数据全部到达。
  */
 const EXIT_DRAIN_MS = 300
+
+/**
+ * 终端 pi 的默认会话根目录（`pi -r` 列的就是它）。它按工作目录建子目录存放
+ * `<时间戳>_<uuid>.jsonl`；桥接自建的会话在实例配置目录下的 pi-sessions 里
+ * 平铺存放，两处互不可见。扫终端目录时只读每个文件的头部，不整读——一个会话
+ * 文件能到 16MB，而 id、cwd、标题、模型都在最前面几行。
+ */
+const CLI_SESSION_ROOT = join(homedir(), '.pi', 'agent', 'sessions')
+/** 头部读取上限：够覆盖 system 行 + 第一条 user message（标题来源） */
+const CLI_HEAD_BYTES = 512 * 1024
+/** 扫描结果的进程内缓存时长：/sessions 之外，prompt 每次也要查一次 */
+const CLI_SCAN_TTL_MS = 10_000
 
 /**
  * kill 整个进程组。pi 的 bash 工具会留下长驻子进程，只杀直接子进程的话，孤儿
@@ -65,6 +91,81 @@ function textOf(message) {
     .filter((c) => c && c.type === 'text' && typeof c.text === 'string')
     .map((c) => c.text)
     .join('')
+}
+
+/**
+ * 读终端 pi 一个会话文件的头部，提炼出桥接需要的字段。
+ *
+ * 头部三行就有全部信息：第一行 `type:"session"` 带 id 与 cwd，随后的
+ * model_change 带模型，第一条 role=user 的 message 的文本即标题（与 pi 的
+ * resume 选择器同一来源）。只读前 CLI_HEAD_BYTES 字节——会话文件能到 16MB，
+ * 整读会让每次 /sessions 都卡住。
+ *
+ * 返回 null 表示这个文件读不出有效会话头（损坏、空文件、非 pi 格式）。
+ */
+function readCliSessionHead(file) {
+  let head
+  try {
+    const fd = openSync(file, 'r')
+    try {
+      const buf = Buffer.allocUnsafe(CLI_HEAD_BYTES)
+      const n = readSync(fd, buf, 0, CLI_HEAD_BYTES, 0)
+      head = buf.toString('utf8', 0, n)
+    } finally {
+      closeSync(fd)
+    }
+  } catch {
+    return null
+  }
+  let id = null
+  let directory = ''
+  let created = 0
+  let model = null
+  let title = ''
+  for (const line of head.split('\n')) {
+    if (!line.startsWith('{')) continue
+    let ev
+    try {
+      ev = JSON.parse(line)
+    } catch {
+      continue
+    }
+    if (!id && ev?.type === 'session' && ev.id) {
+      id = ev.id
+      directory = ev.cwd || ''
+      created = ev.timestamp ? Date.parse(ev.timestamp) || 0 : 0
+      continue
+    }
+    if (id && !model && ev?.type === 'model_change' && ev.modelId) {
+      model = { providerID: ev.provider || '', id: ev.modelId }
+      continue
+    }
+    if (id && !title && ev?.type === 'message' && ev.message?.role === 'user') {
+      const t = textOf(ev.message).trim()
+      if (t) title = t
+      // 标题到手，后面的行都是正文，不再需要
+      if (model || created) break
+    }
+  }
+  if (!id) return null
+  let updated = 0
+  try {
+    updated = statSync(file).mtimeMs
+  } catch {
+    /* 拿不到 mtime 就用创建时间 */
+  }
+  return {
+    id,
+    title: title || '(无标题)',
+    location: { directory },
+    model,
+    time: { created: created || updated, updated: updated || created || Date.now() },
+    cost: 0,
+    tokens: null,
+    // 桥接据此走 --session <file> 续聊，并禁止改名/删除（那是终端 pi 的地盘）
+    file,
+    cli: true,
+  }
 }
 
 /** tool_execution_end.result → 纯文本，供卡片工具行展示 */
@@ -150,7 +251,7 @@ export class PiBackend {
   /**
    * @param {object} opts
    * @param {object} opts.cfg            完整配置
-   * @param {string} [opts.sessionDir]  会话目录；默认 <CONFIG_DIR>/pi-sessions
+   * @param {string} [opts.sessionDir]  桥接自建会话的目录；默认 <CONFIG_DIR>/pi-sessions
    * @param {string} [opts.configDir]   实例配置目录（飞书凭证所在处）；默认 CONFIG_DIR。测试传临时目录，避免碰真实配置
    * @param {Function} [opts.spawnImpl] 注入子进程工厂，测试用
    * @param {object} [opts.logger]
@@ -166,6 +267,10 @@ export class PiBackend {
     this.settleQuietMs = Number.isFinite(quiet) && quiet >= 0 ? quiet : 60_000
     this.extraArgs = Array.isArray(this.pi.extraArgs) ? this.pi.extraArgs : []
     this.sessionDir = sessionDir || join(CONFIG_DIR, 'pi-sessions')
+    // 终端 pi 的会话根目录：人类 `pi -r` 列的是这里，桥接默认看不到。指过来
+    // 之后 /sessions 能列出、/switch 能切、发消息能在同一个 jsonl 上续聊。
+    // 默认 ~/.pi/agent/sessions，可用 backend.pi.cliSessionRoot 覆盖
+    this.cliRoot = this.pi.cliSessionRoot || CLI_SESSION_ROOT
     this.configDir = configDir || CONFIG_DIR
     this.indexPath = join(this.sessionDir, 'index.json')
     this.spawnImpl = spawnImpl
@@ -174,6 +279,7 @@ export class PiBackend {
     this.statusSink = null
     this._version = null
     this._index = null
+    this._cliCache = null
   }
 
   // ---------- 子进程环境：把本实例的飞书身份、GitHub 身份钉进去 ----------
@@ -266,6 +372,52 @@ export class PiBackend {
     } catch {
       return null
     }
+  }
+
+  // ---------- 终端 pi 的会话 ----------
+
+  /**
+   * 扫终端 pi 的会话根目录，返回 id -> 会话 的 Map。
+   *
+   * 根目录下每个子目录是一个工作目录（目录名是路径编码，不用解析——jsonl
+   * 头部自带 cwd）。缓存 10 秒：prompt 每次也要查一次这个 Map 来判断会话在
+   * 哪，不缓存的话每条消息都全盘扫一遍。force=true 跳过缓存（/sessions 用）。
+   */
+  _scanCliSessions({ force = false } = {}) {
+    const now = Date.now()
+    if (!force && this._cliCache && now - this._cliCache.at < CLI_SCAN_TTL_MS) {
+      return this._cliCache.map
+    }
+    const map = new Map()
+    let subs = []
+    try {
+      subs = readdirSync(this.cliRoot, { withFileTypes: true }).filter((d) => d.isDirectory())
+    } catch {
+      // 没装过终端 pi、或目录被挪走：当作没有外部会话，桥接自建的照常用
+      this._cliCache = { at: now, map }
+      return map
+    }
+    for (const sub of subs) {
+      const dir = join(this.cliRoot, sub.name)
+      let files = []
+      try {
+        files = readdirSync(dir).filter((f) => f.endsWith('.jsonl'))
+      } catch {
+        continue
+      }
+      for (const f of files) {
+        const meta = readCliSessionHead(join(dir, f))
+        if (meta) map.set(meta.id, meta)
+      }
+    }
+    this._cliCache = { at: now, map }
+    return map
+  }
+
+  /** 按 id 找终端会话；桥接自建的优先（id 命名空间不同，实际不会撞） */
+  _cliSession(id) {
+    if (!id) return null
+    return this._scanCliSessions().get(id) || null
   }
 
   // ---------- 事件 ----------
@@ -465,13 +617,20 @@ export class PiBackend {
 
   async getSession(id) {
     const s = this._load()[id]
-    if (!s) throw new Error(`会话 ${id} 不存在`)
-    return s
+    if (s) return s
+    const cli = this._cliSession(id)
+    if (cli) return cli
+    throw new Error(`会话 ${id} 不存在`)
   }
 
   async renameSession(id, title) {
     const s = this._load()[id]
-    if (!s) throw new Error(`会话 ${id} 不存在`)
+    if (!s) {
+      // 终端会话的标题写在 jsonl 里，由 pi 的 resume 选择器管理；桥接改不了，
+      // 明确拒绝，别静默失败让人以为改成功了
+      if (this._cliSession(id)) throw new Error('终端 pi 的会话标题由 pi 管理，要在桥接里改名请先 /new 建一个桥接会话')
+      throw new Error(`会话 ${id} 不存在`)
+    }
     s.title = title
     s.time.updated = Date.now()
     this._save()
@@ -480,6 +639,12 @@ export class PiBackend {
 
   async deleteSession(id) {
     const idx = this._load()
+    if (!idx[id]) {
+      if (this._cliSession(id)) {
+        throw new Error('终端 pi 的会话不在桥接目录里，要删请在终端 pi 的会话选择器里操作')
+      }
+      throw new Error(`会话 ${id} 不存在`)
+    }
     delete idx[id]
     this._save()
     const f = this._findSessionFile(id)
@@ -493,8 +658,13 @@ export class PiBackend {
     return true
   }
 
-  async listSessions({ limit = '100', order = 'desc', search } = {}) {
-    let all = Object.values(this._load())
+  async listSessions({ limit = '100', order = 'desc', search, force = false } = {}) {
+    const merged = new Map()
+    for (const s of Object.values(this._load())) if (s?.id) merged.set(s.id, s)
+    for (const [id, s] of this._scanCliSessions({ force })) {
+      if (!merged.has(id)) merged.set(id, s)
+    }
+    let all = [...merged.values()]
     if (search) all = all.filter((s) => (s.title || '').includes(search))
     all.sort((a, b) => (order === 'desc' ? b.time.updated - a.time.updated : a.time.updated - b.time.updated))
     return all.slice(0, Number(limit) || 100)
@@ -502,7 +672,12 @@ export class PiBackend {
 
   async switchModel(id, model) {
     const s = this._load()[id]
-    if (!s) throw new Error(`会话 ${id} 不存在`)
+    if (!s) {
+      // 终端会话的模型写在 jsonl 的 model_change 行里，由 pi 维护；桥接的
+      // index.json 管不到它。拒掉并说清，避免「显示切换成功、下次跑又变回去」
+      if (this._cliSession(id)) throw new Error('终端 pi 的会话模型由 pi 管理，桥接里切不了；要指定模型请 /new 建一个桥接会话')
+      throw new Error(`会话 ${id} 不存在`)
+    }
     s.model = { providerID: model.providerID || '', id: model.id || String(model) }
     s.time.updated = Date.now()
     this._save()
@@ -555,10 +730,15 @@ export class PiBackend {
    * 返回 Promise 会等到结束；Bridge.runPrompt 本来就 await 它，结果的呈现靠事件。
    */
   async prompt(sessionId, body) {
-    const s = this._load()[sessionId]
+    // 桥接自建的会话（index.json 有条目）走 --session-id；终端 pi 的会话
+    // （index.json 没有、扫描目录里有）走 --session <file>——它按工作目录存在
+    // 子目录里，--session-id 在桥接的平铺目录里找不到那个文件
+    const s = this._load()[sessionId] || this._cliSession(sessionId)
     if (!s) throw new Error(`会话 ${sessionId} 不存在，先 /new`)
 
-    const args = ['-p', '--mode', 'json', '--session-dir', this.sessionDir, '--session-id', sessionId]
+    const args = s.file
+      ? ['-p', '--mode', 'json', '--session', s.file]
+      : ['-p', '--mode', 'json', '--session-dir', this.sessionDir, '--session-id', sessionId]
     const modelStr = s.model?.id ? [s.model.providerID, s.model.id].filter(Boolean).join('/') : ''
     if (modelStr) args.push('--model', modelStr)
     args.push(...this.extraArgs)
@@ -630,8 +810,13 @@ export class PiBackend {
       // 超时按活跃度算：pi 每吐一行就把计时器重置，只有长时间没有任何输出才杀。
       // 原来从进程启动算总时长，会把一直在干活的运行误杀——真实事故：一个运行
       // 10 分钟里产出 16290 行、12 步，超时前一刻还在查东西，按总时长被杀。
-      // 真挂住的运行不再吐任何行，计时器到点照杀。另有一层 behavior.idleTimeoutMs
-      // 看门狗按事件静默兜底（15 分钟无事件），两层方向不同，互不替代
+      // 真挂住的运行不再吐任何行，计时器到点照杀。
+      //
+      // 这是 pi 侧唯一的卡死兜底，触发时真杀进程并在卡片上给终态。桥接那层
+      // behavior.idleTimeoutMs 看门狗只服务 opencode（pi 的事件从 stdout 逐行
+      // 解析，长命令执行期间事件静默而进程健康，按事件判定就是误杀），见
+      // src/handler.js 的 watchdogIdleMs。答案出来之后的静默收尾是另一层：
+      // settleQuietMs，看的是最终文本出来了没有
       let idleTimer = null
       const bump = () => {
         if (settled || quietSettled) return

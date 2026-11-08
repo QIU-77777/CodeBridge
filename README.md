@@ -12,7 +12,7 @@
 | 能力 | 说明 |
 |---|---|
 | 远程下任务 | 飞书里发一句话，本机 opencode 在指定项目目录执行 |
-| 多会话 | `/sessions` 出列表点按钮切；`/new` 开新任务。会话按目录隔离 |
+| 多会话 | `/sessions` 出列表点按钮切；`/new` 开新任务。会话按目录隔离；pi 后端还含终端 `pi -r` 的会话 |
 | 实时进度 | 卡片流式更新：正文、步数、token、耗时、成本 |
 | 富文本 | markdown 表格渲染成真表格，代码块带语法高亮 |
 | 权限审批 | opencode 要读 `.env`、动敏感文件时，飞书弹卡片，点允许一次/总是/拒绝 |
@@ -416,8 +416,8 @@ npm run probe:names <chat_id>
 | `/new [目录]` | 新建会话并绑定，可指定项目路径 |
 | `/sessions` | 会话列表卡片，点「切换」即切 |
 | `/switch <序号\|id>` | 文本方式切会话 |
-| `/rename <标题>` | 重命名当前会话 |
-| `/del <序号>` | 删除会话 |
+| `/rename <标题>` | 重命名当前会话（终端 pi 的会话除外，见下） |
+| `/del <序号>` | 删除会话（终端 pi 的会话除外，见下） |
 | `/cd <目录>` | 换工作目录并重置绑定 |
 | `/stop` | 中止当前执行 |
 | `/status` | 看绑定、模型、tokens、成本 |
@@ -646,7 +646,9 @@ OCB_INSTANCE=pi npm run up      # 之后重启、查看都要带同一个 OCB_IN
 
 `pi -p --mode json` 的 stdout 是 JSONL 事件流。桥接逐条翻译成与 opencode SSE 同形状的合成事件（`src/pi.js` 的 `_streamEvent()`）：`turn_start` / `turn_end` 变步数，`text_delta` / `text_end` 变正文，`toolcall_*` / `tool_execution_*` 变工具调用，第一条助手消息里带的 `model` / `provider` 立即补上卡片前缀的模型名。渲染层一行不改，所以卡片版式、节流节奏、中止、僵尸卡收尾与 opencode 后端完全一致。
 
-`showTools` / `showReasoning` 两个开关对 pi 同样有效（默认关）。没有的只有：交互式权限卡片、`/agent`（pi 没有 opencode 的 agent 概念）。`/sessions` 列的是该实例的 pi 会话文件，`--session-id` 保证同一话题里能续聊。
+`showTools` / `showReasoning` 两个开关对 pi 同样有效（默认关）。没有的只有：交互式权限卡片、`/agent`（pi 没有 opencode 的 agent 概念）。
+
+`/sessions` 列出两类会话：桥接自建的（存在实例配置目录的 `pi-sessions` 里）和**你在终端 `pi -r` 里建的**（存在 `~/.pi/agent/sessions/` 下，默认自动纳入，可用 `backend.pi.cliSessionRoot` 改根目录）。终端会话在卡片上带「终端」标记，`/switch` 切过去后发消息走 `pi --session <会话文件>` 续聊——两端读写同一个 jsonl，你在终端里能看到机器人续的内容，反过来也一样。终端会话的改名、删除、切模型由 pi 自己管理，桥接里执行这三个操作会得到明确拒绝；要改就 `/new` 建一个桥接会话。
 
 运行中卡片的一次次更新是**串行**发出的（`src/handler.js` 的 `flushRun()`）：终态事件和最后一条文本事件常常同一时刻到达，两个 patch 同时在途时飞书侧的生效顺序没有保证——真实事故是任务早已完成、卡片却永远停在「执行中」。串行之后在途期间到达的刷新会合并，终态一定最后生效。
 

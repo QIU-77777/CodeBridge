@@ -184,8 +184,11 @@ function fakeSpawn(bin, args, opts = {}) {
 
 const root = mkdtempSync(join(tmpdir(), 'ocb-pi-test-'))
 const sessionDir = join(root, 'pi-sessions')
+// 终端会话根目录指向一个不存在的临时路径：测试不该扫到人类真实的
+// ~/.pi/agent/sessions（那里的会话会让「listSessions 列出两个」这类断言失真）
+const cliSessionRoot = join(root, 'no-such-cli-root')
 const cfg = {
-  backend: { type: 'pi', pi: { bin: 'pi', model: 'deepseek/deepseek-v4-pro', timeoutMs: 800, extraArgs: [] } },
+  backend: { type: 'pi', pi: { bin: 'pi', model: 'deepseek/deepseek-v4-pro', timeoutMs: 800, extraArgs: [], cliSessionRoot } },
   feishu: {},
   opencode: { url: 'http://127.0.0.1:19876', password: '', defaultDirectory: root, defaultModel: '' },
   behavior: {},

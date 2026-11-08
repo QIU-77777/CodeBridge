@@ -714,7 +714,8 @@ export class Bridge {
     const dir = binding?.directory || this.cfg.opencode.defaultDirectory
     let cached = this.sessionCache.get(ctx.key)
     if (!cached || cached.expires < Date.now()) {
-      const all = await this.oc.listSessions({ limit: '100' })
+      // force：人类刚在终端 pi 里建的会话也要马上看到，不吃扫描缓存
+      const all = await this.oc.listSessions({ limit: '100', force: true })
       const filtered = all.filter((s) => (s.location?.directory || '') === dir)
       cached = { sessions: filtered, expires: Date.now() + 15_000 }
       this.sessionCache.set(ctx.key, cached)
@@ -837,7 +838,14 @@ export class Bridge {
       return this.t.sendText(ctx.chatId, '当前没有绑定会话', { replyTo: ctx.replyTo })
     }
     if (!arg) return this.t.sendText(ctx.chatId, '用法: /rename <新标题>', { replyTo: ctx.replyTo })
-    const s = await this.oc.renameSession(binding.sessionId, arg)
+    // 终端 pi 的会话改不了名（标题写在 jsonl 里，由 pi 维护），抛错时回一句
+    // 清楚的说明，别让异常冒泡到事件循环里没了下文
+    let s
+    try {
+      s = await this.oc.renameSession(binding.sessionId, arg)
+    } catch (err) {
+      return this.t.sendText(ctx.chatId, `重命名失败: ${err.message}`, { replyTo: ctx.replyTo })
+    }
     this.sessionCache.delete(ctx.key)
     return this.t.sendText(ctx.chatId, `已重命名为「${s?.title || arg}」`, { replyTo: ctx.replyTo })
   }
@@ -858,7 +866,12 @@ export class Bridge {
       }
       targetId = list[idx].id
     }
-    await this.oc.deleteSession(targetId)
+    // 终端 pi 的会话不在桥接目录里，删它等于删人类自己的一份数据，明确拒绝
+    try {
+      await this.oc.deleteSession(targetId)
+    } catch (err) {
+      return this.t.sendText(ctx.chatId, `删除失败: ${err.message}`, { replyTo: ctx.replyTo })
+    }
     this.sessionCache.delete(ctx.key)
     if (binding?.sessionId === targetId) this.store.clearSession(ctx.key)
     return this.t.sendText(ctx.chatId, `已删除会话 ${targetId}`, { replyTo: ctx.replyTo })
@@ -888,7 +901,13 @@ export class Bridge {
     const target =
       Number.isFinite(idx) && idx > 0 ? cache.models[idx - 1] : cache.models.find((m) => m.id === arg)
     if (!target) return this.t.sendText(ctx.chatId, `找不到模型: ${arg}`, { replyTo: ctx.replyTo })
-    await this.oc.switchModel(binding.sessionId, { id: target.id, providerID: target.providerID })
+    // 终端 pi 的会话切不了模型（model_change 行由 pi 维护），switchModel 会抛错，
+    // 这里接住回成一句人能看懂的话，别让异常冒泡到事件循环里没了下文
+    try {
+      await this.oc.switchModel(binding.sessionId, { id: target.id, providerID: target.providerID })
+    } catch (err) {
+      return this.t.sendText(ctx.chatId, `切换失败: ${err.message}`, { replyTo: ctx.replyTo })
+    }
     return this.t.sendText(ctx.chatId, `已切换到 ${target.providerID}/${target.id}`, { replyTo: ctx.replyTo })
   }
 
@@ -979,7 +998,8 @@ export class Bridge {
         case 'sessions': {
           const b = this.store.get(key)
           const dir = b?.directory || this.cfg.opencode.defaultDirectory
-          const all = await this.oc.listSessions({ limit: '100' })
+          // force：翻页也重扫终端目录，人类新建的会话不用等缓存过期
+          const all = await this.oc.listSessions({ limit: '100', force: true })
           const filtered = all.filter((s) => (s.location?.directory || '') === dir)
           this.sessionCache.set(key, { sessions: filtered, expires: Date.now() + 15_000 })
           const card = sessionsCard({

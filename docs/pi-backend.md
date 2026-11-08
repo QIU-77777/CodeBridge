@@ -43,7 +43,7 @@ pi 和 dsh 都不提供 `/api/session`、`/api/event`。所以多起一个进程
 | 最终文本 | `message_end.message.content[]` 里 `type === "text"` 的 `text` |
 | 用量 | `message_end.message.usage`：`input` / `output` / `cacheRead` / `totalTokens` / `cost.total` |
 | 模型 | `message_end.message.provider` + `.model`（实测 `deepseek/deepseek-v4-pro`） |
-| 会话 | `--session-id` 配合 `--session-dir` 生成 `<时间戳>_<id>.jsonl`；**同 id 再跑会续聊**，实测第二轮能答出第一轮约定的暗号 |
+| 会话 | `--session-id` 配合 `--session-dir` 生成 `<时间戳>_<id>.jsonl`；**同 id 再跑会续聊**，实测第二轮能答出第一轮约定的暗号。终端 `pi -r` 的会话另有 `--session <jsonl 路径>` 一条路，见 4.3 |
 | 退出 | `rc=0` 正常；`agent_settled.aborted` 表示被中止 |
 
 也就是说 pi 其实**有**子进程级的事件流，只是没有常驻服务。本方案按用户要求不做流式，但数据结构允许将来几乎零成本地打开。
@@ -90,14 +90,16 @@ pi 和 dsh 都不提供 `/api/session`、`/api/event`。所以多起一个进程
 
 ### 4.3 会话
 
-`createSession({ title, directory })` 生成一个 `pi-<随机>` id，返回与 opencode 同形的 `{ id, title, location: { directory }, model }`。子进程用：
+`createSession({ title, directory })` 生成一个 `pi-<随机>` id，返回与 opencode 同形的 `{ id, title, location: { directory }, model }`。桥接自建的会话，子进程用：
 
 ```
 --session-id <id> --session-dir <CONFIG_DIR>/pi-sessions   # 各实例天然隔离
 cwd: <directory>                                          # 话题绑定的项目目录
 ```
 
-`getSession(id)` 从会话目录里找 `<...>_<id>.jsonl`，存在就返回会话对象。桥接重启后内存 Map 空了，但文件还在，续聊能接上；文件也丢了就抛错，`Bridge` 现有的 `catch` 会自动重建会话。
+终端 `pi -r` 建的会话不在这套参数里：它按工作目录存在 `~/.pi/agent/sessions/<按目录编码>/` 下，`--session-id` 在桥接的平铺目录中找不到对应文件。对这类会话 `prompt()` 改传 `--session <jsonl 路径>`，cwd 取 jsonl 头部的 `cwd`，模型取 `model_change` 行——两端读写同一个文件。扫描只读每个文件的头部（`readCliSessionHead()`，上限 512KB）：id 与 cwd 在第一行，标题取第一条 `role=user` 的消息（与 pi 的 resume 选择器同源），模型取 `model_change` 行。
+
+`getSession(id)` 先查桥接的 `index.json`，再回退到终端目录扫描。桥接重启后内存 Map 空了，但文件还在，续聊能接上；文件也丢了就抛错，`Bridge` 现有的 `catch` 会自动重建会话。
 
 ### 4.4 超时、中止与静默收尾
 
@@ -160,6 +162,8 @@ opencode 后端的代理跑在常驻 serve 里，桥接没法向已启动的进�
 ```
 
 `sessionDir` 不写在配置里，固定为 `<CONFIG_DIR>/pi-sessions`，跟着配置目录走，多实例不会串会话。CLI 路径可通过 `backend.pi.bin` 指定绝对路径；`bin` 支持环境变量 `OCB_PI_BIN` 覆盖。
+
+**终端会话也看得见。** 人类在终端 `pi -r` 里建的会话按工作目录存在 `~/.pi/agent/sessions/<按目录编码>/<时间戳>_<uuid>.jsonl`，与桥接的平铺目录原本互不可见。桥接启动时也会扫这个根目录（默认 `~/.pi/agent/sessions`，可用 `backend.pi.cliSessionRoot` 覆盖），`/sessions` 把两类会话合在一起列出，终端那条带「终端」标记。切换过去后 `prompt()` 对终端会话传 `--session <jsonl 路径>`（桥接自建的仍传 `--session-id`），两端读写同一个文件。终端会话的标题、模型写在 jsonl 里由 pi 维护，改名 / 删除 / 切模型三个操作在桥接里明确拒绝。
 
 ### 6.1 GitHub 身份（`github` 段）
 

@@ -272,6 +272,8 @@ export function sessionsCard({ sessions, currentId, directory, page = 0, pageSiz
       fmtAgo(s.time?.updated || s.time?.created),
       s.model?.id || '',
       s.cost ? fmtCost(s.cost) : '',
+      // 终端 pi 的会话：人类在 `pi -r` 里也能看到同一条，续聊写的是同一个文件
+      s.cli ? '终端' : '',
     ]
       .filter(Boolean)
       .join(' · ')
