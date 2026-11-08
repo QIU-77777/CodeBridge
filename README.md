@@ -1,212 +1,421 @@
-# opencode ⇄ 飞书 桥接
+# 飞书 ⇄ 本地 Agent 桥接
 
-把本机运行的 [opencode](https://opencode.ai) 接到飞书机器人上。在飞书里发一句话，本机 opencode 在你的项目目录里干活，过程和结果流式推回一张飞书卡片。后端可替换，也能把 `pi` 这类一次性 CLI 接成另一个机器人。
+把飞书消息变成任务，交给本机 Agent 在指定项目目录执行，再把过程与结果流式推回一张飞书卡片。内置 [opencode](https://opencode.ai) 与 `pi` 两种执行后端；其他命令行 Agent 实现 `Backend` 接口后走同一条链路。事件走飞书长连接，无需公网 IP 与内网穿透。
 
-适合：agent 装在自己电脑上，想在外面用手机派活、看结论的人；以及想让多个本机 agent 在同一个飞书群里分工协作的人。
-不适合：需要云端执行沙箱的场景。
+- 交互层与执行层分离：卡片、命令、会话、排队、中止、僵尸卡收尾由桥接管，具体 Agent 负责执行任务并产生事件。
+- 一个进程服务一个机器人。换执行后端只改 `backend.type`。
+- 配置与状态放在家目录，仓库内只保留不含密钥的模板 `config.example.json`。
+- 运行时依赖只有一个：`@larksuiteoapi/node-sdk`。
+
+更细的产品说明、截图、卡片渲染细节与后台逐步操作见 [README.full.md](README.full.md)。设计取舍见 [docs/design-notes.md](docs/design-notes.md)。
 
 ---
 
-## 能力
+## 它能做什么
 
-| 能力 | 说明 |
+| 能力 | 行为 |
 |---|---|
-| 远程下任务 | 飞书里发一句话，本机 opencode 在指定项目目录执行 |
-| 多会话 | `/sessions` 出列表点按钮切；`/new` 开新任务。会话按目录隔离；pi 后端还含终端 `pi -r` 的会话 |
-| 实时进度 | 卡片流式更新：正文、步数、token、耗时、成本 |
-| 富文本 | markdown 表格渲染成真表格，代码块带语法高亮 |
-| 权限审批 | opencode 要读 `.env`、动敏感文件时，飞书弹卡片，点允许一次/总是/拒绝 |
-| 模型切换 | `/model` `/agent` 在线换，不用重启 |
-| 多项目 | `/cd` 换目录，每个目录一份独立会话列表 |
-| 群里并行 | 群里每 @ 它一次就在下面开一条话题，一条话题一个会话，多条话题同时跑；只响应 @ 它自己的消息 |
-| 免公网 | 走长连接，不需要公网 IP、不需要内网穿透 |
-| 可换后端 | `backend.type` 选 `opencode`（常驻服务 + SSE 流式）或 `pi`（一次性子进程，边跑边把进度翻译成同一套事件）；同一套卡片、中止、僵尸卡收尾逻辑 |
+| 远程派活 | 飞书里发一句话，本机 Agent 在指定项目目录执行 |
+| 流式卡片 | 正文、步数、耗时、token、成本在同一张卡片内刷新 |
+| 富文本 | Markdown 表格渲染成飞书原生表格，代码块带语法高亮 |
+| 多会话 | `/sessions` 列出会话并点按钮切换；`/new` 新建；`/cd` 换目录 |
+| 群里并行 | 每 @ 一次开一条话题，一条话题一个会话，多条话题并行执行 |
+| 权限审批 | opencode 后端申请读取敏感文件时，飞书弹卡片让人点允许或拒绝 |
+| 模型切换 | `/model`、`/agent` 在线切换，无需重启 |
+| 排队与中止 | 同一会话上一条还在执行时，新消息排进队列；卡片上可引导、取消、`/stop` |
+| 可换后端 | `opencode` 与 `pi` 内置；其他命令行 Agent 实现 `Backend` 接口后接入，共用卡片、会话、排队与中止逻辑 |
+| 多机器人 | 多个飞书应用 + 多份配置 + 多个进程，各自精确判断「@ 的是我」 |
+
+适用场景：人在外面用手机给本机 Agent 派活；多个本机 Agent 在同一个飞书群里分工。
+
+边界：任务在本机执行，不提供云端执行沙箱。桥接进程退出后机器人停止响应，长期运行要装常驻服务。
 
 ---
 
-## 它长什么样
+## 工作原理
 
-同一套交互的两个切面。
+下面四张图用 Mermaid 绘制，GitHub 与多数 Markdown 预览可直接渲染。每张图后附设计说明。
 
-**左**：发一句话 → 卡片流式回结果。中间那张表是**模型输出的 markdown 表格**，被渲染成了飞书原生表格组件（不是文字）。<br>
-**右**：`/cd` 换目录后 `/sessions` 出列表，点「切换」换会话，历史回复原封不动。
+### 图 1 · 系统架构
 
-<table>
-<tr>
-<td valign="top"><img src="docs/images/request-and-reply.png" alt="发起请求与接收回复" height="520"><br>
-卡片顶部一行元信息：<b>目录</b> / <b>模型</b> / <b>耗时</b> / <b>步数</b>；底部一行用量：<code>in</code> / <code>out</code> / <code>$</code>。工具调用链路默认不显示，只看结论；正文按助手叙述的段累加，每一段之间空一行，多步运行的中间回复和最终答复按顺序都看得见。</td>
-<td valign="top"><img src="docs/images/session-switch.png" alt="多会话管理" height="520"><br>
-会话按目录隔离，列表中只出现当前目录下的会话。每条后面有「已用时长 · 模型 · 累计成本」，点「切换」后新发一条确认卡片。</td>
-</tr>
-</table>
+```mermaid
+flowchart TB
+  subgraph Cloud["飞书云"]
+    U["用户 / 群聊"]
+    API["开放平台 API"]
+  end
+  subgraph Bridge["桥接进程 · 一个机器人一个进程"]
+    FT["feishu.js<br/>长连接 / 闸门 / 来源标注"]
+    HD["handler.js<br/>命令 / 运行编排 / 队列 / 看门狗"]
+    ST["store.js<br/>state.json"]
+    BE["backend.js<br/>统一接口 / 能力声明"]
+    RD["render.js → md.js → cards.js<br/>运行态 → 卡片 2.0"]
+  end
+  subgraph Agents["本地 Agent · 可替换"]
+    OC["oc.js<br/>opencode serve"]
+    PI["pi.js<br/>pi CLI 子进程"]
+    NEW["自定义 Backend<br/>任意命令行 Agent"]
+  end
+  FS["本机项目目录 / shell / 文件"]
+  AD["admin/ 管理后台"]
+  CFG["配置目录 / 日志 / launchd"]
 
----
-
-## 快速开始
-
-需要 Node.js 20+，以及装好的 **OpenCode 桌面版**（<https://opencode.ai>）。桥接会用桌面版自带的那份 CLI。
-
-```bash
-git clone <这个仓库> && cd opencode-feishu-bridge
-npm install
+  U -->|发消息与点按钮| API
+  API -->|长连接事件| FT
+  FT --> HD
+  HD <--> ST
+  HD --> BE
+  BE --> OC
+  BE --> PI
+  BE -.-> NEW
+  OC --> FS
+  PI --> FS
+  NEW -.-> FS
+  OC -->|SSE事件| RD
+  PI -->|JSONL合成事件| RD
+  NEW -.->|同形状事件| RD
+  RD -->|节流patch| FT
+  FT -->|创建与更新卡片| API
+  API --> U
+  AD -.-> CFG
+  CFG -.->|启动时读取| HD
 ```
 
-`npm install` 只需跑一次。忘了跑也能进下一步（`init` 会跳过凭证验证并提醒你），但启动前必须装。
+整个系统分三层。飞书云负责收发消息与卡片。桥接进程承担全部交互逻辑：消息闸门、命令、会话绑定、队列、卡片刷新、超时收尾。本地 Agent 只负责执行任务并产生事件。把执行层换成另一个命令行工具时，交互层的代码无需改动。
 
-不需要另外 `npm i -g opencode`。装过的话建议卸掉——两份 opencode 共用同一个会话数据库，混着用会让某些会话突然读不出历史：
+长连接由 `feishu.js` 主动建立，机器人主动连飞书，本机无需公网入口。`admin/` 是旁路，读写配置、查看日志、起停实例，不参与消息链路。
+
+### 图 2 · 一条消息的执行时序
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as 飞书用户
+    participant F as feishu.js
+    participant H as handler.js
+    participant S as state.json
+    participant B as Backend
+    participant A as 本地Agent
+    participant C as 飞书卡片
+
+    U->>F: 发文本或@机器人
+    F->>F: 校验@判定、放行名单、消息去重
+    F->>F: 拼来源标注与prompt前缀
+    F->>H: onMessage
+    H->>S: 读取会话绑定
+    alt 无绑定
+        H->>B: createSession
+        B->>A: 建会话
+        H->>S: 写入绑定
+    end
+    H->>C: 创建执行中卡片
+    H->>B: prompt
+    B->>A: 执行任务
+    loop 事件持续到达
+        A-->>B: 文本 / 工具 / 用量
+        B-->>H: 统一事件
+        H->>H: render.js聚合运行态
+        H->>C: 串行patch
+    end
+    A-->>B: 执行结束
+    B-->>H: 终态事件
+    H->>S: 清除未收尾卡片记录
+    H->>C: 终态卡片
+```
+
+四个关键点：
+
+1. 闸门在飞书层。`@` 判定、放行名单、消息去重在进入 `handler.js` 之前完成。多个机器人同群时，只有被 @ 的那个会往下走。
+2. `state.json` 保存会话绑定、排队消息、未收尾卡片。进程重启后，遗留卡片会被标成已中止。
+3. 卡片刷新串行执行，间隔由 `behavior.streamIntervalMs` 控制。终态更新最后写入。
+4. 同一会话上一条还在执行时，新消息排进队列，当前任务结束后自动发送。
+
+### 图 3 · 后端为什么可以换
+
+```mermaid
+flowchart LR
+  H["handler.js<br/>只认接口"] --> I["Backend 接口<br/>health / subscribe / createSession<br/>prompt / interrupt / listSessions ..."]
+  I --> O["OpencodeClient<br/>src/oc.js"]
+  I --> P["PiBackend<br/>src/pi.js"]
+  I -.-> N["你的实现<br/>任意命令行 Agent"]
+  O --> C1["capabilities<br/>streaming / agents / permissions"]
+  P --> C2["capabilities<br/>oneShot"]
+  N -.-> C3["capabilities<br/>按需声明"]
+  C1 --> FE["飞书交互层<br/>按能力自动降级"]
+  C2 --> FE
+  C3 -.-> FE
+  O --> EV["session.* 事件<br/>render.js 统一聚合"]
+  P --> EV
+  N -.-> EV
+```
+
+`handler.js` 只调用 `Backend` 接口上的方法，`backend.js` 按 `backend.type` 选择实现。两个现有实现的差别被藏在各自文件里：
+
+- `oc.js` 连接常驻的 `opencode serve`，把 SSE 事件流交给 `render.js`。
+- `pi.js` 每条消息起一次子进程，把 JSONL 输出翻译成 `session.*` 形状的**合成事件**，`render.js` 因此只有一套聚合逻辑。
+- `capabilitiesFor()` 声明 `streaming`、`agents`、`permissions`、`oneShot`。声明为关闭的能力，`/agent`、权限审批卡片、流式刷新会自动降级。
+
+接入步骤见[开发章节](#开发)。
+
+### 图 4 · 群聊话题与会话绑定
+
+```mermaid
+flowchart TB
+  G["同一个飞书群"] --> T1["话题A<br/>key = root:消息1"]
+  G --> T2["话题B<br/>key = root:消息2"]
+  G --> T3["新@主聊天流<br/>key = root:自身消息id"]
+  T1 --> S1["会话1"]
+  T2 --> S2["会话2"]
+  T3 --> S3["会话3"]
+  S1 --> Q["behavior.maxParallel<br/>整机并发上限"]
+  S2 --> Q
+  S3 --> Q
+  Q --> L["本地 Agent 后端"]
+```
+
+群聊用话题根消息的 id 作绑定键，私聊用 `chat_id`。根消息来自 `root_id`，主聊天流里新 @ 的消息自身成为根，两种情况用同一个公式。多条话题各自绑定独立会话，`behavior.maxParallel` 限制整机同时执行的任务数。同一会话内部仍然串行，新消息排进队列。`state.json` 是绑定的唯一来源，飞书界面里的选中状态不参与判定。
+
+### 模块职责
+
+| 文件 | 职责 |
+|---|---|
+| `src/index.js` | 入口、单实例锁、`--dry` 终端模式、启动健康检查 |
+| `src/config.js` | 配置目录解析、默认值、模板铺开、环境变量覆盖 |
+| `src/feishu.js` | 飞书长连接收发、群聊 @ 判定、消息来源标注、卡片回传 |
+| `src/handler.js` | 命令分发、会话绑定、运行编排、排队、卡片回调、看门狗 |
+| `src/backend.js` | 后端工厂与统一能力声明 |
+| `src/oc.js` | opencode v2 HTTP API 与 SSE 事件流客户端 |
+| `src/pi.js` | pi 子进程、JSONL 事件翻译成合成事件、终端会话接入 |
+| `src/render.js` | 事件聚合成运行态（正文、步数、用量） |
+| `src/md.js` | Markdown 分段解析成飞书卡片元素 |
+| `src/cards.js` | 卡片 2.0 模板 |
+| `src/store.js` | `state.json` 读写、遗留字段清理、队列与未收尾卡片持久化 |
+| `src/which-opencode.js` | 选择本机 opencode 可执行文件 |
+| `src/github-*.js/.mjs` | GitHub App 身份注入与凭证助手 |
+| `admin/*.js` | 本地管理后台的服务、实例发现、后端扫描、新建实例 |
+| `scripts/*.sh` | 启动、停止、状态、launchd 常驻安装 |
+
+三条设计约束，改代码前先读：
+
+1. `handler.js` 只调用 `backend.js` 暴露的一组方法（`health`、`location`、`subscribe`、`createSession`、`prompt`、`interrupt`、`listSessions` 等）。后端差异留在 `oc.js`、`pi.js` 或新的实现文件内。
+2. `state.json` 是会话绑定的唯一数据来源。私聊用 `chat_id` 作键，群聊用 `root:<话题根消息 id>` 作键。同一会话同时只跑一个任务。
+3. 同一张卡片的多次刷新串行发出（`flushRun()`）。终态更新与最后一段文本常常同时到达，串行能保证终态最后生效。
+
+---
+
+## 信任边界与身份传递
+
+下面两张图用纯文本绘制，任何 Markdown 预览都能显示。它们描述数据跨越边界时，凭证、身份与权限如何流动。
+
+### 图 5 · 端到端信任边界
+
+```
+ [外部 / 飞书云]
+ +------------------------------------------------------------------+
+ |  用户 A     用户 B     其他机器人                                 |
+ |      \        |        /     文本、@、卡片点击                    |
+ |       +-------+-------+                                          |
+ |                   v                                             |
+ |    开放平台   im.message.receive_v1 / card.action.trigger        |
+ +------------------------------|-----------------------------------+
+                                | 长连接：桥接主动外连，TLS
+                                | appId + appSecret -> tenant_access_token
+ ================================|==================================== 信任边界
+                                v
+ [本机 / 桥接进程]   bridge.lock 保证单实例
+ +------------------------------------------------------------------+
+ | [闸门 1] @ 判定    mentions[].open_id == feishu.botOpenId        |
+ | [闸门 2] 放行      allowlist U listen，open_id 按应用隔离         |
+ | [闸门 3] 去重      message_id                                    |
+ |                            |                                     |
+ |   feishu.js --> handler.js --> store.js (state.json)             |
+ |        ^             |                                           |
+ |        |             v                                           |
+ |   发卡片 / patch   backend.js                                    |
+ |                        |                                         |
+ | [闸门 4] 权限审批   session.permission.* -> 卡片 ->              |
+ |                      once / always / reject -> replyPermission   |
+ +------------------------|------------------------------------------+
+                          | 注入本实例身份（启动时 / 每次任务）
+      FEISHU_APP_ID / SECRET / DOMAIN
+      LARKSUITE_CLI_CONFIG_DIR -> lark-cli/config.json (600)
+      GH_TOKEN / GIT_AUTHOR_* / GIT_COMMITTER_*
+      GIT_CONFIG_* -> github-app-credential.mjs
+      PATH -> <配置目录>/bin/gh
+                          v
+ +------------------------------------------------------------------+
+ | [本机 / 本地 Agent]    opencode serve   |   pi 子进程            |
+ |     读写项目目录、执行 shell、调用模型、提交代码                  |
+ +---------------|----------------------------|---------------------+
+                 | 以本实例机器人身份发言      | 以 xxx[bot] 推送 / 开 PR
+                 v                            v
+            飞书（同一应用）               GitHub
+```
+
+四个身份域各自独立：
+
+| 域 | 凭证 | 判定位置 |
+|---|---|---|
+| 人到桥接 | 飞书 `open_id` | `feishu.js` 的 @ 判定、`handler.js` 的 `isAllowed()` |
+| 桥接到飞书 | `appId` / `appSecret` / `botOpenId` | `feishu.js` 建立长连接时 |
+| 桥接到 Agent | 本实例飞书凭证与 GitHub 身份 | `pi.js` 的 `childEnv()` 或 `scripts/lib/*-identity.sh` |
+| Agent 到外部 | `xxx[bot]` 的 token 与提交署名 | `src/github-identity.js` 的四路注入 |
+
+多个机器人同机时，每个实例从自己的 `config.json` 读取凭证并注入自己的子进程，代理发言与代码提交都归属本实例应用。`open_id` 按应用隔离，填写错误时只会静默失效，放行名单变更后要到 `logs/bridge.log` 确认。
+
+### 图 6 · 权限审批回路
+
+```
+  本地 Agent          handler.js          飞书卡片          人
+      |                   |                  |              |
+      | permission.asked  |                  |              |
+      |------------------>|  sendCard        |              |
+      |                   |----------------->|  允许一次     |
+      |                   |                  |  总是允许     |
+      |                   |                  |  拒绝         |
+      |                   |                  |<--- 点击 -----|
+      |                   | card.action.trigger             |
+      |                   |<-----------------|              |
+      | replyPermission(sessionID, requestID, once|always|reject)
+      |<------------------|                  |              |
+      |  继续执行 / 拒绝   |                  |              |
+```
+
+`session.permission.*` 事件进入 `handler.js` 后立刻推卡片，不走流式聚合。按钮回调携带 `a=perm`、`s`（会话）、`r`（请求）、`d`（决策），`handler.js` 校验 `caps.permissions` 后调用 `replyPermission()`。pi 后端声明 `permissions: false`，这条回路整条关闭。
+
+### 凭证落盘
+
+| 路径 | 内容 | 保护方式 |
+|---|---|---|
+| `~/.config/opencode-feishu-bridge/config.json` | `appSecret`、serve 密码、GitHub 身份 | 仓库外；`.gitignore` 再拦一道 |
+| `state.json` | 会话绑定、排队消息、未收尾卡片 | 仓库外 |
+| `bridge.lock` | 单实例锁与进程号 | 仓库外 |
+| `lark-cli/config.json` | 只含本实例应用的凭证 | 写入时权限 600 |
+| `github-app.pem` | GitHub App 私钥 | 建议权限 600 |
+| `logs/*.log` | 运行日志 | `.gitignore` 排除 |
+
+### 管理后台的边界
+
+`admin/` 只监听 `127.0.0.1`。`requestGuards()` 校验 Host 属于 `localhost` 或 `127.0.0.1`，写操作额外要求 `Content-Type: application/json` 与 `X-OCB-Admin: 1`。这套校验用于阻挡跨站表单。响应里的 `appSecret` 与 `opencode.password` 一律掩码；写配置时密钥留空表示保持原值，并先备份成 `config.json.bak`。
+
+### 边界上的薄弱处
+
+| 位置 | 现状 | 后果 |
+|---|---|---|
+| `feishu.allowlist` 默认空 | 不限制私聊发送者 | 能找到机器人的人都能让它执行本机 shell |
+| `botOpenId` 取不到 | 退化成「@ 任何人都响应」 | 多机器人同群会一起抢答 |
+| 本地 Agent | 直接读写项目目录与 shell | 缺少沙箱与命令审计 |
+| 管理后台 | 只做本地回环与跨站防护 | 本机任意进程都能调用写接口 |
+| 凭证 | 明文落在配置目录 | 依赖文件系统权限与磁盘加密保护 |
+
+---
+
+## 环境与依赖
+
+| 项目 | 要求 |
+|---|---|
+| Node.js | `>= 20`（`package.json` 的 `engines`） |
+| 飞书 | 企业自建应用，启用机器人能力，使用长连接接收事件与回调 |
+| opencode 后端 | 桌面版 OpenCode.app 自带的 CLI（推荐），或 PATH 里的 `opencode` |
+| pi 后端 | 可执行的 `pi` CLI |
+| macOS | 可选。launchd 常驻服务依赖 macOS；其他系统用 `npm start` 保持前台运行 |
+
+桌面版自带 CLI 与 App 版本相同，共用同一个会话数据库。混用另一个 npm 全局版本会出现某些会话读不出历史：
 
 ```bash
 which opencode && npm rm -g @opencode/cli
 ```
 
-> 为什么用桌面版自带的：桌面版和它的 CLI 是同一个版本、写同一个数据库。混用两个版本会出现「一个版本写入、另一个版本读不出来」，表现为某些会话突然发不出消息。详见 [docs/design-notes.md](docs/design-notes.md#八用哪个-opencode版本一致性)。
+---
 
-### 1. 确认用哪份 opencode
+## 快速开始
 
-serve 由 `./scripts/up.sh` 自动拉起（第 5 步），它会按这个顺序挑二进制：
+### 1. 安装依赖
+
+```bash
+git clone <本仓库地址> && cd opencode-feishu-bridge
+npm install
+```
+
+### 2. 确认使用哪份 opencode
+
+使用 pi 后端或自定义后端时跳过本节。这类后端每条消息起一次子进程，不需要 opencode serve。使用 opencode 后端时，`scripts/up.sh` 按以下顺序选择可执行文件：
 
 ```
 OPENCODE_BIN 环境变量  →  桌面版自带 CLI  →  PATH 里的 opencode
 ```
 
-看一眼会选中哪个：
-
 ```bash
-node scripts/which-opencode.mjs --json
+node scripts/which-opencode.mjs --json     # 查看选中的路径、版本、来源
 ```
 
-如果你的 opencode 不在上述位置，用 `OPENCODE_BIN=/path/to/opencode` 指定即可。
-
-想手动起 serve 也可以（调试用，注意密码要和配置里一致）：
+`serve` 由 `up.sh` 自动拉起。手工调试时密码要与配置里的 `opencode.password` 一致：
 
 ```bash
-# "$(node scripts/which-opencode.mjs)" 拿到的就是 up.sh 会用的那份
 OPENCODE_SERVER_PASSWORD='my-secret-123' \
   "$(node scripts/which-opencode.mjs)" serve --port 19876 --hostname 127.0.0.1
-```
 
-验证：
-
-```bash
 curl -s -u opencode:my-secret-123 http://127.0.0.1:19876/api/info
-# {"version":"2.2.5","pid":12345,...}
 ```
 
-> 端口要和配置里的 `opencode.url` 对上，用 4096 也行，改配置即可。
+端口要与 `opencode.url` 一致。
 
-### 2. 创建飞书应用
+### 3. 创建飞书应用
 
-打开 <https://open.feishu.cn/app> → **创建企业自建应用**（名字随便，比如 `opencode`）。
+打开 <https://open.feishu.cn/app> → **创建企业自建应用**。
 
-**2.1 添加机器人能力** ｜ 「添加应用能力」→ 机器人 → 启用。
+**3.1 添加机器人能力**：「添加应用能力」→ 机器人 → 启用。
 
-**2.2 加权限** ｜ 「开发配置 → 权限管理」→ 搜索并添加：
+**3.2 添加权限**：「开发配置 → 权限管理」→ 搜索并添加：
 
 | 权限 | 用途 |
 |---|---|
-| `im:message` | 收发消息（含更新卡片） |
+| `im:message` | 收发消息、更新卡片 |
 | `im:message:send_as_bot` | 以应用身份发消息 |
-| `im:message.p2p_msg:readonly` | 读用户私聊机器人的消息 |
-| `im:message.group_at_msg:readonly` | 读群里 @机器人 的消息 |
-| `im:chat:readonly` | 可选，读群信息 |
+| `im:message.p2p_msg:readonly` | 读取私聊消息 |
+| `im:message.group_at_msg:readonly` | 读取群里 @ 机器人的消息 |
+| `im:chat:readonly` | 可选，读取群名称 |
+| `im:chat.members:read` | 可选，读取群成员名字 |
 
-**2.3 事件订阅** ｜ 「开发配置 → 事件与回调 → 事件配置」→ 订阅方式选 **使用长连接接收事件** → 添加 `im.message.receive_v1`（接收消息）。
+**3.3 订阅事件**：「事件与回调 → 事件配置」→ 订阅方式选 **使用长连接接收事件** → 添加 `im.message.receive_v1`。
 
-**2.4 卡片回调** ｜ 同一页面切到 **「回调配置」** tab → 订阅方式选 **使用长连接接收回调** → 添加 `card.action.trigger`（卡片回传交互）。
+**3.4 订阅卡片回调**：同一页面切到「回调配置」→ 订阅方式选 **使用长连接接收回调** → 添加 `card.action.trigger`。部分控制台把这一项放在「事件配置」里，名称叫「卡片回传交互」。漏掉这一步，卡片按钮会一直转圈。
 
-> 有些版本的界面把这一项放在「事件配置」里，名字叫「卡片回传交互」，效果一样。**漏了这一步，卡片上的按钮会一直转圈没反应。**
+**3.5 发布版本**：「版本管理与发布」→ 创建版本 → 申请发布。企业自建应用通常需要管理员审批；权限变更后必须重新发版。
 
-**2.5 发布** ｜ 「版本管理与发布」→ 创建版本 → 申请发布。
+**3.6 复制凭证**：「凭证与基础信息」→ App ID（`cli_` 开头）与 App Secret。
 
-- 企业自建应用通常需要管理员审批，通过后机器人才可用。
-- 权限变更后必须**重新发版**才生效。
+### 4. 初始化配置
 
-**2.6 拿凭证** ｜ 「凭证与基础信息」→ 复制 **App ID**（`cli_` 开头）和 **App Secret**。
+配置目录按以下顺序解析，第一个命中的生效：
 
-### 配置放在哪
+| 优先级 | 位置 |
+|---|---|
+| 1 | `$OCB_CONFIG_DIR` |
+| 2 | `~/.config/opencode-feishu-bridge/` |
 
-配置目录按这个顺序找，第一个命中的生效：
+`npm start`、`scripts/*.sh`、`scripts/probe-*.mjs` 共用这套解析规则。配置放在仓库外，`appSecret` 不进入工作树。
 
-| 优先级 | 位置 | 什么时候用 |
+```bash
+npm run init                                        # 交互向导
+npm run init -- --app-id=cli_xx --app-secret=yy     # 传入凭证，只问剩余项
+npm run init -- --no-input                          # 只铺模板，适合 CI
+npm run init -- --force                             # 覆盖现有配置，先备份成 .bak
+npm run init -- --add-allow=ou_你的openid           # 往现有配置追加白名单
+```
+
+向导会验证凭证、自动填入 `feishu.botOpenId`、写入你的 `open_id` 白名单。配置已存在时默认不覆盖。
+
+配置目录内的文件全部由本机生成：
+
+| 文件 | 生成者 | 内容 |
 |---|---|---|
-| 1 | `$OCB_CONFIG_DIR` | 一台机器跑多个 agent，每个指一份 |
-| 2 | `~/.config/opencode-feishu-bridge/` | 默认位置，所有入口都读它 |
+| `config.json` | `npm run init` 或首次 `npm start` | 配置，含 `appSecret` |
+| `state.json` | 桥接 | 会话绑定、排队消息、未收尾卡片 |
+| `bridge.lock` | 桥接 | 单实例锁，写入进程号 |
+| `pi-sessions/` | pi 后端 | 会话索引与 JSONL 记录 |
 
-只有这两条，没有「项目内 `.config/`」。配置统一放家目录，理由有三：appSecret
-不落在仓库工作树里；换个目录、换个 clone 启动都读同一份；多实例时几个机器人
-的配置排在一起，一眼看得清。
-
-目录长这样：
-
-```
-~/.config/opencode-feishu-bridge/
-├── config.json      ← 你的配置（含 appSecret）
-├── state.json       ← 会话绑定、攒到的名字、未收尾的卡片
-└── bridge.lock      ← 单实例锁
-```
-
-> ⚠️ **这个目录在仓库外，`.gitignore` 仍排除 `.config/` 作为第二道防线。** 万一有人把配置放回仓库，这条规则能挡住误入库。永远不要 `git add -f`——appSecret 推上去等于把机器人交给所有人。
-
-这三个文件 clone 下来一个都没有，全都是本机生成的，谁生成、干什么用：
-
-| 文件 | 谁生成 | 什么时候 | 为什么不能入库 |
-|---|---|---|---|
-| `config.json` | `npm run init`（漏了的话首次 `npm start` 也会生成） | 初始化时 | 含 `appSecret` |
-| `state.json` | 桥接自己，第一次有会话绑定时写 | 用完第一次对话 | 里面的 `sessionId` 指向**本机** opencode 的会话，攒到的名字是**本应用**下的 `open_id`，换台机器/换个应用全是废数据 |
-| `bridge.lock` | 桥接自己，启动时写、退出时删 | 每次启动 | 里面只有一个 pid。入库后新机器上可能撞上一个活着的 pid，直接被判成「已有实例在跑」而拒绝启动 |
-
-所以 clone 完只剩一件事要做：`npm run init` 填凭证。其余两个文件你不用管，桥接会自己建。
-
-**配置不在仓库里，clone 下来看不到它是正常的**，不是漏了文件。模板单独放在仓库根的 `config.example.json`（不含任何真实密钥、可安全入库），用一条命令铺开：
-
-```bash
-npm run init                                        # 铺到 ~/.config/opencode-feishu-bridge
-npm run init -- --app-id=cli_xx --app-secret=yy     # 顺手把凭证填好
-```
-
-已经存在 `config.json` 时它不会覆盖，只提示；确实要重来加 `--force`，会先备份成 `config.json.bak`。
-
-思路是「结构入库、密钥不入库」：目录结构和每个字段的含义需要有人告诉你，`config.example.json` 承担这件事；而 `appSecret` 和 `state.json` 只属于这台机器，一个字节都不进仓库。
-
-三个入口（`npm start`、`scripts/*.sh`、`scripts/probe-*.mjs`）用的是同一套解析规则，不会出现「命令读 A、桥接读 B」的情况。
-
-### 3. 填配置
-
-```bash
-npm run init
-```
-
-在终端里跑会进交互向导，问四个问题：
-
-```
-App ID: cli_aa265fc890b99bc0
-App Secret: ****
-验证凭证… ✅ Lil_O
-   机器人 open_id ou_26dd…（自动填进 feishu.botOpenId）
-你自己的 open_id（可留空，留空则谁私聊机器人都能用）: ou_4c8f…
-默认工作目录: /Users/you
-```
-
-三件手工做很烦的事它替你做了：
-
-- **输完立刻验证凭证**。填错当场报 `code=10003` 并提示「App ID 和 App Secret 别贴反」，不用等第一次发消息才发现。
-- **自动填 `feishu.botOpenId`**。多机器人同群时靠它分辨「@ 的是不是我」，取不到就会退化成「@ 谁都算」，互相抢答。
-- **顺手写白名单**。省掉「先跑起来、看日志、再回来改 JSON」那一圈。
-
-不想交互（CI、脚本），用参数：
-
-```bash
-npm run init -- --app-id=cli_xx --app-secret=yy   # 只问剩下的
-npm run init -- --no-input                        # 只铺模板，什么都不问
-```
-
-拿到 open_id 时配置往往已经存在了，为加一个 id 重跑向导太蠢，所以单独给了个命令：
-
-```bash
-npm run init -- --add-allow=ou_你的openid
-```
-
-生成的 `config.json` 长这样（也可以直接编辑它）：
+最小可用配置（模板全文见 `config.example.json`）：
 
 ```json
 {
@@ -222,578 +431,362 @@ npm run init -- --add-allow=ou_你的openid
     "url": "http://127.0.0.1:19876",
     "password": "my-secret-123",
     "defaultDirectory": "/Users/you/project",
-    "defaultModel": "stepfun-step-plan/step-5-preview"
-  },
-  "behavior": {
-    "streamIntervalMs": 1800,
-    "showReasoning": false,
-    "showTools": false,
-    "maxBodyChars": 6000,
-    "idleTimeoutMs": 300000
+    "defaultModel": "stepfun-step-plan/step-3.5-flash"
   }
 }
 ```
 
-两个必填项：
+两项要点：
 
-- **`defaultModel` 一定要填**，格式 `providerID/modelID`。opencode 的默认模型多是 free 模型，部分地区会报 `RegionError: This model is not available in your country`。
-
-  列出可用模型：
+- `opencode.defaultModel` 填 `providerID/modelID`。opencode 默认模型在部分地区会报 `RegionError`。列出可用模型：
 
   ```bash
   curl -s -u opencode:my-secret-123 http://127.0.0.1:19876/api/model \
     | python3 -c "import sys,json;[print(f\"{m['providerID']}/{m['id']}\") for m in json.load(sys.stdin)['data']]"
   ```
 
-  `npm run doctor` 会校验你填的这个在不在列表里。
+- `feishu.allowlist` 空数组表示任何人私聊机器人都能操作本机文件与 shell。先留空启动一次，给机器人发消息后从日志取得自己的 `open_id`，再执行 `npm run init -- --add-allow=ou_你的openid`。
 
-- **`allowlist` 强烈建议填**。空数组等于谁私聊机器人都能操作本机的 shell 和文件。填自己的 `open_id`，获取方法：先留空跑起来，给机器人发条消息，控制台日志里会打印「拒绝非白名单用户」，从里面拿到 id，然后用一条命令加进去——不用再去编辑 JSON：
-
-  ```bash
-  npm run init -- --add-allow=ou_你的openid
-  ```
-
-  向导里也可以直接填，就不用跑这两步。起了管理后台（下文）之后，「飞书应用」页也能加，还能顺手填名字。
-
-### 4. 体检
+### 5. 体检
 
 ```bash
 npm run doctor
 ```
 
-检查 Node 版本、配置完整性、opencode 连通性、模型是否在列表里、默认目录是否存在。全绿再往下。
+检查 Node 版本、`config.json` 完整性、凭证格式、白名单、opencode 可执行文件版本一致性、serve 连通性、模型与 agent 列表、`defaultModel` 是否在列表内、默认目录是否存在、状态文件概要。存在失败项时退出码为 1。
 
-### 5. 启动
+### 6. 启动
 
-推荐装成系统服务（登录自启、挂了自动拉起、不依赖任何终端）：
-
-```bash
-./scripts/install-agent.sh     # 装一次，之后开机就在跑
-./scripts/status.sh            # 看状态：谁在跑、跑了多久、最近日志
-./scripts/up.sh                # 重启（作用于 launchd 里的服务）
-./scripts/down.sh              # 暂停（下次 up.sh 或下次登录会再起）
-./scripts/uninstall-agent.sh   # 彻底卸掉
-```
-
-不想装服务也行，老办法照旧：
+推荐装成 launchd 常驻服务：登录自启、进程退出后自动拉起、不依赖终端。
 
 ```bash
-./scripts/up.sh       # 启动：同时拉起 serve + 桥接，nohup 后台常驻，写 pid 文件
-./scripts/down.sh     # 停止：两个一起停
+./scripts/install-agent.sh     # 安装一次
+./scripts/status.sh            # 状态、运行时长、最近日志
+./scripts/up.sh                # 重启（launchd 模式下执行 kickstart）
+./scripts/down.sh              # 暂停（下次 up.sh 或下次登录会启动）
+./scripts/uninstall-agent.sh   # 卸载
 ```
 
-`up.sh` / `down.sh` 会自动识别有没有装 agent，两种模式都能用。
-
-`up.sh` 会读配置里的 `password` 用同样的密码起 serve，不用手动对齐两边。
-
-调试时也可以前台跑，能看到全部日志：
+不装服务也能用，`up.sh` 会以 `nohup` 方式同时拉起 `serve` 与桥接：
 
 ```bash
-npm start
+npm run up        # 等同于 ./scripts/up.sh
+npm run down      # 等同于 ./scripts/down.sh
+npm start         # 前台运行，日志打到 stdout，适合调试
 ```
 
-看到 `✅ 桥接已就绪` 后，飞书里搜机器人名字，私聊发 `/help`。
+`up.sh` 会读取配置里的 `opencode.password`，用同一密码启动 serve。看到 `✅ 桥接已就绪` 后，在飞书里私聊机器人发 `/help`。
 
-> **桌面版 App 不需要一直开着。** 桥接用的是 App 装在磁盘上的那份 `opencode-cli`（`~/Library/Application Support/ai.opencode.desktop/cli/<版本>-arm64/`），不是 App 的进程。两个进程各跑各的，实测桥接链路和 App 的 `serve --service` 之间没有任何连接。关掉 App 照样能在飞书里派活；只有在你想亲眼看着它执行、或者接着聊同一个会话时，才需要打开 App。
->
-> 反过来要注意：升级桌面版之后，新版本的 CLI 在**新目录**里，正在跑的旧进程不会自己换。`./scripts/down.sh && ./scripts/up.sh` 一次即可。
+注意：
 
-> **为什么建议用 `install-agent.sh`。** `nohup` 起的进程还挂在某个 shell 的进程组里，那个 shell 退出时可能被一起收掉——表现就是「用着用着机器人不说话了，日志里连报错都没有」。装成 launchd agent 之后，进程归 launchd 管：登录自动起、被杀自动起（实测 kill -9 后 10 秒内恢复），关终端、退出 WorkBuddy 都不影响。
+- 桥接有单实例锁（`bridge.lock`）。第二个进程会直接退出，避免同一条消息被回两遍。
+- 桌面版 OpenCode App 无需常开。桥接用的是 App 安装在磁盘上的 CLI。升级桌面版后执行 `./scripts/down.sh && ./scripts/up.sh`，让 serve 换到新版本 CLI。
+- `nohup` 起的进程挂在某个 shell 的进程组里，该 shell 退出时可能一起被收掉。长期运行用 `install-agent.sh`。
 
-> **不要同时跑两个桥接进程。** 有单实例锁（配置目录下的 `bridge.lock`），第二个会直接报错退出——否则同一条消息会被回两遍。
-
----
-
-## 怎么用
-
-**一条请求 = 一条消息，只增不改。**
-
-| 你的操作 | 消息怎么动 |
-|---|---|
-| 发一条消息 | 新开一张卡片承载这次执行，流式在**这张卡内部**更新 |
-| 点「会话列表」 | **新发**一条列表卡片，原来那条回复原封不动 |
-| 点「切换」/「新会话」/「授权」 | **新发**一条结果卡片，历史回复不动 |
-| 在列表里翻页 | 只更新列表卡片自己 |
-
-历史回答永远不会被按钮操作顶掉。卡片内部的流式刷新是例外——那是同一条消息的进度更新。
-
-同一个会话同时只跑一个任务。上一条还在执行时再发消息不会丢失，默认排进队列等它做完（见下面「上一条还在执行时」）。
-
-### 群里：一条话题一个会话
-
-私聊只有一个会话，串行就够了。群里按话题拆：
-
-- 在群里 @机器人 发一句话 → 它就在**这条消息下面开一条话题**回复，并为这条话题建一个独立会话
-- 再 @ 一条新消息 → 又是一条新话题、又一个会话，两条可以同时跑
-- 话题里继续说话**仍然每句都要 @它**，但会接在同一个会话上，不会跑到别的会话去
-- 每条话题的 `/new` `/switch` `/stop` 只影响自己这条
-
-相当于在群里开任意多个「并行工作台」，互不串上下文。整机有并发上限 `behavior.maxParallel`（默认 2），超了会直接告诉你当前有几个在跑。
-
-#### @ 判定：只认「@ 我本人」
-
-群里的闸门只看一件事：**这条消息有没有 @ 这个机器人自己**（按 `open_id` 精确比对，来自 `GET /open-apis/bot/v3/info`）。
-
-| 场景 | 会响应吗 | 说明 |
-|---|---|---|
-| @ 本机器人 | 会 | 唯一会触发的形式 |
-| @ 别的机器人 | 不会 | 一个群里可以有多个 agent，各自只认自己 |
-| @ 某个同事 | 不会 | `@张三 你看下` 这种不会被当成交给我的活 |
-| 什么都没 @ | 不会 | 纯聊天不打扰 |
-| 话题里回复但没 @ | 不会 | 仍然要 @，只是会接同一个会话 |
-| 私聊 | 会 | 私聊不受 @ 限制 |
-
-被 @ 的如果不是自己，日志会记一行 `[skip] @ 的不是我 names=…`，方便排查「明明 @ 了却没反应」。
-
-**@ 别人时，占位符不会被删掉，而是还原成 `@姓名`。** 所以你发 `@Lil_O @张三 你俩配合下`，模型看到的是 `@张三 你俩配合下` —— 它知道这句话在跟谁说话。这一条在多 agent、多人协作时很关键。
-
-**没 @ 的那条是整条丢弃，不是「先攒着等下一句」。** 判定发生在消息进入处理流程之前（`src/feishu.js` 直接 `return`），所以：
-
-- 不会出现「连续收到两条」
-- 也**不会**把没 @ 的那句当成上下文补进去 —— 模型完全看不到它
-
-#### 每条消息都会带一行来源标注
-
-模型拿到的不是光秃秃的一句中文，正文前面会拼一行：
-
-```
-[飞书 · 群「桥接话题探针」 · 话题内 · 发送者 ou_c4f80436…（机器人） · 2026/11/5 20:18:05]
-
-@LiLO 你好！
-```
-
-三个信息是刻意给的：
-
-- **群名 / 私聊 + 主聊天流 / 话题内** —— 模型不用再去 `ls` 猜自己在哪。实测过没有这行的代价：一次「打个招呼」跑了 9 分 12 秒、48 步，全花在读仓库反推来源上。
-- **发送者完整的 `open_id`** —— @ 某人需要对方完整的 open_id，猜不出来。之前模型想 @ 另一个机器人，只能写 `@LiLO` 这种字面量，发出去对方收不到提醒。
-- **人 / 机器人** —— 来自事件的 `sender_type`，模型据此知道该用哪种语气、要不要防循环。
-
-群名走 `GET /im/v1/chats/:chat_id`，取到一次就缓存；没开 `im:chat` 权限会静默降级成「群聊」，不影响主干。
-
-**发送者的名字是个坑。** 飞书没有「open_id 反查名字」的通用接口：
-
-| 对象 | 能不能按 open_id 查名字 |
-|---|---|
-| 人类用户 | 能，但要 `contact:user.base:readonly`；没开会返回 200 但 `name` 字段直接不给 |
-| 机器人（应用） | **不能**。通讯录接口对机器人 open_id 直接报 `41050 no user authority` |
-| 群成员列表 | 要 `im:chat.members:read`，且不确定是否包含机器人成员 |
-
-所以名字走三层，逐层兜底：
-
-1. **`feishu.names` 人工声明** —— 最准，写好即生效。管理后台「飞书应用」页的名字对照一节可以逐条增、改、删，不用编辑 JSON。
-2. **群成员列表**（`im:chat.members:read`）—— 开到权限后，遇到不认识的发送者会拉一次整群成员，把所有人的 `open_id → 名字` 一次性存进 `state.json`，之后连接口都不用打。被拒一次就记下 `membersDenied`，不会每条消息都撞 403。
-3. **从消息 @ 提及里攒** —— 零权限。每条消息的 `mentions[]` 里都带着被 @ 者的 `name` 和 `open_id`，碰到就记。缺点是得等某个对象被 @ 过一次。
-
-三者都拿不到时，标注里只显示 `open_id`——功能不受影响，只是不好读。
-
-想知道你这边哪条路能走，跑一下：
-
-```bash
-npm run probe:names              # 自动挑一个群
-npm run probe:names <chat_id>
-```
-
-它会分别打「群信息 / 群成员列表 / 通讯录反查」，把每种结果和缺哪个权限直接打出来。
-
-#### 多个 agent 同群时要注意
-
-飞书会把 `im.message.receive_v1` 推给**群里每一个机器人**。所以每个 agent 都必须能精确判断「@ 的是不是我」，否则会出现用户 @A、A 和 B 一起抢答。
-
-本项目的做法是启动时自动取自身 `open_id`。如果取不到（应用没权限等），会退化回「@ 了谁都算」，此时多机器人同群必然抢答 —— 启动日志里会有明确告警，把 `feishu.botOpenId` 填进配置即可解决：
-
-```json
-"feishu": { "botOpenId": "ou_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" }
-```
-
-（这个 open_id 就是机器人自己的，可以用 `curl` 打 `/open-apis/bot/v3/info` 看到。）
-
-### 命令
-
-| 命令 | 作用 |
-|---|---|
-| 直接发文本 | 发给当前绑定会话。没绑定会自动建一个 |
-| `/help` | 命令列表 |
-| `/new [目录]` | 新建会话并绑定，可指定项目路径 |
-| `/sessions` | 会话列表卡片，点「切换」即切 |
-| `/switch <序号\|id>` | 文本方式切会话 |
-| `/rename <标题>` | 重命名当前会话（终端 pi 的会话除外，见下） |
-| `/del <序号>` | 删除会话（终端 pi 的会话除外，见下） |
-| `/cd <目录>` | 换工作目录并重置绑定 |
-| `/stop` | 中止当前执行 |
-| `/status` | 看绑定、模型、tokens、成本 |
-| `/model` | 模型列表；`/model <序号>` 切换 |
-| `/agent` | Agent 列表；`/agent <名字>` 切换 |
-
-别名：`/ls` = `/sessions`，`/use` = `/switch`，`/abort` = `/stop`，`/delete` = `/del`，`/?` = `/help`。
-
-### 上一条还在执行时
-
-同一会话同时只跑一个任务。上一条还在跑时再发消息，消息**不会丢失，也不用你做任何选择**——它默认按 follow-up 排进队列，当前任务结束后自动发送。机器人回一张卡片告诉你排在第几位：
-
-| 按钮 | 行为 |
-|---|---|
-| 引导 | 立刻中止当前任务，把这条消息插到队首，中止收尾后即发出 |
-| 取消 | 把这条消息从队列里摘掉，什么都不发 |
-
-不点任何按钮就是默认动作：排队，等当前任务做完按顺序发。连发几句就会排成一条队，每张卡片各自标明自己排第几位，取消只取消它那一张对应的那条。
-
-排队与插队的消息落在配置目录的 `state.json` 里，桥接重启不丢。当前任务一收尾就自动发下一条；点按钮时任务已经结束（或桥接重启过），也会立刻补发，不用等下一次任务；撞到 `behavior.maxParallel` 并发上限时消息留在队首稍后重发，不会丢。
-
----
-
-## 本地管理后台
-
-一个在本机跑的管理后台，把配置、查看、管理三件事从终端搬进浏览器。零新增依赖：node 内置模块起服务，界面是单页原生 HTML/JS，没有构建步骤。
-
-```bash
-npm run admin                # 起服务，只监听 127.0.0.1:19877
-npm run admin -- --port 8080 # 换端口
-```
-
-浏览器打开 <http://127.0.0.1:19877> 。界面左侧是功能栏，右侧是内容区。下面五步走完一条完整的配置流程。
-
-### 第 1 步：看总览
-
-启动后落在「总览」页，实例表格一行一个实例，各列含义：
-
-- **状态**：运行中（绿点）、launchd 已装未跑（黄点）、未运行（灰点）；有任务在执行时，状态后跟蓝色「N 张进行中」徽章。
-- **pid / 时长**：桥接进程号与已运行时长。
-- **serve**：opencode 后端的 serve 版本；pi 后端显示 pi CLI 的版本号，CLI 跑不起来时显示异常。
-- **会话 / 进行中**：绑定会话数与正在执行的卡片数。
-- **操作**：运行中的实例显示重启、停止；未运行的实例显示启动。只对已装 launchd 常驻服务的实例显示；没装的实例在这一列给安装指引。配置目录与飞书应用两列超长时省略显示，悬停看完整内容。
-
-![总览页：实例表格与起停按钮](docs/images/admin/03-new-sidebar-overview.png)
-
-### 第 2 步：改配置
-
-点左侧「配置」，在页面左上角选实例。表单按配置顺序分两列加一段：
-
-- **coding agent**（左列）：后端选择框的选项来自打开页面时对本机的自动扫描——opencode 与 pi 各带「本机版本」或「未安装」标记，下方一行说明复用的本地可执行文件、版本与来源（桌面版自带 CLI、PATH、常见用户 bin 目录）。选哪个后端显示哪组字段：opencode 显示 serve 地址与 serve 密码；pi 显示 pi.bin、pi.model、pi.timeoutMs、pi.extraArgs，pi.bin 预填扫描到的本机路径。默认工作目录与默认模型两个后端共用，留空即用 coding agent 自己的本地默认值（pi 每次执行起在默认工作目录里，opencode 的 `/new` 不带目录时也用这个）。
-- **飞书应用**（右列）：appId、appSecret、domain、botOpenId，以及群聊是否必须 @ 本机器人才响应。
-- **behavior**：卡片刷新间隔、正文上限、空闲超时、并发上限，思考过程与工具链路是否展示。
-
-两个密钥字段（appSecret 与 serve 密码）只显示「已填写」，输入框留空表示保持原值，不会把密钥冲掉。保存前自动备份成 `config.json.bak`，用临时文件加重命名落盘。配置在进程启动时读取，改完必须重启实例才生效。
-
-![配置页：按后端显隐的表单与本地扫描结果](docs/images/admin/03-new-sidebar-config.png)
-
-### 第 3 步：管飞书应用
-
-点左侧「飞书应用」：
-
-- 点「校验凭证」，后台打一次 `bot/v3/info`：通过则显示机器人名与 open_id，失败给出具体原因。
-- 白名单逐条管理：填 open_id 点「加入白名单」，不要的点「移除」。空数组等于任何人私聊机器人都能操作本机，建议填上自己的 open_id。加入时名字选填，写进 `feishu.names`；已有条目的名字在行内改，点「保存名字」生效，清空保存即删除声明。
-- 名字对照来自配置里的 `feishu.names`：飞书没有 open_id 反查名字的接口，在这里声明后，消息来源标注里直接显示名字。这一节可以逐条增、改、删；白名单行的名字列显示生效名字（配置声明的优先，其次是有 @ 提当时自动攒到的）。
-
-![飞书应用页：凭证校验、白名单与名字对照](docs/images/admin/03-new-sidebar-feishu.png)
-
-### 第 4 步：看会话与后端
-
-点左侧「会话与后端」：上半是后端健康（serve 版本与 pid、serve 地址、默认工作目录）与状态文件概要（绑定会话数、进行中卡片、攒到的名字）；往下是会话列表（标题、会话 id、目录、模型、最近更新）、模型列表，以及 `state.json` 里进行中的卡片。两个后端都有会话，存放方式不同：opencode 的问常驻 serve；pi 的没有 serve，桥接把会话索引写在配置目录的 `pi-sessions/index.json`，详细记录是同目录下的 JSONL 文件。pi 后端这一页同时显示 CLI 版本与默认工作目录。默认工作目录的修改入口在「配置」页；单个会话换目录在飞书里发 `/cd`。
-
-![会话与后端页：serve 健康与会话列表](docs/images/admin/03-new-sidebar-sessions.png)
-
-### 第 5 步：看日志与体检
-
-点左侧「日志与体检」：
-
-- 日志区是终端样式，`bridge.log` 与 `serve.log` 可切换，按字节偏移增量拉取，两秒一轮。点「暂停跟随」停止滚动，「继续跟随」恢复。
-- 点「运行体检」，后台按当前实例跑 doctor，输出解析成逐条检查项：OK 通过、WARN 警告、FAIL 失败（标红）。
-
-![日志与体检页：日志跟随与完整体检结果](docs/images/admin/03-new-sidebar-logs-doctor.png)
-
-### 新建实例
-
-再要一个机器人身份（例如把 pi 也接进群协作），不用敲命令行：总览页点「新建实例」，按三步填完点「创建并启动」。
-
-1. **实例**：实例名（小写字母、数字、连字符）与配置目录（留空用默认 `~/.config/opencode-feishu-bridge-实例名`）。
-2. **coding agent**：打开弹窗时重新扫描本机，下拉里每个后端带「本机版本」或「未安装」标记，默认选中本机可用的第一个；下方显示复用的本地可执行文件与版本。选 opencode 显示 serve 地址与 serve 密码；选 pi 显示 pi.bin、pi.model、pi.timeoutMs，pi.bin 预填扫描到的本机路径。
-3. **飞书应用**：appId、appSecret、domain、botOpenId（选填）。飞书应用要先在开放平台建好，权限与事件订阅见「创建飞书应用」一节，admin 只收凭证。
-
-其余默认复用本地配置：默认工作目录与默认模型两个后端共用，留空工作目录用家主目录——pi 实例建完才发现工作目录是家目录，就是留空的后果，建议建实例时直接填；默认模型留空用 coding agent 自己的本地默认模型。opencode 后端的 serve 地址留空即可，admin 自动分配：配置里已被占用的端口、admin 自身的端口、探测发现有东西在跑的端口都会跳过；显式指定的端口被占用会直接拒绝并说明原因。serve 密码留空由 admin 自动生成——新建实例的 serve 用它启动、桥接用它连，两边从同一份配置读同一个值，不存在填错，也不会留空连到别人需要密码的 serve 报 401。
-
-admin 按模板生成 `config.json`（权限 600，含 appSecret）、安装 launchd 常驻服务并启动，完成后新实例出现在总览表里，可像其他实例一样起停、看日志。安装失败会自动回滚：摘掉刚装的 launchd 服务、删掉刚生成的配置，不影响其他在跑实例。
-
-![新建实例弹窗](docs/images/admin/04-create-modal.png)
-
-### 页面速查
-
-| 页面 | 能做什么 |
-|---|---|
-| 总览 | 本机所有实例一行一条：运行状态、后端类型、配置目录、pid 与已运行时长、serve 健康、绑定会话数、进行中卡片数；已装 launchd 常驻服务的实例可一键启动、停止、重启 |
-| 配置 | 按实例编辑 `config.json`：左列 coding agent（后端选项来自本机自动扫描，按后端显隐字段，默认复用本地配置），右列飞书应用，下面 behavior；appSecret 与 serve 密码掩码显示，留空表示保持原值；保存前备份成 `config.json.bak`，临时文件加重命名落盘 |
-| 飞书应用 | 按实例校验 appId 与 appSecret（打 `bot/v3/info`，回显机器人名与 open_id）；allowlist 按 open_id 逐条增删，加入时可选填名字；`feishu.names` 逐条增、改、删 |
-| 会话与后端 | opencode 后端：serve 健康（`/api/info`）、模型列表（`/api/model`）、会话列表（`/api/session`）；pi 后端：CLI 版本、会话列表（读配置目录的 `pi-sessions/index.json`，详细记录在同目录 JSONL 文件）；`state.json` 只读展示（每个 chat 与话题的绑定、进行中的卡片、攒到的名字） |
-| 日志与体检 | `bridge.log` 与 `serve.log` 近实时跟随（按字节偏移增量拉取，两秒一轮）；一键跑 doctor，输出解析成逐条检查项，失败标红 |
-
-### 安全与边界
-
-- 只监听 `127.0.0.1`：Host 头只接受 `localhost` 与 `127.0.0.1`，`--host` 参数同样只接受这两个值，不提供绑定其他网卡的入口。
-- 接口只收 `application/json`；写操作额外要求自定义头 `X-OCB-Admin: 1`，挡掉跨站表单。
-- appSecret 与 serve 密码不以明文返回浏览器，也不写进 admin 自己的日志；保存时留空表示保持原值。
-- 起停重启只对已安装 launchd 常驻服务的实例开放。没装 plist 的实例（nohup 起的）只展示，页面给安装指引：`down.sh` 末尾的 `pkill` 会误杀本机所有桥接进程，这条路不能开。
-
-### 实现要点
-
-- **实例发现以 launchd plist 为准。** 扫 `~/Library/LaunchAgents/ai.qiguang.ocbridge*.plist`，label 推实例名，plist 环境变量里的 `OCB_CONFIG_DIR` 推配置目录。`install-agent.sh` 的 `--config-dir` 与 `--instance` 相互独立，从目录后缀猜实例名会猜错，plist 是唯一同时可靠的来源。
-- **起停转调既有脚本。** 带上对应实例的 `OCB_INSTANCE` 与 `OCB_CONFIG_DIR` 调 `scripts/up.sh` 与 `down.sh`，launchd 与 pid 文件两条路都走脚本里验证过的逻辑，单实例锁语义不变。
-- **doctor 按实例跑。** 传该实例的 `OCB_CONFIG_DIR`，不传查的是默认实例。
-- **后端选项来自本机扫描，不写死在页面里。** `admin/backends.js` 的 `scanBackends()` 探测本机受支持的 coding agent：opencode 走 `src/which-opencode.js` 的 `resolveOpencode`（桌面版自带 CLI 优先、PATH 兜底），pi 走 `admin/instances.js` 的 `resolveBin`（常见用户 bin 目录）加 PATH 扫描；版本号各起一次 `--version` 拿，5 秒超时。接口 `GET /api/backends` 把可用性、版本、解析路径与来源给页面，配置页与新建弹窗的选项、按后端显隐、「复用本地」说明全都以它为准。
-- **serve 密码留空自动生成。** opencode 后端不填密码时 `create.js` 生成 48 位十六进制写进配置：serve 用它启动、桥接用它连，两边同源；显式填了才用填的值。
-- **两处 bash 兼容性修复。** `install-agent.sh`、`up.sh`、`agent/bridge.sh` 里 `$BACKEND_TYPE` 后紧跟全角标点，macOS 自带 bash 3.2 会把全角字符吞进变量名，`set -u` 直接报未定义——pi 实例的安装、启动、常驻三条路全被挡着；`install-agent.sh` 末尾 `status.sh | head -12` 被 head 掐断产生 SIGPIPE，`pipefail` 会把安装成功的也判失败。两处都已修，新建实例的端到端流程据此跑通。
-
-代码在 `admin/`：`server.js`（HTTP 服务与接口）、`instances.js`（实例发现与状态采集）、`backends.js`（本地 coding agent 扫描）、`create.js`（新建实例的校验与配置生成）、`control.js`（起停、体检、日志、装服务）、`public/index.html`（单页界面）。测试：`npm run test:admin`。
-
-### 排障
-
-| 现象 | 处理 |
-|---|---|
-| admin 起不来 | 端口被占。换一个：`npm run admin -- --port 8080` |
-| 页面返回 403 | Host 头只接受 `localhost` 与 `127.0.0.1`。用这两个地址直接访问，不要走代理或自定义域名 |
-| 实例列表里没有某个实例 | 它没装 launchd 常驻服务，或配置目录不在 `~/.config/opencode-feishu-bridge*` 下。安装常驻服务：`./scripts/install-agent.sh --instance <实例名> --config-dir <配置目录>` |
-| 改了配置不生效 | 配置在进程启动时读取。在总览页点该实例的「重启」，或跑 `./scripts/up.sh` |
-| 卡片停在「执行中」不动 | 现在不会了：任何运行失败事件都会立刻把「执行中」卡片原地转成红色报错卡片（不新发消息），报错信息带原因；提示「上下文可能过长」时发 `/new` 开新会话续上。飞书 SDK 的请求另有 20 秒超时（`OCB_SDK_TIMEOUT_MS` 可调），看门狗也会收殓终态卡片更新卡死的运行，状态不会永久堆着 |
-| 报错说 The input you provided is invalid | 模型提供商拒了这次请求，多数是会话上下文过长。发 `/new` 开新会话，把上一条的结论带过去接着做 |
-| 新建实例失败 | 看总览页「最近一次操作输出」里的安装日志。常见原因：appId 或 appSecret 不对（开放平台上确认）；serve 端口被占（换一个端口，或留空让 admin 自动分配） |
-| 后端显示「未安装」 | 扫描没在本机找到该 CLI：opencode 看桌面版 OpenCode.app 自带 CLI 与 PATH，pi 看 PATH 与常见用户 bin 目录（npm 全局 bin、`~/.local/bin`、`~/.bun/bin`）。装在别处就把绝对路径填进 `backend.pi.bin`；老实例的 plist 若是修复前装的，重跑一次 `./scripts/install-agent.sh --instance <实例名> --config-dir <配置目录>` 把新 PATH 写进去 |
-
----
-
-## 卡片能显示什么
-
-模型输出的 markdown 会被拆开，分别落到合适的飞书组件上：
-
-| Markdown 语法 | 显示效果 |
-| --- | --- |
-| 表格 | 原生表格，表头灰底、可对齐；超过 10 行飞书内部分页 |
-| 围栏代码块 | 带语法高亮的代码块 |
-| `## 标题` | 加粗（飞书正文不支持真正的标题层级） |
-| `- 列表` / `> 引用` | 圆点列表 / 去掉引用符号的正文 |
-| 加粗、斜体、行内代码、链接 | 原样支持 |
-
-几点使用上的注意：
-
-- 单张卡片上限 30KB，所以超大表格会被裁剪：最多 50 行 8 列，超出会提示还剩多少内容。
-- 流式过程中表格写到一半（只有表头、分隔行还没出来）会先显示成 `a ｜ b` 的样子，写完就变回真表格，属正常现象。
-- 卡片上的表格是组件，能翻页但点不了排序。
-- 工具调用链路默认不显示，只看结论。想看轨迹改 `behavior.showTools: true` 重启；完整轨迹在电脑上的 opencode 里。
-- 卡片正文按段累加：模型每输出一段助手叙述就接在正文后面，两段之间空一行，多步运行的中间回复和最终答复按顺序都看得见。同一段内后到的权威全文会替换掉流式增量，不会把同一段显示两遍；运行最后一段没有文本产出时，正文保留前面的内容，不变空白。段数多的长运行会撑满 `behavior.maxBodyChars`（默认 6000，超出保留尾部），最早几段可能被截掉，想留全程就把这个值调大。
-- 卡片分三段：**前缀**（目录 / 模型 / 耗时 / 步数）│ **正文**（模型输出）│ **后缀**（用量/帮助那行 + 按钮）。只在前缀和正文之间画一条分割线——正文自己是整块 markdown，跟元信息糊在一起最难读；正文结尾本来就有留白，再往按钮前塞一条线会把卡片切得太碎。
-- 后缀顺序是**先按钮后小字**：上面是「新会话 / 会话列表」，下面一行 `in 66636 · out 9509 · $0.01｜@我 并发送 /help 查看全部命令`（`｜` 前后不留空格）。群里必带「@我 并发送」，私聊只写「发送」。按钮只覆盖三个高频动作，`/model` `/cd` `/switch` 这些不看帮助是发现不了的，所以入口必须摆出来。
-- **金额是 `$0.00` 不代表没取到**。stepfun 这类套餐型 provider 在 `/api/model` 里把 `cost.input/output/cache` 全填 0，opencode 如实报 0。换一个按量计费的模型就能看到真实数字。卡片上的金额统一保留两位小数。
-
----
-
-## 配置项
-
-| 键 | 说明 | 默认 |
-|---|---|---|
-| `feishu.appId` / `appSecret` | 飞书应用凭证 | — |
-| `feishu.domain` | `feishu` 或 `lark`（国际版） | `feishu` |
-| `feishu.allowlist` | open_id 白名单，空 = 不限制（不建议） | `[]` |
-| `feishu.requireMention` | 群聊是否必须 @ **本机器人** 才响应 | `true` |
-| `feishu.botOpenId` | 机器人自己的 open_id。留空则启动时自动向飞书取；多机器人同群建议显式填 | `""` |
-| `feishu.names` | `open_id → 显示名`，只影响来源标注里显不显示名字。留空则从消息 @ 提及里自动攒；admin「飞书应用」页可逐条增、改、删 | `{}` |
-| `opencode.url` | serve 地址 | `http://127.0.0.1:19876` |
-| `opencode.password` | serve 密码，与 `OPENCODE_SERVER_PASSWORD` 一致。admin 新建实例时留空会自动生成；serve 没设密码才留空 | `""` |
-| `opencode.defaultDirectory` | `/new` 不带目录时用这个；pi 后端每次执行也起在这个目录。两个后端都用，admin「配置」页可改 | `$HOME` |
-| `opencode.defaultModel` | `providerID/modelID`，**建议必填** | `""` |
-| `behavior.streamIntervalMs` | 卡片刷新间隔，别低于 1200（飞书 patch 有频率限制） | `1800` |
-| `behavior.showReasoning` | 是否把模型思考过程推到卡片 | `false` |
-| `behavior.showTools` | 是否展示工具调用链路 | `false` |
-| `behavior.maxBodyChars` | 卡片正文最大字符数，超出保留尾部 | `6000` |
-| `behavior.idleTimeoutMs` | **仅 opencode 后端**：多久没收到事件就判定卡死并收尾卡片；设 0 关闭。pi 后端不适用（事件从 stdout 解析，长命令期间会长时间没有事件而进程健康），pi 的卡死看 `backend.pi.timeoutMs` | `300000`（5 分钟） |
-| `behavior.maxParallel` | 同时最多跑几个任务（群里每话题一个会话，彼此并行）；0 = 不限 | `2` |
-| `backend.type` | `opencode`（默认，常驻 HTTP + SSE）或 `pi`（一次性子进程） | `opencode` |
-| `backend.pi.bin` | pi CLI 路径，留空用 PATH 里的 `pi` | `pi` |
-| `backend.pi.model` | 传给 `--model`，留空用 pi 自己的默认 | `""` |
-| `backend.pi.timeoutMs` | pi 静默多久算卡住（每吐一行 stdout 就重置，不按总时长；provider 报错不等它，立即终态） | `600000` |
-| `backend.pi.settleQuietMs` | 最终消息之后静默多久就按已完成收尾，不等进程退出；0 = 关闭（恢复老行为） | `60000` |
-| `backend.pi.extraArgs` | 额外启动参数，如 `["--no-extensions"]` | `[]` |
-
-环境变量可覆盖同名项：`FEISHU_APP_ID` `FEISHU_APP_SECRET` `OPENCODE_URL` `OPENCODE_SERVER_PASSWORD` `BRIDGE_DEFAULT_DIR` `BRIDGE_DEFAULT_MODEL` `BRIDGE_ALLOWLIST`（逗号分隔）。多实例相关的 `OCB_CONFIG_DIR` `OCB_INSTANCE` `OCB_BACKEND` `OCB_PI_BIN` `OCB_PI_MODEL` 见下一节。
-
-`OPENCODE_BIN` 单独一条：指定 `up.sh` 用哪个 opencode 可执行文件，不填就按「桌面版自带 CLI → PATH」的顺序找。
-
----
-
-## 多后端与多机器人
-
-一个进程只服务一个机器人。想让三个 agent 同群协作，就是**三个飞书应用 + 三份配置 + 三个进程**，各自只认「白名单用户 @ 我本人」的消息。
-
-### 把 pi 接成第二个机器人
-
-1. 飞书开放平台新建一个应用，拿到它自己的 `appId` / `appSecret` / `botOpenId`，权限和事件订阅照「创建飞书应用」一节再来一遍；
-2. 复制一份配置到新目录，改这些字段：
-
-```json
-{
-  "backend": { "type": "pi", "pi": { "bin": "pi", "model": "", "timeoutMs": 600000, "settleQuietMs": 60000, "extraArgs": [] } },
-  "feishu": { "appId": "cli_<新应用>", "appSecret": "...", "botOpenId": "ou_<新机器人>", "allowlist": [], "names": {} }
-}
-```
-
-3. 装成常驻服务（**只有 opencode 那个实例需要 `opencode serve`**，pi 实例会自动跳过）：
-
-```bash
-./scripts/install-agent.sh --instance pi --config-dir "$HOME/.config/opencode-feishu-bridge-pi"
-OCB_INSTANCE=pi npm run status
-OCB_INSTANCE=pi npm run up      # 之后重启、查看都要带同一个 OCB_INSTANCE
-```
-
-`OCB_CONFIG_DIR` 决定读哪份配置，`OCB_INSTANCE` 决定 launchd 服务名。缺省实例的服务名保持原样，老部署不用改任何东西。`bridge.lock` / `state.json` / `pi-sessions` 全在各自配置目录下，多个实例互不干扰。
-
-### pi 后端：进度是翻译出来的，不是原生流式
-
-`pi -p --mode json` 的 stdout 是 JSONL 事件流。桥接逐条翻译成与 opencode SSE 同形状的合成事件（`src/pi.js` 的 `_streamEvent()`）：`turn_start` / `turn_end` 变步数，`text_delta` / `text_end` 变正文，`toolcall_*` / `tool_execution_*` 变工具调用，第一条助手消息里带的 `model` / `provider` 立即补上卡片前缀的模型名。渲染层一行不改，所以卡片版式、节流节奏、中止、僵尸卡收尾与 opencode 后端完全一致。
-
-`showTools` / `showReasoning` 两个开关对 pi 同样有效（默认关）。没有的只有：交互式权限卡片、`/agent`（pi 没有 opencode 的 agent 概念）。
-
-`/sessions` 列出两类会话：桥接自建的（存在实例配置目录的 `pi-sessions` 里）和**你在终端 `pi -r` 里建的**（存在 `~/.pi/agent/sessions/` 下，默认自动纳入，可用 `backend.pi.cliSessionRoot` 改根目录）。终端会话在卡片上带「终端」标记，`/switch` 切过去后发消息走 `pi --session <会话文件>` 续聊——两端读写同一个 jsonl，你在终端里能看到机器人续的内容，反过来也一样。终端会话的改名、删除、切模型由 pi 自己管理，桥接里执行这三个操作会得到明确拒绝；要改就 `/new` 建一个桥接会话。
-
-运行中卡片的一次次更新是**串行**发出的（`src/handler.js` 的 `flushRun()`）：终态事件和最后一条文本事件常常同一时刻到达，两个 patch 同时在途时飞书侧的生效顺序没有保证——真实事故是任务早已完成、卡片却永远停在「执行中」。串行之后在途期间到达的刷新会合并，终态一定最后生效。
-
-### 多机器人同机：发言身份是钉死的
-
-代理在群里要用飞书 CLI 发消息时，读的是**机器级配置**（`~/.feishu-cli/config.yaml`、`~/.lark-cli/config.json`）。多机器人同机时那个默认应用经常是另一个实例的——真实事故：用户让 Lil_P 跟 LilO 打招呼，Lil_P 的代理调 `feishu-cli` 发出，消息却以 Lil_O 的应用到达群里，看起来像 Lil_O 自己跟自己打招呼。
-
-两个后端的注入点不同，语义完全一致（`scripts/lib/feishu-identity.sh` 与 `src/pi.js` 的 `childEnv()` 是同一套逻辑）：
-
-- **pi 后端**：桥接起子进程前注入（`src/pi.js` 的 `childEnv()`）；
-- **opencode 后端**：代理跑在常驻的 `opencode serve` 里，桥接没法向已启动的进程注入，注入点挪到 serve 启动处——launchd 路径的 `scripts/agent/serve.sh` 与手动路径的 `scripts/up.sh` 在起 serve 前都调用 `ocb_export_feishu_identity`。
-
-两边都做三件事：
-
-- 注入 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_DOMAIN`。`feishu-cli` 的凭证优先级是 `--bot-app-id` > 环境变量 > 配置文件，环境变量即可盖过机器级配置；
-- 在实例配置目录下生成只含本实例应用的 `lark-cli/config.json`（权限 600，与桥接自己的 `config.json` 同规格），并设 `LARKSUITE_CLI_CONFIG_DIR` 指向它；
-- 给模型的来源标注追加一行身份声明（「你是 X（飞书应用 cli_…）」），声明与注入互相印证。
-
-配置里没有飞书凭证时什么都不注入，进程沿用机器级配置，与老行为一致。身份是 serve/子进程**启动时现读**的，不是安装时焊死的：换绑机器人只改实例配置里的 `appId`/`appSecret`，重启 serve（opencode）或等下次任务（pi）即跟随，plist 不用重新生成。
-
-两条边界：桌面版 OpenCode 自己拉起的会话不走这套注入（只有桥接经 `serve.sh`/`up.sh` 起的 serve 走）；shell 里 `lark-cli` 若前面还有别的包装器（例如 dsh-superagent 的 worker-bin），以最前面那个为准。
-
-### GitHub 操作身份：每个 agent 一个 App
-
-飞书身份管「在群里是谁」，GitHub 身份管「推送和开 PR 时是谁」。每个实例在 `config.json` 里配一段 `github`，agent 就以自己的 GitHub App（对外显示 `lil-o-bot[bot]`）行事，不占用人的账号：
-
-```json
-"github": {
-  "mode": "app",
-  "appId": 5653982,
-  "installationId": 179512681,
-  "privateKeyPath": "~/.config/opencode-feishu-bridge/github-app.pem",
-  "gitName": "Lil_O",
-  "gitEmail": "5653982+lil-o-bot[bot]@users.noreply.github.com"
-}
-```
-
-- **App 只申请一次**，私钥不过期。token 全部自动换：agent 每次操作前用私钥签 JWT（10 分钟）换 installation token（1 小时），桥接负责缓存、到期前 5 分钟刷新、401 重试。不需要人工干预。
-- **一个 App 覆盖所有仓库**：安装时选 All repositories，当前和将来的仓库自动包含，配置里不用按仓库列。
-- **四路注入**（与飞书身份同一个调用点）：`GH_TOKEN`、`GIT_AUTHOR_*`/`GIT_COMMITTER_*` 署名、git 凭证助手（每次 git 操作现取有效 token，长驻进程里过期也透明）、`PATH` 前置本实例的 gh 包装脚本。
-- `mode: "off"`（默认）时不注入任何东西，沿用机器级 gh 登录，现有部署零改动。
-
-完整的字段说明、App 创建步骤、排障命令见 [docs/pi-backend.md 第 6.1 节](docs/pi-backend.md#61-github-身份github-段)。
-
-### 已知风险
-
-**机器人之间互 @ 目前没有轮次护栏。** 群里已经出现过两个机器人互相 @ 连聊好几轮的情况，现在靠模型自己判断「不用回了」才停。三个 agent 一起跑之前建议先补上「同一话题连续 N 轮机器人→机器人就停，人类发言重置」的闸门，而且这条闸门要放在飞书接收层（`src/feishu.js` 的 mention / 白名单判断旁边），写进 prompt 只是请求模型自觉，不是护栏。
-
-卡片正文里写 `@名字` 只是字面字符，不产生飞书提醒；要叫醒另一个 agent 必须发真正的 `<at user_id="ou_...">`。这套协作规则已经由桥接自动教给每个 agent——群消息的 prompt 前面会拼一行「协作」说明（`src/feishu.js` 的 `collabLine()`），**只在该会话的第一条消息拼**（规则是静态的，之后靠上下文记住），内容包含：真 mention 的写法、open_id 只认本应用视角（来源只有两处——它给你发过的消息，「发送者」标注里带完整 id；以及人类直接告诉你）、话题内发言要回复已有的 `om_` 消息、终态卡片不唤醒任何人。私聊不拼这行。
-
-### 放行名单：谁 @ 它谁能唤醒它
-
-谁能唤醒这个机器人，由 admin 的「飞书应用」板块里「谁能唤醒它」一张表管。表里的每个条目都来自人手动维护的配置，没有自动收集：
-
-- **`feishu.allowlist`**——手写白名单，人类例外走这里；
-- **`feishu.listen`**——单向放行名单。A 的 listen 里有 B，B 的 @ 能唤醒 A；A 的 @ 能不能唤醒 B，看 B 自己的配置。admin 表里每行一个开关，写进配置、重启实例后生效；
-- **`feishu.names`**——手写名字声明，只在消息来源标注里显示（`名字 · open_id`）。
-
-两个放行名单取并集，@ 判定（`requireMention`）在更前面，所以放行的是「它的 @ 消息」，不是它的任何消息。
-
-open_id 按应用隔离，同一个机器人在不同应用里是两个值，肉眼分不出——抄错了不会报错，只会静默失效（日志记「拒绝非白名单用户 xxx」）。所以**每次加完 id 都要去日志里确认一次**，看到「拒绝非白名单」就是抄错了。
-
-以前还有一层自动攒的通讯录（`state.json` 的 contacts），已下线：攒出来的 open_id 用不上（放行名单本来就要人手工写），攒得越多越像一份查不到重点的档案。
-
-设计取舍、pi 输出格式实测、后续 dsh 的接法见 [docs/pi-backend.md](docs/pi-backend.md)。
-
----
-
-## 排障
-
-| 现象 | 排查方向 |
-|---|---|
-| 启动报 `连不上 opencode serve` | serve 没起，或端口/密码不对。先 `curl -u opencode:密码 http://127.0.0.1:19876/api/info` |
-| 报 401 | `opencode.password` 和 serve 的密码不一致。用 `up.sh` 起会按配置对齐；手起 serve 时注意 |
-| 飞书发消息没反应 | 应用没发布 / 权限没审批通过 / 事件订阅没选「长连接」 |
-| 按钮点了转圈没返回 | 「回调配置」里没加 `card.action.trigger` |
-| 群聊不回 | 没 @ 到**它本人**（@ 了别人、或只 @ 了另一个机器人都不算），或没把机器人拉进群 |
-| 报 `RegionError` | `defaultModel` 用了当前地区不可用的模型，换一个 |
-| 某个会话一直发不出消息，1 秒内就失败，错误里有 `Failed to decode message` | 这个会话的历史里有另一个 opencode 版本写入、当前版本读不出的记录。先 `npm run doctor` 看 serve 和本地 CLI 版本是否一致，一致仍报错见 [design-notes 第九节](docs/design-notes.md#opencode-升级后的历史数据兼容问题) |
-| 卡片不更新 | `streamIntervalMs` 设太低被限流，调回 1800 |
-| 卡片一直停在「执行中」 | 三种情况：① 事件流断了但进程还活着 —— 看 `logs/bridge.log` 有没有「事件流断开」，`idleTimeoutMs` 到期会自动转失败；② pi 产出最终回答后自己不退出 —— `backend.pi.settleQuietMs` 到期会按已完成收尾（默认 60 秒），日志里有「最终消息后静默 N 秒，按已完成收尾」；③ 桥接在执行途中重启过 —— 下次启动会把遗留卡片标成「已中止」（靠 `state.json` 的 `inflight` 记录），老版本留下的卡片没有记录，只能手动重发 |
-| 同一条消息回两遍 | 跑了两个桥接实例。`./scripts/down.sh` 全停再 `./scripts/up.sh` |
-| 机器人突然不说话了，日志里也没报错 | 进程被外部杀了（nohup 起的常见）。`./scripts/status.sh` 看是不是没了；装 `install-agent.sh` 之后不需要管这个 |
-| 群里 @ 了但机器人不理会 | 先看 `logs/bridge.log`：有 `[skip] @ 的不是我` 说明闸门挡住了（多机器人同群常见）；什么都没有说明事件没进来，查飞书后台的事件订阅 |
-| 想并行但提示「已经有 N 个任务在跑」 | 到 `behavior.maxParallel` 上限了。本机跑得动可以调到 3–4，不建议更高 |
-
-日志：前台跑打在 stdout，后台跑看 `logs/bridge.log`。
-
----
-
-## 已知限制
-
-1. **只处理文本消息。** 图片、文件、语音会回一句「暂不支持」。
-2. **同一会话任务串行。** 上一条没结束，新消息按 follow-up 排进队列，等它做完按顺序发，不会并发跑。
-3. **卡片更新有 1~2 秒间隔**，不是逐字打字机效果。飞书 patch 接口有频率限制，调快会被限流。
-4. **桥接进程必须活着。** 合盖休眠、断网、退出终端，机器人都失效。要真常驻得配 launchd 或找台常开的机器。
-5. **同一条话题里的所有人共用一个绑定。** 按话题隔离，不按人隔离。
-
----
-
-## 验证安装是否正常
-
-不接飞书也能跑通整条链路：
+### 7. 无飞书验证
 
 ```bash
 npm run dry
 ```
 
-终端 REPL，把飞书换成 stdin，卡片打成 ASCII 框。创建会话、流式事件、卡片渲染、命令全部跟真机一致。
-
-带真实模型的集成自测（需要 serve 在跑）：
-
-```bash
-npm run selftest -- --model stepfun-step-plan/step-5-preview
-```
-
-会真实建会话、发 prompt、删会话，覆盖 serve 连通、状态持久化、流式聚合、增量 patch、历史消息不被覆盖、全部命令、卡片回调、白名单拦截、话题内回复、@ 判定。
+终端 REPL，把飞书换成 stdin，卡片渲染成 ASCII 框。会话创建、流式事件、命令分发与真机一致。输入 `/help` 看命令，`/quit` 退出。
 
 ---
 
-## 适合改代码的人
+## 配置
+
+`config.example.json` 是唯一模板，`src/config.js` 的 `DEFAULTS` 提供缺省值。文件配置覆盖默认值，环境变量覆盖文件配置。配置在进程启动时读取，修改后重启实例生效。
+
+### 字段
+
+| 键 | 说明 | 默认值 |
+|---|---|---|
+| `backend.type` | `opencode` 或 `pi` | `opencode` |
+| `backend.pi.bin` | pi CLI 路径 | `pi` |
+| `backend.pi.model` | 传给 `--model`，留空用 pi 的默认值 | `""` |
+| `backend.pi.timeoutMs` | 子进程静默多久判定超时，每吐一行 stdout 重置 | `600000` |
+| `backend.pi.settleQuietMs` | 最终回答后静默多久按已完成收尾，`0` 关闭此机制 | `180000` |
+| `backend.pi.extraArgs` | 额外启动参数，例如 `["--no-extensions"]` | `[]` |
+| `backend.pi.cliSessionRoot` | 终端 `pi -r` 会话根目录 | `~/.pi/agent/sessions` |
+| `feishu.appId` / `feishu.appSecret` | 应用凭证 | `""` |
+| `feishu.domain` | `feishu` 或 `lark` | `feishu` |
+| `feishu.allowlist` | 放行名单，空数组表示不限制 | `[]` |
+| `feishu.listen` | 单向放行名单。A 的 `listen` 含 B 时，B 的 @ 能唤醒 A | `[]` |
+| `feishu.requireMention` | 群里是否必须 @ 本机器人才响应 | `true` |
+| `feishu.botOpenId` | 机器人自身 open_id。留空则启动时向飞书查询 | `""` |
+| `feishu.names` | `open_id → 显示名`，用于消息来源标注 | `{}` |
+| `opencode.url` | serve 地址 | `http://127.0.0.1:19876` |
+| `opencode.password` | serve 密码，与 `OPENCODE_SERVER_PASSWORD` 一致 | `""` |
+| `opencode.defaultDirectory` | `/new` 不带目录时使用；pi 每次执行也起在该目录 | `$HOME` |
+| `opencode.defaultModel` | `providerID/modelID`，建议显式填写 | `""` |
+| `github.mode` | `off` / `app` / `pat`，控制 GitHub 身份注入 | `off` |
+| `github.appId` / `installationId` / `privateKeyPath` | GitHub App 身份参数 | `""` |
+| `github.token` | `pat` 模式使用的个人访问令牌 | `""` |
+| `github.gitName` / `github.gitEmail` | 提交署名 | `""` |
+| `behavior.streamIntervalMs` | 卡片刷新间隔，低于 1200 会被飞书限流 | `1800` |
+| `behavior.showReasoning` | 是否在卡片展示思考过程 | `false` |
+| `behavior.showTools` | 是否展示工具调用链路 | `false` |
+| `behavior.maxBodyChars` | 卡片正文字符上限，超出保留尾部 | `6000` |
+| `behavior.idleTimeoutMs` | 仅 opencode 后端：多久没有事件就判定卡死并收尾，`0` 关闭 | `300000` |
+| `behavior.maxParallel` | 整机同时运行的任务数，`0` 表示不限 | `2` |
+| `prompt.prefixes` | 发给模型的文本前缀数组，条目含 `id`、`mode`（`once` / `always`）、`text` | `[{ "id": "rules", "mode": "once", "text": "" }]` |
+
+### 环境变量
+
+| 变量 | 作用 |
+|---|---|
+| `OCB_CONFIG_DIR` | 指定配置目录，多实例必需 |
+| `OCB_INSTANCE` | launchd 服务名后缀，多实例必需 |
+| `OCB_BACKEND` / `OCB_PI_BIN` / `OCB_PI_MODEL` | 覆盖后端类型、pi 路径、pi 模型 |
+| `FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_DOMAIN` | 覆盖飞书凭证与域名 |
+| `OPENCODE_URL` / `OPENCODE_SERVER_PASSWORD` | 覆盖 serve 地址与密码 |
+| `OPENCODE_BIN` | 指定 `up.sh` 使用的 opencode 可执行文件 |
+| `BRIDGE_DEFAULT_DIR` / `BRIDGE_DEFAULT_MODEL` | 覆盖默认目录与默认模型 |
+| `BRIDGE_ALLOWLIST` | 逗号分隔的白名单 |
+| `BRIDGE_NODE` | `install-agent.sh` 写入 plist 的 node 路径 |
+| `OCB_SDK_TIMEOUT_MS` | 飞书 SDK 请求超时，默认 20000 |
+| `PORT` | 管理后台监听端口，默认 19877 |
+
+### 密钥
+
+`config.json` 含 `appSecret`，`state.json` 含本机会话绑定，两者都在仓库外。`.gitignore` 排除 `.config/` 作为第二道防线。不要执行 `git add -f` 把它们加入仓库。管理后台保存配置时，密钥字段留空表示保持原值，并自动备份成 `config.json.bak`。
+
+---
+
+## 飞书里怎么用
+
+一条请求对应一条消息。发文本会新开一张卡片承载本次执行，流式刷新发生在这张卡片内部。点「会话列表」「切换」「新会话」「授权」会新发一条卡片，历史回复保持原样。列表翻页只更新列表卡片自己。
+
+### 命令
+
+| 命令 | 作用 |
+|---|---|
+| 直接发文本 | 发给当前绑定会话，没有绑定时自动创建 |
+| `/help` | 命令列表 |
+| `/new [目录]` | 新建会话并绑定 |
+| `/sessions` | 会话列表卡片，点按钮切换 |
+| `/switch <序号\|id>` | 文本方式切换会话 |
+| `/rename <标题>` | 重命名当前会话 |
+| `/del <序号>` | 删除会话 |
+| `/cd <目录>` | 换工作目录并重置绑定 |
+| `/stop` | 中止当前执行 |
+| `/status` | 查看绑定、模型、token、成本 |
+| `/model` / `/model <序号>` | 列出模型 / 切换模型 |
+| `/agent` / `/agent <名字>` | 列出 agent / 切换 agent（仅 opencode 后端） |
+
+别名：`/ls` = `/sessions`，`/use` = `/switch`，`/abort` = `/stop`，`/delete` = `/del`，`/?` = `/help`。
+
+### 群聊规则
+
+- 群里每 @ 一次开一条话题，并为这条话题建立独立会话。多条话题可以并行，整机上限由 `behavior.maxParallel` 控制。
+- 话题内继续说话仍需 @ 本机器人，消息会接在同一条话题的会话上。
+- @ 判定按 `open_id` 精确比对。`feishu.botOpenId` 显式填写后，多机器人同群时只响应 @ 自己的消息；取不到自身 open_id 时会退化成「@ 任何人都会响应」，启动日志会给出告警。
+- 没有 @ 的消息在进入处理流程前直接丢弃，模型看不到它。被 @ 的是别人时，日志记一行 `[skip]`，带被 @ 者的名字。
+- 占位符处理：@ 本机器人的占位符被删掉，@ 别人的占位符还原成 `@姓名`，模型能看见这句话在跟谁说。
+- 每条消息前拼一行来源标注，包含群名或私聊、主聊天流或话题内、发送者完整 `open_id`、人还是机器人、时间。名字来自 `feishu.names` 或群成员接口（`im:chat.members:read`）；两者都没有时只显示 `open_id`。
+
+放行闸门取 `feishu.allowlist` 与 `feishu.listen` 的并集，由人在配置或管理后台维护。`open_id` 按应用隔离，填写错误时只会静默失效，加完去看 `logs/bridge.log` 是否出现「拒绝非白名单用户」。
+
+### 排队
+
+同一会话同时只跑一个任务。上一条还在执行时，新消息默认排进 follow-up 队列，当前任务结束后自动发送，卡片会显示排在第几位。「引导」会中止当前任务并把这条消息插到队首；「取消」把它从队列移除。队列落在 `state.json` 里，桥接重启后保留。
+
+### 卡片渲染
+
+| Markdown | 飞书组件 |
+|---|---|
+| 表格 | 原生表格，表头灰底，超过 10 行飞书内部分页 |
+| 围栏代码块 | 带语法高亮的 `markdown` 组件 |
+| `## 标题` | 加粗正文 |
+| `- 列表` / `> 引用` | 圆点列表 / 普通正文 |
+| 加粗、斜体、行内代码、链接 | 原样支持 |
+
+单张卡片上限 30KB，超大表格裁剪到 50 行 8 列。卡片分三段：前缀（目录 / 模型 / 耗时 / 步数）、正文、后缀（用量小字与按钮）。正文按助手叙述的段累加，段间空一行。金额保留两位小数；部分模型提供商在 `/api/model` 里把成本填 0，此时显示 `$0.00`。
+
+---
+
+## 执行后端与多实例
+
+### 能力矩阵
+
+| 能力 | opencode 后端 | pi 后端 |
+|---|---|---|
+| 执行方式 | 常驻 `opencode serve`，HTTP + SSE | 每条消息起一次 `pi -p --mode json` 子进程 |
+| 流式正文 | 原生事件流 | 把 JSONL 事件翻译成同形状的合成事件 |
+| 卡片、节流、中止、僵尸卡收尾 | 共用 | 共用 |
+| 权限审批卡片 | 支持 | 不支持 |
+| `/agent` | 支持 | 不支持 |
+| 会话 | 由 serve 管理，接口查询 | `<配置目录>/pi-sessions/` 的索引与 JSONL；兼容终端 `pi -r` 会话 |
+| 卡死判定 | `behavior.idleTimeoutMs` | `backend.pi.timeoutMs` 与 `backend.pi.settleQuietMs` |
+
+pi 的 `/sessions` 同时列出桥接会话与终端 `pi -r` 会话。切到终端会话后走 `pi --session <文件>` 续聊，两端读写同一个 JSONL。终端会话的改名、删除、切模型由 pi 自己管理，桥接会明确拒绝这三个操作。
+
+### 多实例
+
+一个机器人 = 一个飞书应用 + 一份配置 + 一个进程。第二个实例用 `pi` 后端时：
+
+```bash
+mkdir -p "$HOME/.config/opencode-feishu-bridge-pi"
+OCB_CONFIG_DIR="$HOME/.config/opencode-feishu-bridge-pi" npm run init
+# 编辑该目录的 config.json：backend.type = pi，填入新应用的凭证
+./scripts/install-agent.sh --instance pi --config-dir "$HOME/.config/opencode-feishu-bridge-pi"
+OCB_INSTANCE=pi npm run status
+OCB_INSTANCE=pi npm run up
+```
+
+`OCB_CONFIG_DIR` 决定读哪份配置，`OCB_INSTANCE` 决定 launchd 服务名。后续重启、查看状态都要带同一个 `OCB_INSTANCE`。`install-agent.sh` 会按 `backend.type` 决定是否安装 serve 服务。管理后台的「新建实例」弹窗可以代替上述命令。
+
+### 身份注入
+
+飞书身份与 GitHub 身份各有一层注入，保证多个 agent 同机时发言、提交都用自己的应用：
+
+- pi 后端：起子进程前由 `src/pi.js` 的 `childEnv()` 注入。
+- opencode 后端：代理跑在常驻 serve 里，注入点放在 serve 启动处（`scripts/agent/serve.sh` 与 `scripts/up.sh`）。
+- 注入内容：`FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_DOMAIN`、本实例的 `lark-cli` 配置目录、GitHub 的 `GH_TOKEN` 与提交署名与 git 凭证助手与 `gh` 包装脚本。
+- 配置里没有凭证时不注入，沿用机器级配置。身份在进程启动时读取，改配置后重启 serve（opencode）或等下一次任务（pi）即跟随。
+
+`github` 段的完整字段、App 创建步骤、token 刷新机制与排障命令见 [docs/pi-backend.md 第 6.1 节](docs/pi-backend.md#61-github-身份github-段)。`prompt.prefixes` 的 `once` / `always` 语义与拼装顺序见[第 6.2 节](docs/pi-backend.md#62-prompt-前缀prompt-段)。
+
+已知风险：机器人之间互相 @ 没有轮次护栏。多个 agent 同群协作时，机器人可能连续聊好几轮，目前靠模型自己判断停止。
+
+---
+
+## 本地管理后台
+
+零新增依赖的浏览器界面，用 node 内置模块起服务，界面是单页原生 HTML/JS，没有构建步骤。
+
+```bash
+npm run admin                # 监听 127.0.0.1:19877
+npm run admin -- --port 8080 # 换端口
+```
+
+打开 <http://127.0.0.1:19877>。
+
+| 页面 | 功能 |
+|---|---|
+| 总览 | 实例状态、后端类型、配置目录、pid 与运行时长、serve 版本、会话数与进行中卡片数；已装 launchd 服务时可启动、停止、重启 |
+| 配置 | 按实例编辑 `config.json`；后端选项来自本机扫描；密钥掩码显示，留空保持原值 |
+| 飞书应用 | 校验凭证、管理 `allowlist` / `listen` / `names` |
+| 会话与后端 | serve 健康、模型列表、会话列表、`state.json` 只读展示、pi CLI 版本 |
+| 日志与体检 | `bridge.log` / `serve.log` 增量跟随；按实例运行 `doctor` |
+| 新建实例 | 三步生成配置、自动分配 serve 端口与密码、安装 launchd 服务并启动；失败自动回滚 |
+
+接口以 `/api/instances` 与 `/api/backends` 为入口，子路径包含 `config`、`allowlist`、`names`、`listen`、`action`、`logs`、`doctor`、`feishu-verify`、`sessions`、`models`。
+
+安全边界：只监听 `127.0.0.1`；Host 头只接受 `localhost` 与 `127.0.0.1`；接口只收 `application/json`；写操作额外要求 `X-OCB-Admin: 1`；密钥不回传浏览器、不写入后台日志；起停操作只对已装 launchd 服务的实例开放。
+
+代码在 `admin/`：`server.js`（服务与接口）、`instances.js`（实例发现）、`backends.js`（本机扫描）、`create.js`（新建实例）、`control.js`（起停、体检、日志）、`entries.js`（名单操作）、`public/index.html`（界面）。
+
+---
+
+## 开发
+
+### 目录
 
 ```
-飞书 App
-  │ ① WebSocket 长连接  ← 收事件（im.message.receive_v1 / card.action.trigger）
-  │ ④ HTTPS REST        → 发/改卡片（im/v1/messages create / patch）
-  ▼
-src/feishu.js   长连接与收发（@larksuiteoapi/node-sdk，自动续 tenant_access_token）
-  ▼
-src/handler.js  命令分发、会话绑定、prompt 下发、卡片回调
-  │   └── src/store.js   chat_id → { sessionId, directory }
-  ▼
-src/oc.js       opencode v2 HTTP API + SSE 事件流（自动重连）
-  ▼
-opencode serve（桌面版自带 CLI）  →  本地项目目录
+config.example.json        配置模板（可入库）
+src/                       桥接主体，ESM
+admin/                     本地管理后台
+scripts/                   初始化、体检、启动、测试、探针
+  ├── agent/serve.sh       launchd 路径启动 serve
+  ├── agent/bridge.sh      launchd 路径启动桥接
+  └── lib/*.sh             配置目录、身份注入、launchd PATH
+docs/                      设计笔记、pi 后端方案、运维方案、截图
+logs/                      运行日志（不入库）
 ```
 
-两个关键设计：`/api/session` 建会话时带 `location.directory`，所以一个 serve 就能服务任意多个项目；事件流每条都带 `sessionID`，按它过滤只刷新对应那张卡片。
+### 验证
 
-```
-src/md.js      Markdown → 飞书卡片元素（表格/代码块/标题/列表分段解析）
-src/cards.js   卡片模板（card 2.0）
-src/render.js  事件 → 运行态聚合
-src/which-opencode.js  选哪份 opencode 二进制（up.sh 与 doctor 共用）
-scripts/       体检、自测、卡片探针、端到端验证
-```
+下表中斜杠后的名称沿用同一个 `npm run` 前缀。
 
-设计取舍、踩过的平台坑、以及为什么不用现成方案，见 [docs/design-notes.md](docs/design-notes.md)。
+| 命令 | 覆盖范围 |
+|---|---|
+| `npm run doctor` | 本机环境与配置完整性 |
+| `npm run dry` | 无飞书的终端 REPL，全链路模拟 |
+| `OC_PW=<密码> npm run selftest -- --model <providerID/modelID>` | 真实模型集成自测：建会话、发 prompt、删会话、流式聚合、卡片回调、白名单、@ 判定 |
+| `npm run test:render` / `test:patch` | 卡片渲染与 patch 顺序 |
+| `npm run test:busy` / `test:runfail` / `test:wedge` | 排队、运行失败、看门狗收尾 |
+| `npm run test:pi` / `test:pi-cli-sessions` | pi 后端与终端会话 |
+| `npm run test:admin` / `test:init` / `test:identity` / `test:github` / `test:serve-password` | 后台、初始化、身份注入、serve 密码 |
+| `npm run probe:names [chat_id]` / `probe:msg` | 飞书接口探针，打印权限与字段 |
+
+`scripts/test-cards.mjs` 与 `scripts/probe-thread.mjs` 没有对应的 npm 脚本，用 `node <路径>` 运行。
+
+`selftest` 需要 serve 正在运行，会真实创建与删除会话。跑测试前确认配置指向测试用的实例。
+
+### 接入新的本地 Agent
+
+`handler.js` 只认接口方法。把任何能在本机执行任务、能输出进度的命令行 Agent 接进来，需要实现下表方法，并让 `subscribe()` 吐出 `session.*` 形状的事件。事件类型清单在 `src/render.js` 的 `switch` 里。
+
+| 方法 | 作用 |
+|---|---|
+| `health()` | 启动时检查后端可用，返回版本信息 |
+| `location()` | 返回当前工作目录 |
+| `subscribe(onEvent, onStatus)` | 注册事件流，返回取消订阅的函数 |
+| `createSession()` / `getSession()` / `listSessions()` | 建立、读取、列出会话 |
+| `renameSession()` / `deleteSession()` | 改名与删除会话 |
+| `prompt(sessionId, text)` | 发送一次任务，进度通过事件流回传 |
+| `interrupt(sessionId)` | 中止当前执行 |
+| `listModels()` / `defaultModel()` / `switchModel()` | 支撑 `/model` |
+| `listAgents()` / `switchAgent()` | 支撑 `/agent` |
+| `replyPermission()` / `listMessages()` | 权限审批与消息读取 |
+
+不支持的方法返回空列表或明确拒绝，并在 `capabilitiesFor()` 里关掉对应能力。`src/pi.js` 就是这样处理 agent 与权限审批的。
+
+步骤：
+
+1. 在 `src/` 新建实现文件。事件形状按 `src/render.js` 输出，常用类型有 `session.execution.started`、`session.text.delta`、`session.tool.called`、`session.usage.updated`、`session.execution.succeeded` / `failed` / `interrupted`。
+2. 在 `src/backend.js` 的 `createBackend()` 注册新类型，在 `capabilitiesFor()` 声明 `streaming`、`agents`、`permissions`、`oneShot`、`label`。
+3. `handler.js` 无需改动。卡片、命令、状态、排队逻辑按能力声明自动降级。
+4. 在 `admin/backends.js` 的 `scanBackends()` 加入本机探测，管理后台才会显示这个选项。
+5. 补一份 `scripts/test-*.mjs`，并在 `package.json` 里加脚本入口。
+6. `scripts/up.sh` 与 `scripts/install-agent.sh` 只在 `backend.type = opencode` 时拉起 serve。一次性命令行后端沿用这条分支，无需改脚本。
+
+### 调试与日志
+
+前台运行 `npm start` 时日志打到 stdout。后台运行看 `logs/bridge.log` 与 `logs/serve.log`。`npm run status` 会打印进程状态、版本一致性与最近三行桥接日志。
+
+群消息会记一行原始上下文（`chat`、`key`、`thread`、`root`、`parent`、消息 id）。排查话题串线时先看这行。被 @ 判定拦下的消息会记 `[skip]` 行。
+
+---
+
+## 排障
+
+| 现象 | 处理 |
+|---|---|
+| 启动报 `连不上 opencode serve` | 确认 serve 已启动、端口与密码一致：`curl -u opencode:密码 http://127.0.0.1:19876/api/info` |
+| 报 401 | `opencode.password` 与 serve 启动时的密码不一致。用 `up.sh` 启动会自动带入配置值；改过密码要重启 serve |
+| 飞书发消息没反应 | 检查应用是否发布、权限是否审批、事件订阅是否选「长连接」、`im.message.receive_v1` 是否添加 |
+| 卡片按钮一直转圈 | 「回调配置」漏加 `card.action.trigger` |
+| 群聊不回 | 检查是否 @ 了本机器人、机器人是否已入群、日志里是否有 `[skip]` 行、事件是否到达 |
+| 报 `RegionError` | `defaultModel` 用了本地区不可用的模型，换一个 |
+| 会话一秒内失败，错误含 `Failed to decode message` | 会话历史由另一个 opencode 版本写入。先跑 `npm run doctor` 看版本，再读 [design-notes 的历史数据兼容一节](docs/design-notes.md#opencode-升级后的历史数据兼容问题) |
+| 卡片不更新 | `streamIntervalMs` 过低被限流，调回 1800 |
+| 卡片一直停在「执行中」 | 看 `logs/bridge.log` 的事件流断开记录；opencode 靠 `idleTimeoutMs` 收尾，pi 靠 `settleQuietMs` 收尾；桥接重启后遗留卡片会被标成「已中止」 |
+| 同一条消息回两遍 | 跑了两个桥接进程。执行 `./scripts/down.sh` 全部停止，再 `./scripts/up.sh` |
+| 机器人突然停止响应且日志无报错 | `nohup` 进程被外部回收。执行 `./scripts/status.sh` 确认，改装 `install-agent.sh` |
+| 提示「已经有 N 个任务在跑」 | 到达 `behavior.maxParallel` 上限，本机资源允许时调到 3–4 |
+| 后台返回 403 | Host 头只接受 `localhost` 与 `127.0.0.1`，用这两个地址直接访问 |
+| 改了配置不生效 | 配置在进程启动时读取，重启实例 |
+
+---
+
+## 已知限制
+
+1. 只处理文本消息。图片、文件、语音会回一句「暂不支持」。
+2. 同一会话任务串行，新消息排队等待。
+3. 卡片刷新有 1～2 秒间隔，飞书 patch 接口存在频率限制。
+4. 桥接进程必须存活。合盖休眠、断网、关终端都会让机器人失效，长期运行要装常驻服务。
+5. 同一条话题里所有人共用一个会话绑定，隔离粒度是话题。
+
+---
+
+## 文档索引
+
+| 文档 | 内容 |
+|---|---|
+| [README.full.md](README.full.md) | 完整版说明：产品截图、卡片渲染细节、管理后台逐步操作、多机器人协作、排障全集 |
+| [docs/design-notes.md](docs/design-notes.md) | 实现笔记：飞书卡片 2.0 的坑、状态与并发、opencode 版本一致性、群聊话题模型 |
+| [docs/pi-backend.md](docs/pi-backend.md) | pi 后端方案：合成事件、会话、超时、GitHub 身份、prompt 前缀、事故复盘 |
+| [docs/tmux-ops.md](docs/tmux-ops.md) | tmux 运维层方案与验收标准 |
+| [docs/images/NOTICE.md](docs/images/NOTICE.md) | 产品截图的脱敏处理说明 |
