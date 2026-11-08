@@ -336,5 +336,5 @@ OCB_CONFIG_DIR=/tmp/ocb-pi-dry node src/index.js --dry
 1. **互 @ 轮次护栏**（优先级最高，多 agent 一起跑之前必须有）
 2. **dsh 后端**：`dsh headless "<prompt>"`，套同一套 Backend 接口与合成事件，工作量主要在解析它的输出格式
 3. ~~给模型的来源标注后补一行能力说明~~（已完成：`src/feishu.js` 的 `collabLine()`，且已配置化，见 6.2 节）
-5. **通讯录与 listen 两层模型**（已完成）：`state.json` 的 `contacts` 是认识层（被 @ 自动入册，admin 可见名字/类型/open_id/时间戳）；`feishu.listen` 是许可层（admin 通讯录面板的开关，单向放行「它的 @」）。设计取舍与数据流见 README「通讯录与 listen」一节
+5. **放行名单**（已完成）：`feishu.allowlist`（手写白名单）与 `feishu.listen`（单向放行「它的 @」）取并集，admin「谁能唤醒它」一张表管；`feishu.names` 供来源标注显示名字。三者全是人手动维护——自动攒的 contacts 通讯录已下线（攒出来的 open_id 用不上）。设计取舍见 README「放行名单」一节
 4. ~~可选流式~~（已完成，见 4.2）

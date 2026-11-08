@@ -28,7 +28,7 @@ function withTimeout(promise, label) {
 }
 
 export class FeishuTransport {
-  constructor(config, { onMessage, onCardAction, nameOf, onSeenNames, onContactKind, onSelf, backendType = '', logger = console }) {
+  constructor(config, { onMessage, onCardAction, nameOf, backendType = '', logger = console }) {
     this.cfg = config.feishu
     // prompt 前缀配置（src/config.js 的 prompt 段）：来源标注是每条消息都带的
     // 动态数据，协作规则这类静态说明走 once 模式，每个会话只带一次
@@ -38,12 +38,6 @@ export class FeishuTransport {
     this.onCardAction = onCardAction
     /** open_id -> 显示名；拿不到就空串，标注里退回只显示 id */
     this.nameOf = nameOf
-    /** 把消息 mentions 里的 (open_id, name) 交给上层攒起来 */
-    this.onSeenNames = onSeenNames
-    /** 补充通讯录条目的「人是机器人」：只说它见过面的类型，不建册 */
-    this.onContactKind = onContactKind
-    /** 解析出自身 open_id 时通知上层：用于把存量数据里的「自己」清出通讯录 */
-    this.onSelf = onSelf
     /** 后端类型（opencode / pi）。pi 后端的桥接会把本实例凭证注入子进程，
      *  身份声明据此给不同文案 */
     this.backendType = backendType
@@ -95,9 +89,6 @@ export class FeishuTransport {
         )
       }
     }
-    // 身份一到手就清掉通讯录里的「自己」：机器人被 @ 时自己也在 mentions 里，
-    // 老版本没排除，存量数据留着这一条。收集端已修，这里清存量
-    if (this.self.open_id) this.onSelf?.(this.self.open_id)
     return this.self
   }
 
@@ -188,8 +179,6 @@ export class FeishuTransport {
         )
       }
       this.members.set(chatId, map)
-      // 一次拿到的全家名字顺手交给上层存起来，下次连接口都不用打
-      if (map.size) this.onSeenNames?.([...map].map(([id, name]) => ({ openId: id, name })))
     }
     return this.members.get(chatId)?.get(openId) || ''
   }
@@ -271,24 +260,6 @@ export class FeishuTransport {
     const userId = data?.sender?.sender_id?.open_id || data?.sender?.sender_id?.user_id || ''
     const isBot = data?.sender?.sender_type === 'app'
 
-    // 顺手把这条消息里被 @ 的人记下来。飞书没有「open_id 反查名字」的接口
-    // （contact 对机器人 open_id 直接 41050），mentions 里的 name 是唯一免费来源。
-    // 排除自己：机器人被 @ 时自己也在 mentions 里，入册了通讯录就会把自己
-    // 列成「一个需要放行的同伴」，没有意义
-    if (this.onSeenNames && mentions.length) {
-      this.onSeenNames(
-        mentions
-          .map((x) => ({ openId: x?.id?.open_id, name: x?.name }))
-          .filter((x) => x.openId && x.name && x.id?.open_id !== self.open_id),
-      )
-    }
-
-    // 发送者的类型（人 / 机器人）补充进通讯录。只更新已入册的条目、不建册——
-    // 入册只认被 @（见 store.learnContact）。机器人被 @ 之后通常就会在群里说话，
-    // 说过一次话它的 kind 就准了，admin 的通讯录图标才有东西可显示。
-    // 自己不入册，所以这里也不用排除
-    this.onContactKind?.(userId, isBot ? 'app' : 'user')
-
     /**
      * 给模型标一行来源。
      *
@@ -297,7 +268,8 @@ export class FeishuTransport {
      * 把来源和发送者 open_id 一并给出来：既省掉这轮探索，也让它有能力 @ 回去
      * （@ 某人需要对方完整的 open_id，靠猜是猜不到的）。
      *
-     * 名字能攒到就带名字，攒不到就只给 id —— id 必须完整，截断了就 @ 不回去。
+     * 名字只来自配置里的 feishu.names（人工声明）或群成员接口，攒不到就只给
+     * id —— id 必须完整，截断了就 @ 不回去。
      */
     const chatName = isGroup ? await this.resolveChatName(m.chat_id) : ''
     const where = isGroup ? (chatName ? `群「${chatName}」` : '群聊') : '私聊'
@@ -346,20 +318,19 @@ export class FeishuTransport {
    * 两样东西——对方的 open_id（按应用隔离，没有按名查的接口）和 at 标签的
    * 命令写法。所以这行把命令模板、id 来源、拿不到时的出路一次给全：
    *
-   *   - id 来源只有两类：它给你发过的消息（「发送者」标注）、它被 @ 到的消息
-   *     （mentions）。桥接把两类都存进了通讯录（$OCB_CONFIG_DIR/state.json 的
-   *     contacts），先读那里；没有再让人类转发，不要猜 id。
-   *   - at 标签必须写在 --text 里，open_id 从通讯录查；话题内用 --reply 回到
-   *     同一个话题。命令模板照抄，只替换 id。
+   *   - id 来源只有两处：它给你发过的消息（「发送者」标注里带完整 id），以及
+   *     人类直接告诉你。人类也可以在配置的 feishu.names 里声明名字，声明后
+   *     标注会同时带上名字和 id。都没有就问人类要，不要猜。
+   *   - at 标签必须写在 --text 里；话题内用 --reply 回到同一个话题。命令
+   *     模板照抄，只替换 id。
    */
   collabLine() {
     return (
       '[协作 · 唤醒另一个 agent 的唯一方法：用 feishu-cli 发一条带 at 标签的新 text 消息。' +
       '命令模板（只替换 open_id，其余照抄）：feishu-cli msg send --receive-id <群 chat_id> --receive-id-type chat_id ' +
       '--text \'<at user_id="对方 open_id"></at> 要说的话\'。' +
-      '对方 open_id 只认本应用视角，来源只有两类：它给你发过的消息（本行上方「发送者」标注）或它被 @ 到的消息（mentions）；' +
-      '两类桥接都已存进 $OCB_CONFIG_DIR/state.json 的 contacts，先读那里。' +
-      '通讯录里没有的对象，飞书没有按应用查机器人 open_id 的接口，你拿不到——请人类在中间转发，不要猜 id、也不要用普通文本 @名字 冒充（那只是字面字符，唤不醒任何人）。' +
+      '对方 open_id 只认本应用视角，来源只有两处：它给你发过的消息，完整 id 就在本行上方「发送者」标注里；人类直接告诉你（人类还可以在配置的 feishu.names 里声明它的名字，声明后标注会同时带上名字和 id）。' +
+      '这两处都没有，飞书也没有按应用查机器人 open_id 的接口，你拿不到——请人类给你，不要猜 id、也不要用普通文本 @名字 冒充（那只是字面字符，唤不醒任何人）。' +
       '在话题里发言要用 --reply 回复该话题内已有的一条 om_ 消息，不要新开发布到主聊天流。' +
       '你的终态回复呈现在卡片上，卡片不唤醒任何人]'
     )

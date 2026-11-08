@@ -87,7 +87,7 @@ try {
     process.env.OCB_SDK_TIMEOUT_MS = '300'
     const ft = new FeishuTransport(
       { feishu: { appId: 'cli_x', appSecret: 'y', domain: 'feishu' } },
-      { onMessage() {}, onCardAction() {}, nameOf() {}, onSeenNames() {} },
+      { onMessage() {}, onCardAction() {}, nameOf() {} },
     )
     ft.client.im.v1.message.patch = () => new Promise(() => {}) // 永挂
     const keepAlive = setInterval(() => {}, 1000) // 超时定时器是 unref 的，测试里自己保活
