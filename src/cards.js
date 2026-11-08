@@ -350,6 +350,46 @@ export function queuedCard({ preview, from, qid, position = 1, k = '', rt = '' }
   ])
 }
 
+/**
+ * 排队消息已经发出：翻新「已加入队列」那张卡。
+ *
+ * 原卡带着两个按钮（引导 / 取消），消息出队之后它们就点不动了——留着会让人
+ * 以为还在排队。所以出队时翻新：撤掉按钮，说明它已进入处理，进度看执行卡片。
+ */
+export function queuedSentCard({ preview, from }) {
+  return card('▶️ 已开始处理', 'blue', [
+    div(
+      [
+        from ? `**来自** ${from}` : '',
+        `**内容** ${truncate(preview, 240) || '(空)'}`,
+        '',
+        '排队等待的任务已结束，这条消息已经发出，正在处理。',
+      ]
+        .filter(Boolean)
+        .join('\n'),
+    ),
+  ])
+}
+
+/**
+ * 排队消息被取消：同样是翻新原卡。取消之后原卡还挂着「已加入队列」和两个
+ * 按钮，点下去只会得到「不在队列里」的报错
+ */
+export function queuedDroppedCard({ preview, from }) {
+  return card('⛔ 已取消', 'grey', [
+    div(
+      [
+        from ? `**来自** ${from}` : '',
+        `**内容** ${truncate(preview, 240) || '(空)'}`,
+        '',
+        '这条消息已从队列里摘掉，没有发送。',
+      ]
+        .filter(Boolean)
+        .join('\n'),
+    ),
+  ])
+}
+
 export function statusCard({ session, binding, directory, server, backendLabel = 'opencode', k = '', rt = '' }) {
   const nav = navOf({ k, rt })
   const lines = [

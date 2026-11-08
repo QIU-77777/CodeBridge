@@ -148,6 +148,21 @@ export class Store {
     return msg
   }
 
+  /**
+   * 给排队条目记上它那张「已加入队列」卡片的 ID。
+   *
+   * 消息出队或取消时要把那张卡翻新，否则它会一直挂着过时的状态和两个点不动
+   * 的按钮——用户看到的是一条早已处理完的消息，仍显示「在排队」。
+   */
+  setQueuedCard(key, qid, cardId) {
+    const list = this.data.queue?.[key]
+    if (!Array.isArray(list) || !qid || !cardId) return
+    const item = list.find((x) => x.qid === qid)
+    if (!item || item.cardId === cardId) return
+    item.cardId = cardId
+    this.scheduleSave()
+  }
+
   queueLength(key) {
     return this.data.queue?.[key]?.length || 0
   }
