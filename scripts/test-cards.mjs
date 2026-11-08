@@ -574,12 +574,15 @@ if (process.argv.includes('--live')) {
   const o1once = got[0]?.oncePrefix || ''
   ok(/\[协作 ·/.test(o1once), '群消息的 oncePrefix 带协作机制说明', o1once)
   ok(/<at user_id="对方 open_id"><\/at>/.test(o1once), '说明里给了真 mention 的写法', o1once)
-  ok(/@名字 只是字面字符，唤不醒任何人/.test(o1once), '说明里点明 @名字 不产生提醒', o1once)
+  ok(/普通文本 @名字 冒充（那只是字面字符，唤不醒任何人）/.test(o1once), '说明里点明 @名字 不产生提醒', o1once)
   ok(/卡片不唤醒任何人/.test(o1once), '说明里点明终态卡片不唤醒别人', o1once)
-  ok(/回复话题内已有的 om_ 消息/.test(o1once), '说明里给了话题内发言的落点规则', o1once)
+  ok(/用 --reply 回复该话题内已有的一条 om_ 消息/.test(o1once), '说明里给了话题内发言的落点规则', o1once)
   ok(/open_id 只认本应用视角/.test(o1once), '说明里点明 open_id 按应用隔离（只认本应用视角）', o1once)
   ok(/contacts/.test(o1once), '说明里指向通讯录这个地址来源', o1once)
   ok(!/查群成员列表/.test(o1once), '不再建议查群成员列表——那里面没有机器人（实测）', o1once)
+  ok(/msg send --receive-id/.test(o1once), '给了 feishu-cli 的 at 命令模板', o1once)
+  ok(/--reply/.test(o1once), '说明了话题内发言要用 --reply 回到同一话题', o1once)
+  ok(/请人类在中间转发/.test(o1once), '拿不到 open_id 时给出路（人类转发），不让它猜 id', o1once)
   ok(!/\[协作 ·/.test(o1), '协作说明不再混在每条消息的来源标注里（避免每轮重复）', o1)
 
   await t.handleImMessage({
