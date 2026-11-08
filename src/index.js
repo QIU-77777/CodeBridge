@@ -205,14 +205,6 @@ ${created ? '   已为你生成模板，请填入 appId / appSecret。\n' : '   
     onMessage: (msg) => bridge.onMessage(msg),
     onCardAction: (ctx) => bridge.onCardAction(ctx),
     nameOf: (id) => bridge.nameOf(id),
-    // 本实例的飞书身份：serve 里的代理用 CLI 发言时以本实例应用发出，不读机器级
-    // 配置里别的机器人应用（真实事故：Lil_P 的代理发出的问候以 Lil_O 的应用到达
-    // 群里）。没有配置凭证时什么都不注入，沿用机器级配置
-    onSeenNames: (list) => bridge.learnNames(list),
-    // 发送者类型补充进通讯录（只更新已入册条目，不建册）
-    onContactKind: (openId, kind) => bridge.markContactKind(openId, kind),
-    // 自身身份到手：清掉通讯录里的「自己」（老版本没排除，清存量）
-    onSelf: (openId) => bridge.forgetSelf(openId),
     // 身份声明按后端给文案：pi 后端的桥接会注入本实例凭证，opencode 不会
     backendType: caps.type,
   })

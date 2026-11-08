@@ -525,7 +525,6 @@ if (process.argv.includes('--live')) {
   const { FeishuTransport } = await import('../src/feishu.js')
   const { loadConfig } = await import('../src/config.js')
   const got = []
-  const seen = []
   const names = new Map([['ou_lild', '小d']])
   // 用真实默认配置（含 prompt.prefixes 的 rules once 条目），桩里只覆盖飞书凭证
   const cfg = loadConfig()
@@ -535,7 +534,6 @@ if (process.argv.includes('--live')) {
       onMessage: async (m) => got.push(m),
       onCardAction: async () => {},
       nameOf: (id) => names.get(id) || '',
-      onSeenNames: (list) => seen.push(...list),
       logger: { info() {}, warn() {}, error() {} },
     },
   )
@@ -565,10 +563,6 @@ if (process.argv.includes('--live')) {
   ok(/主聊天流/.test(o1), '来源标注区分主聊天流 / 话题内', o1)
   ok(/ou_lild（机器人）/.test(o1), '来源标注带发送者 open_id 和「人 / 机器人」', o1)
   ok(/小d · ou_lild/.test(o1), '知道名字时显示「名字 · open_id」，id 保持完整以便 @ 回去', o1)
-  ok(
-    seen.some((x) => x.openId === 'ou_me' && x.name === 'LiLO'),
-    '把消息里被 @ 的 (open_id, 名字) 交给上层攒起来',
-  )
   // 协作机制说明：默认每会话只带一次（oncePrefix），不再混在每条消息的 origin 里
   // ——规则是静态的，第一条带过就在会话历史里，每轮重复只是白烧 token
   const o1once = got[0]?.oncePrefix || ''
@@ -578,11 +572,12 @@ if (process.argv.includes('--live')) {
   ok(/卡片不唤醒任何人/.test(o1once), '说明里点明终态卡片不唤醒别人', o1once)
   ok(/用 --reply 回复该话题内已有的一条 om_ 消息/.test(o1once), '说明里给了话题内发言的落点规则', o1once)
   ok(/open_id 只认本应用视角/.test(o1once), '说明里点明 open_id 按应用隔离（只认本应用视角）', o1once)
-  ok(/contacts/.test(o1once), '说明里指向通讯录这个地址来源', o1once)
+  ok(/feishu\.names/.test(o1once), '说明里指出人类可在配置里声明对方名字', o1once)
+  ok(!/contacts/.test(o1once), '不再指向已下线的通讯录（state.json contacts）', o1once)
   ok(!/查群成员列表/.test(o1once), '不再建议查群成员列表——那里面没有机器人（实测）', o1once)
   ok(/msg send --receive-id/.test(o1once), '给了 feishu-cli 的 at 命令模板', o1once)
   ok(/--reply/.test(o1once), '说明了话题内发言要用 --reply 回到同一话题', o1once)
-  ok(/请人类在中间转发/.test(o1once), '拿不到 open_id 时给出路（人类转发），不让它猜 id', o1once)
+  ok(/请人类给你/.test(o1once), '拿不到 open_id 时给出路（问人类要），不让它猜 id', o1once)
   ok(!/\[协作 ·/.test(o1), '协作说明不再混在每条消息的来源标注里（避免每轮重复）', o1)
 
   await t.handleImMessage({
@@ -627,7 +622,7 @@ if (process.argv.includes('--live')) {
         ],
       },
     },
-    { onMessage: (m) => got.push(m), onCardAction() {}, nameOf: () => '', onSeenNames() {} },
+    { onMessage: (m) => got.push(m), onCardAction() {}, nameOf: () => '' },
   )
   await t2.handleImMessage({
     message: {
@@ -647,7 +642,7 @@ if (process.argv.includes('--live')) {
   // 删掉 rules 条目 = 关闭协作说明
   const t3 = new FeishuTransport(
     { feishu: { appId: 'cli_x', appSecret: 'sec_x', domain: 'feishu', requireMention: true, allowlist: [], names: {} }, prompt: { prefixes: [] } },
-    { onMessage: (m) => got.push(m), onCardAction() {}, nameOf: () => '', onSeenNames() {} },
+    { onMessage: (m) => got.push(m), onCardAction() {}, nameOf: () => '' },
   )
   await t3.handleImMessage({
     message: {
@@ -759,22 +754,24 @@ if (process.argv.includes('--live')) {
   }
 }
 
-// ---------- 6.6 名字从哪来：配置 > @ 攒的 > 空 ----------
+// ---------- 6.6 名字只有一个来源：配置里的 feishu.names ----------
 {
   const { Store } = await import('../src/store.js')
   const { Bridge } = await import('../src/handler.js')
   const { unlinkSync } = await import('node:fs')
   const path = '/tmp/ocb-names-test-' + Date.now() + '.json'
 
+  // 旧版在 state.json 里缓存名字（平铺 names / contacts 通讯录），已下线：
+  // 攒出来的 open_id 用不上，放行名单本来就要人手工维护。启动时清存量
   const st = new Store(path)
-  ok(st.getName('ou_x') === '', '没有记录时返回空串')
-
-  st.setName('ou_x', '小d')
-  ok(st.getName('ou_x') === '小d', 'setName 之后读得到')
+  st.data.names = { ou_old: '老名字' }
+  st.data.contacts = { ou_old: { name: '老名字', kind: 'user' } }
+  st.dirty = true
   st.flush()
 
   const st2 = new Store(path)
-  ok(st2.getName('ou_x') === '小d', '名字落盘并能在下次启动读回来')
+  ok(!st2.data.names, '启动时清掉旧版平铺 names')
+  ok(!st2.data.contacts, '启动时清掉已下线的 contacts 通讯录')
 
   const b = new Bridge({
     oc: {},
@@ -783,8 +780,8 @@ if (process.argv.includes('--live')) {
     transport: {},
     logger: { info() {}, warn() {}, error() {} },
   })
-  ok(b.nameOf('ou_x') === '声明名', '配置里的 feishu.names 优先于 @ 攒到的名字')
-  ok(b.nameOf('ou_nobody') === '', '两处都没有时为空，标注退回只显示 open_id')
+  ok(b.nameOf('ou_x') === '声明名', '配置里的 feishu.names 就是显示名')
+  ok(b.nameOf('ou_nobody') === '', '没有声明就为空，标注退回只显示 open_id')
 
   unlinkSync(path)
 }
@@ -793,7 +790,6 @@ if (process.argv.includes('--live')) {
 {
   const { FeishuTransport } = await import('../src/feishu.js')
   const got = []
-  const learned = []
   const known = new Map()
   const t = new FeishuTransport(
     { feishu: { appId: 'cli_x', appSecret: 'sec_x', requireMention: true } },
@@ -801,10 +797,6 @@ if (process.argv.includes('--live')) {
       onMessage: async (m) => got.push(m),
       onCardAction: async () => {},
       nameOf: (id) => known.get(id) || '',
-      onSeenNames: (list) => {
-        learned.push(...list)
-        for (const x of list) known.set(x.openId, x.name)
-      },
       logger: { info() {}, warn() {}, error() {} },
     },
   )
@@ -841,10 +833,6 @@ if (process.argv.includes('--live')) {
     sender: { sender_id: { open_id: 'ou_lild' }, sender_type: 'app' },
   })
   ok(/小d · ou_lild/.test(got[0]?.origin || ''), '成员列表可用时，发送者名字自动补上', got[0]?.origin)
-  ok(
-    learned.some((x) => x.openId === 'ou_human' && x.name === '邱璟光'),
-    '拉一次成员列表就把所有人的名字都存下来',
-  )
   ok(memberCalls === 1, '同一个群只拉一次成员列表', `调用了 ${memberCalls} 次`)
 
   await t.handleImMessage({
@@ -862,7 +850,7 @@ if (process.argv.includes('--live')) {
   ok(memberCalls === 1, '没有重复打接口')
 }
 
-// ---------- 6.8 没有成员权限时，只警告一次并退回攒名字 ----------
+// ---------- 6.8 没有成员权限时，只警告一次并退回只显示 open_id ----------
 {
   const { FeishuTransport } = await import('../src/feishu.js')
   const warns = []
@@ -873,7 +861,6 @@ if (process.argv.includes('--live')) {
       onMessage: async () => {},
       onCardAction: async () => {},
       nameOf: () => '',
-      onSeenNames: () => {},
       logger: { info() {}, warn: (m) => warns.push(m), error() {} },
     },
   )

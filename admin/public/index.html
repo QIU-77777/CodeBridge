@@ -377,7 +377,7 @@
             这张表回答三个问题：机器人<b>认识谁</b>（被 @ 过就自动记下，不用你管）、<b>谁能唤醒它</b>（「能唤醒它」列）、<b>群里的消息来源显示谁的名字</b>（改名只影响群里的来源标注）。
           </p>
           <p class="hint" id="fs-gate-summary"></p>
-          <table id="fs-allow"><thead><tr><th>名字</th><th>open_id</th><th>类型</th><th>能唤醒它</th><th></th></tr></thead><tbody></tbody></table>
+          <table id="fs-allow"><thead><tr><th>名字</th><th>open_id</th><th>能唤醒它</th><th></th></tr></thead><tbody></tbody></table>
           <div class="row" style="margin-top:12px">
             <input type="text" id="fs-allow-add" placeholder="ou_..." class="grow">
             <input type="text" id="fs-allow-add-name" placeholder="名字（选填）" style="max-width:220px">
@@ -871,45 +871,33 @@ async function saveConfig() {
 }
 
 // ---------- 纯函数内联副本 ----------
-// buildPeople / kindBadge 的实现与 admin/entries.js 保持一致（模块源在那里，
-// 供离线测试直接 import；这里内联一份给页面用）。test-admin.mjs 断言两边等价。
-function kindBadge(kind) {
-  if (kind === 'app') return { label: '机器人', cls: 'blue' }
-  if (kind === 'user') return { label: '人类', cls: 'green' }
-  return { label: '未知', cls: 'gray' }
-}
-
-function buildPeople({ contacts, allowlist, listen, names } = {}) {
+// buildPeople 的实现与 admin/entries.js 保持一致（模块源在那里，供离线测试直接
+// import；这里内联一份给页面用）。test-admin.mjs 断言两边等价。
+function buildPeople({ allowlist, listen, names } = {}) {
   const allow = new Set(Array.isArray(allowlist) ? allowlist : [])
   const lis = new Set(Array.isArray(listen) ? listen : [])
   const cfgNames = names && typeof names === 'object' && !Array.isArray(names) ? names : {}
-  const con = contacts && typeof contacts === 'object' && !Array.isArray(contacts) ? contacts : {}
-  const ids = new Set([...allow, ...lis, ...Object.keys(cfgNames), ...Object.keys(con)])
+  const ids = new Set([...allow, ...lis, ...Object.keys(cfgNames)])
   const rows = []
   for (const id of ids) {
-    const c = con[id] || {}
     const allowedVia = allow.has(id) ? 'manual' : lis.has(id) ? 'listen' : null
-    const nameSource = cfgNames[id] ? 'cfg' : c.name ? 'auto' : ''
     rows.push({
       id,
-      name: cfgNames[id] || c.name || '',
-      nameSource,
-      kind: c.kind || '',
-      firstSeen: c.firstSeen || null,
+      name: cfgNames[id] || '',
+      nameSource: cfgNames[id] ? 'cfg' : '',
       allowed: Boolean(allowedVia),
       allowedVia,
-      inContacts: Boolean(c.name),
     })
   }
-  const rank = (r) => (r.allowedVia === 'manual' ? 0 : r.allowedVia === 'listen' ? 1 : r.inContacts ? 2 : 3)
-  rows.sort((a, b) => rank(a) - rank(b) || (b.firstSeen || 0) - (a.firstSeen || 0))
+  const rank = (r) => (r.allowedVia === 'manual' ? 0 : r.allowedVia === 'listen' ? 1 : 2)
+  rows.sort((a, b) => rank(a) - rank(b))
   return rows
 }
 
 // ---------- 飞书应用 ----------
 // 主表行模型由 admin/entries.js 的 buildPeople() 派生（可测纯函数）：
-// contacts（认识层，只读）+ allowlist / listen（许可层，并集）+ names（名字声明）
-// 合成「一个体一行」。放行语义与 src/handler.js 的 isAllowed() 一致。
+// allowlist / listen（放行，并集）+ names（名字声明）合成「一个体一行」。
+// 三个数据源都是人手动维护的，放行语义与 src/handler.js 的 isAllowed() 一致。
 
 let fsPeople = []   // 当前实例的行模型，行内编辑据此重渲
 
@@ -937,36 +925,32 @@ async function loadFeishuTab() {
 function renderPeople(json) {
   const cfg = json.config || {}
   fsPeople = buildPeople({
-    contacts: json.state?.contacts,
     allowlist: cfg.feishu?.allowlist,
     listen: cfg.feishu?.listen,
     names: cfg.feishu?.names,
   })
   drawPeople()
 
-  // 摘要行：放行几个（手写 + 开关）、认识几个。空表时把闸门真实语义说清楚
+  // 摘要行：放行几个（手写 + 开关）。空表时把闸门真实语义说清楚
   const manual = fsPeople.filter((r) => r.allowedVia === 'manual').length
   const viaListen = fsPeople.filter((r) => r.allowedVia === 'listen').length
-  const known = fsPeople.filter((r) => r.inContacts).length
   if (!fsPeople.length) {
     $('fs-gate-summary').innerHTML =
       '<span class="err">当前不限制：任何人的 @ 都能唤醒这个机器人。</span>在下面加一行开始限制。'
   } else {
     $('fs-gate-summary').textContent =
-      `放行 ${manual + viaListen} 个（手写白名单 ${manual} + 开关 ${viaListen}）　认识 ${known} 个（被 @ 过自动记下）`
+      `放行 ${manual + viaListen} 个（手写白名单 ${manual} + 开关 ${viaListen}）`
   }
 }
 
 function drawPeople() {
   const rows = fsPeople.map((r) => {
-    const kb = kindBadge(r.kind)
     const nameCell = r.name
       ? esc(r.name) + nameSourceBadge(r.nameSource)
       : '<span class="dim">（群里显示 open_id）</span>'
-    const first = r.firstSeen ? new Date(r.firstSeen).toLocaleString('zh-CN', { hour12: false }) : '\u2014'
     // 放行状态的呈现：开关本身表达「能否唤醒」，手写行额外给一个徽章说明来源
-    // 有人工配置（白名单 / listen / 名字声明）才给「移除」：纯通讯录条目是
-    // 运行时自动攒的事实，不给删——删了下次被 @ 还会回来，给了反而误导
+    // 有人工配置（白名单 / listen / 名字声明）才给「移除」：这一整张表本来就是
+    // 人手动维护的，每个条目都该能删掉
     const managed = (r) => r.allowedVia === 'manual' || r.allowedVia === 'listen' || r.nameSource === 'cfg'
     const gate = '<label class="switch" title="' +
       (r.allowed ? '已放行：它的 @ 能唤醒这个机器人' : '未放行：它的 @ 到不了这个机器人') + '">' +
@@ -977,7 +961,6 @@ function drawPeople() {
     return '<tr>' +
       '<td>' + nameCell + '</td>' +
       '<td class="mono">' + esc(r.id) + '</td>' +
-      '<td><span class="badge ' + kb.cls + '"><span class="dot ' + kb.cls + '"></span>' + kb.label + '</span></td>' +
       '<td>' + gate + '</td>' +
       '<td class="row">' +
         '<button class="btn" onclick="startNameEdit(\'' + esc(r.id) + '\')">改名</button>' +
@@ -988,13 +971,12 @@ function drawPeople() {
     '</tr>'
   }).join('')
   $('fs-allow').querySelector('tbody').innerHTML =
-    rows || '<tr><td colspan="5" class="dim">表是空的。任何人被 @ 过都会自动出现在这里。</td></tr>'
+    rows || '<tr><td colspan="4" class="dim">表是空的。在下面加一行开始限制。</td></tr>'
 }
 
-/** 名字来源徽章：让用户看出这个名字是人工声明的还是自动攒到的 */
+/** 名字来源徽章：这一张表里所有名字都是人声明的 */
 function nameSourceBadge(source) {
   if (source === 'cfg') return ' <span class="badge green"><span class="dot green"></span>我声明的</span>'
-  if (source === 'auto') return ' <span class="badge gray">自动攒的</span>'
   return ''
 }
 
@@ -1007,22 +989,21 @@ function startNameEdit(openId) {
   const idx = fsPeople.indexOf(row)
   const tr = $('fs-allow').querySelectorAll('tbody tr')[idx]
   if (!tr) return
-  const kb = kindBadge(row.kind)
   tr.cells[0].innerHTML =
     '<input type="text" id="name-edit-' + esc(openId) + '" value="' + esc(row.name) +
     '" placeholder="（留空 = 群里显示 open_id）" style="max-width:200px">'
-  tr.cells[4].innerHTML =
+  tr.cells[3].innerHTML =
     '<button class="btn primary" onclick="saveNameEdit(\'' + esc(openId) + '\')">保存</button>' +
     '<button class="btn" onclick="drawPeople()">取消</button>'
   $('name-edit-' + openId).focus()
 }
 
-/** 保存行内改名。空值 = 删除声明，回落到自动攒到的名字 */
+/** 保存行内改名。空值 = 删除声明，之后群里只显示 open_id */
 async function saveNameEdit(openId) {
   const displayName = ($('name-edit-' + openId)?.value || '').trim()
   try {
     await postName($('fs-instance').value, { op: displayName ? 'set' : 'remove', openId, name: displayName })
-    setFsMsg('名字已保存' + (displayName ? '' : '（声明已删除，回落到自动攒到的名字）') + '。重启实例后生效。')
+    setFsMsg('名字已保存' + (displayName ? '' : '（声明已删除，群里改为只显示 open_id）') + '。重启实例后生效。')
     await loadFeishuTab()
   } catch (err) {
     setFsMsg('保存失败: ' + err.message, true)
@@ -1093,12 +1074,10 @@ async function addAllow() {
 
 /**
  * 移除一个个体。三个名单一起删，条目才真的从表上消失：
- * 只删白名单的话，名字声明（names）或通讯录（contacts）会让同一行继续留在
- * 「并集」表里，用户看到的就是「点了移除，条目还在」——实测过的困惑。
+ * 只删白名单的话，名字声明（names）或 listen 会让同一行继续留在「并集」
+ * 表里，用户看到的就是「点了移除，条目还在」——实测过的困惑。
  *
- * 通讯录条目删不掉也不该删：那是运行时自动攒的事实（被 @ 过就会记下），
- * 下次它再被 @ 还会回来。所以移除后若那一行仍在，是通讯录还在记着它，
- * 开关是关的，它的 @ 到不了这个机器人。
+ * 这一张表三个数据源全是人手动维护的，所以每个条目都该能删干净。
  */
 async function removePerson(openId) {
   if (!confirm(

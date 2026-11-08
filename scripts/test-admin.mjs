@@ -404,71 +404,25 @@ try {
   ok(!('ou_a' in applyNameRemove({ ou_a: 'x' }, 'ou_a')), '移除名字声明')
   ok(!('ou_z' in applyNameRemove({ ou_a: 'x' }, 'ou_z')), '移除不存在的名字声明原样返回')
 
-  ok(effectiveName({ ou_a: '声明' }, { ou_a: '攒到' }, 'ou_a') === '声明', '生效名字以配置声明优先')
-  ok(effectiveName({}, { ou_a: '攒到' }, 'ou_a') === '攒到', '没有声明时用攒到的名字')
-  ok(effectiveName({}, {}, 'ou_a') === '', '两者都没有时为空')
-  // 生效名字的顺序必须和 src/handler.js 的 nameOf() 一致：后台显示的即是卡片上显示的
+  ok(effectiveName({ ou_a: '声明' }, 'ou_a') === '声明', '生效名字取配置声明')
+  ok(effectiveName({}, 'ou_a') === '', '没有声明时为空')
+  // 生效名字必须和 src/handler.js 的 nameOf() 一致：后台显示的即是卡片上显示的
   const handlerSrc = await import('node:fs').then((fs) =>
     fs.readFileSync(join(REPO, 'src', 'handler.js'), 'utf8'),
   )
   ok(
-    /cfg\.feishu\?\.names\?\.\[openId\] \|\| this\.store\.getName\?\.\(openId\)/.test(handlerSrc),
-    '生效名字顺序与 handler.js 的 nameOf() 一致',
+    /cfg\.feishu\?\.names\?\.\[openId\] \|\| ''/.test(handlerSrc),
+    '生效名字与 handler.js 的 nameOf() 一致（唯一来源是配置声明）',
   )
 
-  // 7b. 通讯录与 listen：store 的入册 / 类型补充 / 旧数据迁移，闸门并集
+  // 7b. 放行闸门与旧数据清理：allowlist ∪ listen，通讯录已下线
   {
     const { Store } = await import(join(REPO, 'src', 'store.js'))
-    const dir = mkdtempSync(join(tmpdir(), 'ocb-contacts-'))
+    const { Bridge } = await import(join(REPO, 'src', 'handler.js'))
+    const dir = mkdtempSync(join(tmpdir(), 'ocb-gate-'))
     const st = new Store(join(dir, 'state.json'))
 
-    // 入册只认被 @：有名字才建册
-    st.learnContact('ou_lilp', 'Lil_P')
-    ok(st.getName('ou_lilp') === 'Lil_P', '被 @ 到就入册，名字可查')
-    st.learnContact('ou_noname', '')
-    ok(!st.data.contacts?.['ou_noname'], '没有名字的 mention 不建册')
-    ok(st.getName('ou_noname') === '', '查不到的 id 返回空串')
-
-    // 类型补充：只更新已入册的，不建册
-    st.markContactKind('ou_lilp', 'app')
-    ok(st.data.contacts['ou_lilp'].kind === 'app', '类型补进已入册条目')
-    st.markContactKind('ou_never_seen', 'app')
-    ok(!st.data.contacts?.['ou_never_seen'], '类型补充不给没见过的 id 建册')
-    st.markContactKind('ou_lilp', 'user')
-    ok(st.data.contacts['ou_lilp'].kind === 'user', '类型可被后续消息更正')
-
-    // 时间戳：只记首次见到，不记最近见到（admin 通讯录只看「什么时候认识的」）
-    const firstSeen = st.data.contacts['ou_lilp'].firstSeen
-    await new Promise((r) => setTimeout(r, 5))
-    st.learnContact('ou_lilp', 'Lil_P')
-    ok(st.data.contacts['ou_lilp'].firstSeen === firstSeen, '重复见到不翻新首次时间')
-    ok(!('lastSeen' in st.data.contacts['ou_lilp']), '不再记录最近见到时间')
-
-    // 自己不入册：桥接解析出自身 open_id 时清掉存量里的「自己」
-    st.dropContact('ou_lilp')
-    ok(!st.data.contacts['ou_lilp'], 'dropContact 把自己清出通讯录')
-    ok(st.getName('ou_lilp') === '', '清掉后名字查不到')
-    st.dropContact('ou_not_there')
-    ok(true, 'dropContact 对不存在的 id 安全返回')
-
-    // 重新入册，供后面的闸门断言使用
-    st.learnContact('ou_lilp', 'Lil_P')
-
-    // 通讯录全量下发（admin 面板数据源）不带 lastSeen
-    const list = st.contactList()
-    ok(list.every((c) => !('lastSeen' in c)), 'contactList 不下发 lastSeen')
-    ok(list[0]?.openId && list[0]?.firstSeen, 'contactList 带 openId 与 firstSeen')
-
-    // 旧版平铺 names 迁移
-    const legacy = join(dir, 'legacy.json')
-    writeFileSync(legacy, JSON.stringify({ version: 1, chats: {}, names: { ou_old: '老名字' } }))
-    const st2 = new Store(legacy)
-    ok(st2.getName('ou_old') === '老名字', '旧版平铺 names 迁移后可查')
-    ok(st2.data.contacts?.['ou_old']?.name === '老名字', '迁移落进 contacts 结构')
-    ok(!st2.data.names, '迁移后旧的平铺字段被清掉')
-
     // 闸门：allowlist 与 listen 并集，单向下放行的是「它的 @」
-    const { Bridge } = await import(join(REPO, 'src', 'handler.js'))
     const mkBridge = (feishu) =>
       new Bridge({
         oc: {}, store: st, config: { behavior: {}, feishu },
@@ -485,36 +439,45 @@ try {
     )
     const listenOnly = mkBridge({ allowlist: ['ou_human'], listen: [] })
     ok(listenOnly.isAllowed('ou_human') && !listenOnly.isAllowed('ou_lilp'), '只配 allowlist 时 listen 不放行')
-    // 通讯录里「认识」不等于「许可」：入册了但没进 listen 的，闸门照样挡
-    st.learnContact('ou_acquaintance', '只认识')
-    ok(
-      st.data.contacts['ou_acquaintance'] && !both.isAllowed('ou_acquaintance'),
-      '通讯录里认识但没放行的个体，闸门照样挡',
-    )
+
+    // 名字唯一来源是配置声明：store 里不再缓存任何名字
+    ok(mkBridge({ names: { ou_human: '邱琪光' } }).nameOf('ou_human') === '邱琪光', 'nameOf 读配置声明')
+    ok(mkBridge({ names: {} }).nameOf('ou_human') === '', '没有声明时 nameOf 为空')
+
+    // 旧版平铺 names 与已下线的 contacts 通讯录，启动时清存量
+    const legacy = join(dir, 'legacy.json')
+    writeFileSync(legacy, JSON.stringify({
+      version: 1, chats: {},
+      names: { ou_old: '老名字' },
+      contacts: { ou_old: { name: '老名字', kind: 'user', firstSeen: 1 } },
+    }))
+    const st2 = new Store(legacy)
+    ok(!st2.data.names, '启动时清掉旧版平铺 names')
+    ok(!st2.data.contacts, '启动时清掉已下线的 contacts 通讯录')
 
     rmSync(dir, { recursive: true, force: true })
   }
 
-  // 7c. 主表行模型 buildPeople：四源取并集、放行分流、排序
+  // 7c. 主表行模型 buildPeople：三源取并集、放行分流、排序
   {
-    const { buildPeople, kindBadge } = await import(join(REPO, 'admin', 'entries.js'))
+    const { buildPeople } = await import(join(REPO, 'admin', 'entries.js'))
     const people = buildPeople({
-      contacts: { ou_a: { name: '小A', kind: 'app', firstSeen: 100 },
-                  ou_b: { name: '小B', kind: 'user', firstSeen: 200 } },
       allowlist: ['ou_a'],
       listen: ['ou_c'],
       names: { ou_d: '手写D' },
     })
     const byId = Object.fromEntries(people.map((p) => [p.id, p]))
-    ok(people.length === 4, '四个数据源取并集，一个体一行')
+    ok(people.length === 3, '三个数据源取并集，一个体一行')
     ok(byId.ou_a.allowed && byId.ou_a.allowedVia === 'manual', 'allowlist 里的个体放行来源是手写')
     ok(byId.ou_c.allowed && byId.ou_c.allowedVia === 'listen', 'listen 里的个体放行来源是开关')
-    ok(!byId.ou_b.allowed && byId.ou_b.inContacts, '只在通讯录里的个体：认识但放行')
-    ok(byId.ou_d.name === '手写D' && byId.ou_d.nameSource === 'cfg' && !byId.ou_d.inContacts, '纯 names 声明也有一行')
-    ok(byId.ou_a.nameSource === 'auto' && byId.ou_b.nameSource === 'auto', '通讯录名字标记为自动攒的')
-    ok(people[0].id === 'ou_a' && people[1].id === 'ou_c', '放行行置顶，手写先于开关')
-    ok(kindBadge('app').label === '机器人' && kindBadge('user').label === '人类', '类型徽章分人/机器人')
-    ok(kindBadge('').label === '未知', '没有类型信息时是未知')
+    ok(byId.ou_d.name === '手写D' && byId.ou_d.nameSource === 'cfg' && !byId.ou_d.allowed, '纯 names 声明也有一行')
+    ok(!byId.ou_a.name && byId.ou_a.nameSource === '', '没有名字声明时名字为空')
+    ok(people[0].id === 'ou_a' && people[1].id === 'ou_c' && people[2].id === 'ou_d', '放行行置顶，手写先于开关')
+    // 并集语义必须和 src/handler.js 的 isAllowed() 一致
+    ok(
+      /allow\.includes\(userId\) \|\| listen\.includes\(userId\)/.test(handlerSrc),
+      '并集放行语义与 handler.js 的 isAllowed() 一致',
+    )
     // 与页面内联副本必须等价：页面是给浏览器用的，模块源是给测试用的，
     // 两边漂移就会出现「后台显示的和实际逻辑不同」。用文本断言钉住关键语义
     // （不动态执行页面代码——本地后台也不该在测试里跑任意 JS）
@@ -522,13 +485,15 @@ try {
       fs.readFileSync(join(REPO, 'admin', 'public', 'index.html'), 'utf8'),
     )
     ok(/function buildPeople\(/.test(html), '页面内联了 buildPeople（与 entries.js 同源）')
-    ok(/function kindBadge\(/.test(html), '页面内联了 kindBadge')
+    ok(!/function kindBadge\(/.test(html), '页面不再内联 kindBadge（通讯录下线后没有类型数据）')
     const inlineFn = html.match(/function buildPeople\([\s\S]*?\n\}/)[0]
     ok(inlineFn.includes('allow.has(id)'), '内联副本按 allowlist 判手写放行')
     ok(inlineFn.includes("lis.has(id) ? 'listen'"), '内联副本按 listen 判开关放行')
     ok(inlineFn.includes('rank(a) - rank(b)'), '内联副本用同一套排序规则')
+    ok(!inlineFn.includes('contacts'), '内联副本不再读 contacts')
     ok(html.includes('fs-gate-summary'), '页面有闸门摘要行')
     ok(html.includes('当前不限制'), '空表时把闸门真实语义（不限制）说清楚')
+    ok(!html.includes('自动攒'), '页面文案不再提已下线的自动攒通讯录')
     ok(!/\u{1f916}/.test(html), '通讯录不再用 emoji 图标（设计规范禁用）')
   }
 

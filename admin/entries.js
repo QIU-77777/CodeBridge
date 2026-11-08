@@ -47,7 +47,7 @@ export function applyAllowlistRemove(list, openId) {
 
 /**
  * 写一条名字。空名字视为清除声明：删掉这个 open_id 的覆盖项，之后生效名字
- * 回落到从 @ 提及里自动攒到的那一个。入参不是对象时按空表处理。
+ * 为空。入参不是对象时按空表处理。
  */
 export function applyNameSet(names, openId, name) {
   const out = names && typeof names === 'object' && !Array.isArray(names) ? { ...names } : {}
@@ -66,64 +66,53 @@ export function applyNameRemove(names, openId) {
 }
 
 /**
- * 生效名字：配置里人工声明的优先，其次从 @ 提及里自动攒到的，最后为空。
+ * 生效名字：配置里人工声明的那个，没有就是空。
  *
  * 顺序必须和 src/handler.js 的 nameOf() 一致：那边决定飞书卡片上显示什么，
- * 管理后台显示的必须是同一个值。两边顺序不同，用户就会在后台看到一个
+ * 管理后台显示的必须是同一个值。两边不同，用户就会在后台看到一个
  * 卡片上并不显示的名字。
  */
-export function effectiveName(configNames, stateNames, openId) {
-  const id = String(openId ?? '')
-  return configNames?.[id] || stateNames?.[id] || ''
+export function effectiveName(configNames, openId) {
+  return configNames?.[String(openId ?? '')] || ''
 }
 
 /**
  * 「谁能唤醒它」主表的行视图模型。
  *
  * 后台原本是三张表（allowlist / names / contacts），同一个实体在三处各出现一次，
- * 用户分不清哪张表是权威源。这里在入口处把四个数据源取并集，派生出「一个体一行」
+ * 用户分不清哪张表是权威源。这里把三个配置数据源取并集，派生出「一个体一行」
  * 的视图：
  *
- *   contacts —— 运行时自动攒的认识层（state.json，只读）
  *   allowlist —— 手写白名单（config）
  *   listen   —— 通讯录面板的开关（config）
  *   names    —— 手写名字声明（config）
  *
+ * 三者都是人手动维护的。以前还有第四源 contacts（运行时自动攒的认识层），
+ * 已下线：自动攒出来的 open_id 用不上（放行名单是人手写的），攒得越多越像
+ * 一份查不到重点的档案。
+ *
  * 放行语义与 src/handler.js 的 isAllowed() 一致：allowlist ∪ listen 取并集。
  * allowedVia 标明这个放行来自哪张名单，界面据此决定移除时该动哪个端点。
  */
-export function buildPeople({ contacts, allowlist, listen, names } = {}) {
+export function buildPeople({ allowlist, listen, names } = {}) {
   const allow = new Set(Array.isArray(allowlist) ? allowlist : [])
   const lis = new Set(Array.isArray(listen) ? listen : [])
   const cfgNames = names && typeof names === 'object' && !Array.isArray(names) ? names : {}
-  const con = contacts && typeof contacts === 'object' && !Array.isArray(contacts) ? contacts : {}
 
-  const ids = new Set([...allow, ...lis, ...Object.keys(cfgNames), ...Object.keys(con)])
+  const ids = new Set([...allow, ...lis, ...Object.keys(cfgNames)])
   const rows = []
   for (const id of ids) {
-    const c = con[id] || {}
     const allowedVia = allow.has(id) ? 'manual' : lis.has(id) ? 'listen' : null
-    const nameSource = cfgNames[id] ? 'cfg' : c.name ? 'auto' : ''
     rows.push({
       id,
-      name: cfgNames[id] || c.name || '',
-      nameSource,
-      kind: c.kind || '',
-      firstSeen: c.firstSeen || null,
+      name: cfgNames[id] || '',
+      nameSource: cfgNames[id] ? 'cfg' : '',
       allowed: Boolean(allowedVia),
       allowedVia,
-      inContacts: Boolean(c.name),
     })
   }
-  // 放行的置顶（手写先于开关），其余按认识时间倒序，纯 names 声明垫底
-  const rank = (r) => (r.allowedVia === 'manual' ? 0 : r.allowedVia === 'listen' ? 1 : r.inContacts ? 2 : 3)
-  rows.sort((a, b) => rank(a) - rank(b) || (b.firstSeen || 0) - (a.firstSeen || 0))
+  // 放行的置顶（手写先于开关），纯 names 声明垫底
+  const rank = (r) => (r.allowedVia === 'manual' ? 0 : r.allowedVia === 'listen' ? 1 : 2)
+  rows.sort((a, b) => rank(a) - rank(b))
   return rows
-}
-
-/** 类型徽章的文字与配色类。设计规范禁 emoji，用圆点加文字标签 */
-export function kindBadge(kind) {
-  if (kind === 'app') return { label: '机器人', cls: 'blue' }
-  if (kind === 'user') return { label: '人类', cls: 'green' }
-  return { label: '未知', cls: 'gray' }
 }
