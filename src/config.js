@@ -29,7 +29,7 @@ export const STATE_PATH = join(CONFIG_DIR, 'state.json')
 /** 入库的模板，只有占位符；首次运行照它生成 config.json */
 export const TEMPLATE_PATH = join(REPO, 'config.example.json')
 
-const DEFAULTS = {
+export const DEFAULTS = {
   backend: {
     // opencode = 常驻 HTTP + SSE 流式；pi = 一次性子进程，跑完发一张结果卡片。
     // 每起一个机器人就复制一份 config.json，把 type 和 appId 一起换掉。
@@ -111,7 +111,10 @@ const DEFAULTS = {
     // 单次卡片正文最大字符数
     maxBodyChars: 6000,
     // 超时多久（毫秒）认为执行卡死
-    idleTimeoutMs: 15 * 60 * 1000,
+    // 事件流静默多久判定卡死（毫秒）。0 = 关闭。卡片停在「执行中」比
+    // 报错更难发现，所以默认 2 分钟：实测一次模型流在 7 秒后断掉，
+    // 会话留在 busy 状态，15 分钟的阈值让卡片挂了 16 分钟没人发现
+    idleTimeoutMs: 2 * 60 * 1000,
     // 同时最多跑几个任务（群里每个话题是一个独立会话，彼此并行）。
     // 设 0 = 不限。每个会话都在真跑 bash/node，开太多会打满本机，建议 2–3
     maxParallel: 2,

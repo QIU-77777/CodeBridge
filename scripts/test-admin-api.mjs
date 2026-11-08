@@ -176,6 +176,39 @@ try {
     ).status === 405,
     'backends 接口只接受 GET',
   )
+  // serve 密码变更必须提示重启 serve：serve 是长跑进程，启动时把密码读进
+  // 自己的环境，之后改配置不会跟着变。不提示的话用户以为改完就生效，而桥接
+  // 拿着新密码连旧 serve，全程 401——现象是「毫无反应」而不是报错
+  {
+    const put = async (body) => {
+      const res = await fetch(`${BASE}/api/instances/${NAME}/config`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'X-OCB-Admin': '1' },
+        body: JSON.stringify(body),
+      })
+      return { status: res.status, json: await res.json().catch(() => ({})) }
+    }
+    const cur = readCfg()
+
+    // 留空 = 保持原值，且不触发重启提示
+    let r = await put({ opencode: { password: '' } })
+    ok(r.status === 200 && !r.json.notice, 'serve 密码留空保存不触发重启提示')
+    ok(readCfg().opencode.password === cur.opencode.password, '留空时原密码保持不变')
+
+    // 真改了才提示
+    r = await put({ opencode: { password: 'new-secret-value' } })
+    ok(r.status === 200 && readCfg().opencode.password === 'new-secret-value', '新密码写入配置')
+    ok(
+      /重启 serve/.test(r.json.notice || ''),
+      '密码变更时提示需要重启 serve',
+      r.json.notice,
+    )
+
+    // 掩码值（********）等于没改，同样不提示
+    r = await put({ opencode: { password: '********' } })
+    ok(r.status === 200 && !r.json.notice, '掩码密码不触发重启提示')
+    ok(readCfg().opencode.password === 'new-secret-value', '掩码值时原密码不被冲掉')
+  }
 } catch (err) {
   fail++
   console.log(`❌ 测试本身出错: ${err.stack || err.message}`)

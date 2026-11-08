@@ -274,6 +274,7 @@ for (const [name, card] of Object.entries({
 // ---------- 3. 看门狗（idleTimeout） ----------
 {
   const { Bridge } = await import('../src/handler.js')
+  const { DEFAULTS } = await import('../src/config.js')
   const b = new Bridge({
     oc: {},
     store: {},
@@ -300,6 +301,20 @@ for (const [name, card] of Object.entries({
   ok(fresh.status === 'running', '看门狗不动还在活动的 run', fresh.status)
   ok(/15 分钟/.test(stale.error?.message || ''), '错误信息里写明超时时长')
   ok(!flushed.includes('ses_fresh'), '活跃 run 没被误收尾')
+
+  // 默认 2 分钟：实测一次模型流 7 秒后断掉、会话留在 busy，15 分钟的阈值
+  // 让卡片在「执行中」挂了 16 分钟没人发现
+  ok(DEFAULTS.behavior.idleTimeoutMs === 2 * 60 * 1000, '默认空闲阈值 2 分钟')
+  ok(/2 分钟/.test((() => {
+    const b2 = new Bridge({ oc: {}, store: {}, config: { behavior: { idleTimeoutMs: 120000 } }, transport: {}, logger: { info() {}, warn() {}, error() {} } })
+    const s = new RunState('ses_x')
+    s.status = 'running'
+    s.updatedAt = Date.now() - 3 * 60 * 1000
+    b2.runs.set('ses_x', { state: s, cardId: 'c', chatId: 'x', meta: {} })
+    b2.flushRun = () => {}
+    b2.checkIdle(120000)
+    return s.error?.message || ''
+  })()), '2 分钟阈值的错误信息写 2 分钟')
 }
 
 // ---------- 4. 真实发送 + patch ----------

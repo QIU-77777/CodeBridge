@@ -36,6 +36,17 @@ export class OpencodeClient {
     }
     if (!res.ok) {
       const msg = json?.message || json?.error?.message || text.slice(0, 300)
+      // 401 单独说清楚：这一种的成因几乎是「serve 带着旧密码在跑，配置里的
+      // 密码变了或被清空」。serve 是长跑进程，密码启动时定格在它的环境里，
+      // 之后改配置不会跟着变——两边一不一致，桥接就全程 401，而现象是
+      // 「毫无反应」而不是报错
+      if (res.status === 401) {
+        throw new Error(
+          `opencode 认证失败（401）：配置里的 opencode.password 与 serve 实际使用的不一致。` +
+            `serve 启动时把密码定格在进程环境里，之后改配置不会生效——重启 serve 让两边一致：` +
+            `launchctl kickstart -k gui/501/$(launchctl list | grep -o 'ai.qiguang.ocbridge.serve' | head -1)`,
+        )
+      }
       const err = new Error(`${method} ${path} -> ${res.status}: ${msg}`)
       err.status = res.status
       err.body = json
