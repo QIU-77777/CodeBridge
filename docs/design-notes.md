@@ -483,6 +483,8 @@ key = root:<root_id || message_id>
 
 第二行是协作要用的全部 id。飞书里 agent 之间的每一次互动都要落到具体的 chat / thread / message 上：@ 唤醒别人要 `chat_id`（`msg send --receive-id`），拉话题历史要 `thread_id`（`msg thread-messages`），回话题里发言要 root 消息 id（`msg reply`），精确回复本条要 `msg id`，`self` 是自己的 open_id。这些 id 事件里全都有，但早期只往下传了一个 `thread`——真实事故里 agent 为了拿到话题根消息 id，先去翻 `logs/bridge.log`，又去读 `store.js` 反推绑定键格式，白烧十几步。现在一次性给全，`logs/bridge.log` 退回纯排障用途。
 
+「在不在话题里」的判据是 `thread_id`，不是 `root_id`。飞书对**任何**回复都返回 `root_id`（指向被引用的那条），主聊天流里一句普通的引用回复同样带 `root_id`；只有真话题消息才带 `thread_id`。用 `root_id` 判会把主聊天流的引用回复标成「话题内」，`thread` 一行还会拿到 `om_` 消息 id，模型照着跑 `msg thread-messages` 必然失败。这条判据同时管 `scope` 与 `ids` 两行；会话绑定键（`root:${rootId}`）仍按 `root_id` 算，那是另一套语义——同一被回复消息下的对话算一个会话，与位置标注无关。
+
 第四行的同伴 id 来自配置里的 `feishu.names`。open_id 按应用隔离：我眼里 Lil_O 的 id 和 Lil_O 眼里自己的 id 不是同一个值，所以这里给的必须是「本应用视角」的那一个，也正是 @ 唤醒时要传的值。
 
 成本控制：群名走 `/im/v1/chats/:chat_id` 且缓存，一条消息一次接口太贵；没权限就静默降级成「群聊」。发送者名字要 `im:chat.members:read`，默认没开，所以只给 open_id——够用，因为真正需要名字的是人，而人已经和 open_id 绑定在 allowlist 里了。

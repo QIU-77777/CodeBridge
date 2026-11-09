@@ -368,9 +368,11 @@ export class FeishuTransport {
         : a.sender.unknown
     // 可@的同伴：来源只有配置里的 feishu.names。open_id 按应用隔离——我眼里
     // Lil_O 的 id 和 Lil_O 眼里自己的 id 不是同一个值，所以这里给的必须是
-    // 「本应用视角」的那一个，也正是 @ 唤醒时要传的值
+    // 「本应用视角」的那一个，也正是 @ 唤醒时要传的值。按 id 排自己；自身
+    // open_id 没拿到时（bot/v3/info 失败且没配 botOpenId）退一级按名字排，
+    // 否则名单里会有自己，@ 自己会直接起循环
     const peers = Object.entries(this.cfg.names || {})
-      .filter(([id]) => id && id !== self?.open_id)
+      .filter(([id, name]) => id && id !== self?.open_id && name !== self?.name)
       .map(([id, name]) => `${name || '?'}=${id}`)
       .join(' · ')
     // 变量一次备齐，每个模板自己取所需：实例覆盖了某个模板时，不会因为
@@ -378,7 +380,7 @@ export class FeishuTransport {
     const vars = {
       name: chatName,
       chat: m.chat_id || '',
-      thread: m.thread_id || m.root_id || '',
+      thread: m.thread_id || '',
       root: m.root_id || '',
       msg: m.message_id || '',
       self: self?.open_id || '未知',
@@ -392,23 +394,23 @@ export class FeishuTransport {
         ? render(a.where.groupNamed, vars)
         : a.where.groupFallback
       : a.where.private
-    // 会话 id 是溯源主键：话题内带 thread_id（omt_ 开头），拿不到时退
-    // root_id——话题根消息一定带 thread_id，agent 读到根消息能顺到话题；
-    // 主聊天流带 chat_id（没有 thread_id 可用）。id 本身在下面的 ids 行
+    // 会话 id 是溯源主键：只有真话题消息才带 thread_id。root_id 在任何回复
+    // 场景都会返回——主聊天流里一句普通的引用回复也带 root_id（指向被引用的
+    // 那条），拿它当「在话题里」的判据会把主聊天流的回复误标成话题内，thread
+    // 一行还会拿到 om_ 消息 id，模型照着跑 msg thread-messages 必然失败。所以
+    // 位置与 id 的判定一律看 thread_id；id 本身在下面的 ids 行
+    const inThread = isGroup && Boolean(m.thread_id)
     vars.where = where
-    vars.scope = isGroup
-      ? m.root_id
-        ? render(a.scope.thread, vars)
-        : render(a.scope.main, vars)
-      : ''
+    vars.scope = isGroup ? render(inThread ? a.scope.thread : a.scope.main, vars) : ''
 
     const origin = isGroup ? render(a.origin.group, vars) : render(a.origin.private, vars)
     const ids = isGroup
-      ? m.root_id
+      ? inThread
         ? render(a.ids.thread, vars)
         : render(a.ids.main, vars)
       : render(a.ids.private, vars)
-    const peersLine = peers ? render(a.peers.list, vars) : a.peers.empty || ''
+    // 私聊里没有群可 @，同伴行是死信息，不拼
+    const peersLine = isGroup && peers ? render(a.peers.list, vars) : a.peers.empty || ''
     // 身份行：告诉模型「你是谁」。多机器人同机时，代理用飞书 CLI 发言读的是
     // 机器级配置，默认应用可能是别的实例的——真实事故里 Lil_P 的代理发出的
     // 问候以 Lil_O 的应用到达群里。声明身份之外，pi 后端的桥接还会把本实例

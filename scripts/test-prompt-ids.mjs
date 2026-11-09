@@ -101,7 +101,32 @@ const threadMsg = {
   ok(!/\{\{/.test(p), '主聊天流：没有未替换的占位符', p)
 }
 
-// ---------- 3. 私聊：只有 msg 与 self ----------
+// ---------- 2b. 主聊天流里的引用回复：root_id 有值、thread_id 缺失 ----------
+// 真实事故形态：飞书对任何回复都返回 root_id（指向被引用的那条），只有真话题
+// 消息才带 thread_id。拿 root_id 当「在话题里」的判据，会把这种消息标成话题内，
+// thread 一行还会拿到 om_ 消息 id，模型照着跑 msg thread-messages 必然失败。
+{
+  const t = makeTransport()
+  const p = t.buildPrefix({
+    m: {
+      chat_id: 'oc_chat1',
+      chat_type: 'group',
+      root_id: 'om_replied1',
+      message_id: 'om_msg2b',
+      create_time: WHEN,
+    },
+    self: SELF,
+    userId: 'ou_human',
+  })
+  ok(p.includes('主聊天流'), '引用回复：位置是主聊天流，不是话题内', p)
+  ok(!p.includes('话题内'), '引用回复：不标成话题内', p)
+  ok(!p.includes('thread'), '引用回复：没有 thread 段（thread_id 缺失）', p)
+  ok(!p.includes('root'), '引用回复：没有 root 段', p)
+  ok(p.includes('chat oc_chat1') && p.includes('msg om_msg2b'), '引用回复：chat 与 msg 照常', p)
+  ok(!/\{\{/.test(p), '引用回复：没有未替换的占位符', p)
+}
+
+// ---------- 3. 私聊：只有 msg 与 self，不拼同伴行 ----------
 {
   const t = makeTransport()
   const p = t.buildPrefix({
@@ -112,6 +137,7 @@ const threadMsg = {
   ok(p.includes('msg om_msg3') && p.includes('self ou_me'), '私聊：msg 与 self', p)
   ok(!p.includes('chat '), '私聊：没有 chat 段', p)
   ok(p.includes('私聊'), '私聊：位置描述', p)
+  ok(!p.includes('可@'), '私聊：没有群可 @，不拼同伴行', p)
   ok(!/\{\{/.test(p), '私聊：没有未替换的占位符', p)
 }
 
@@ -121,6 +147,18 @@ const threadMsg = {
   const p = t.buildPrefix({ m: threadMsg, self: { open_id: null, name: 'Lil_P' }, userId: 'ou_human' })
   ok(p.includes('self 未知'), '自身 id 缺失：显示未知', p)
   ok(!/\{\{/.test(p), '自身 id 缺失：没有未替换的占位符', p)
+  // 自身 id 拿不到时按名字排自己：names 里配了自己（同一个显示名）就不能进
+  // 可@ 名单，否则模型会 @ 自己，直接起循环
+  const withSelfName = t.buildPrefix({
+    m: threadMsg,
+    self: { open_id: null, name: 'Lil_P' },
+    userId: 'ou_human',
+  })
+  const cfgSelf = makeTransport({ names: { ou_peer: 'Lil_O', ou_me2: 'Lil_P' } })
+  const p2 = cfgSelf.buildPrefix({ m: threadMsg, self: { open_id: null, name: 'Lil_P' }, userId: 'ou_human' })
+  ok(p2.includes('Lil_O=ou_peer'), '自身 id 缺失：同伴照常列出', p2)
+  ok(!p2.includes('ou_me2'), '自身 id 缺失：同名自己不进可@ 名单', p2)
+  ok(withSelfName.includes('self 未知'), '自身 id 缺失：前缀仍带未知而不是空', withSelfName)
 }
 
 // ---------- 5. 没有 names：不输出同伴行 ----------

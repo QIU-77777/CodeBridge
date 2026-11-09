@@ -7,7 +7,7 @@
 - 配置与状态放在家目录，仓库内只保留不含密钥的模板 `config.example.json`。
 - 运行时依赖只有一个：`@larksuiteoapi/node-sdk`。
 
-![技术原理图](docs/images/structure.png)
+![技术原理图](docs/images/structure.jpeg)
 
 产品截图、卡片渲染细节与后台操作见下文各节，设计取舍见 [docs/design-notes.md](docs/design-notes.md)。
 
@@ -590,7 +590,7 @@ prompts.json
 | always | `always.identityApp` | 无（标量） | 配了 `appId` 才拼 | `appId` |
 | once | `once.rules` | 无（整段文本） | 只在群里、且是会话第一条消息 | 无 |
 
-`always.ids` 装的是**协作要用的全部 id**：`chat` 用于 `msg send --receive-id` @ 唤醒别人，`thread` 用于 `msg thread-messages` 拉话题历史，`root` 用于 `msg reply` 回到话题里发言，`msg` 用于精确回复本条，`self` 是自己的 open_id（@ 判定与自我介绍都要用）。这些 id 事件里全都有，早期只传了 `thread`，agent 每次协作都得先去 `logs/bridge.log` 里翻剩下的。`always.peers` 渲染 `feishu.names` 里声明的同伴，open_id 按应用隔离，这里给的必须是本应用视角的值。
+`always.ids` 装的是**协作要用的全部 id**：`chat` 用于 `msg send --receive-id` @ 唤醒别人，`thread` 用于 `msg thread-messages` 拉话题历史，`root` 用于 `msg reply` 回到话题里发言，`msg` 用于精确回复本条，`self` 是自己的 open_id（@ 判定与自我介绍都要用）。这些 id 事件里全都有，早期只传了 `thread`，agent 每次协作都得先去 `logs/bridge.log` 里翻剩下的。在不在话题里看 `thread_id`：飞书对任何回复都返回 `root_id`，主聊天流里一句普通引用回复也带 `root_id`，只有真话题消息才带 `thread_id`。`always.peers` 渲染 `feishu.names` 里声明的同伴，open_id 按应用隔离，这里给的必须是本应用视角的值；只在群里拼。
 
 | 组 | 何时发 | 装什么 |
 |---|---|---|
