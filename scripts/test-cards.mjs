@@ -803,6 +803,7 @@ if (process.argv.includes('--live')) {
         setInflight() {},
         clearInflight() {},
         queueLength: () => 0,
+        nextSessionSeq: () => 1,
       },
       config: { behavior: {}, opencode: { defaultDirectory: '/tmp' } },
       transport: { sendCard: async () => 'card_1', sendText: async () => {} },

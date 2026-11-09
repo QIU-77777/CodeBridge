@@ -652,7 +652,7 @@ prompts.json
 |---|---|
 | 直接发文本 | 发给当前绑定会话，没有绑定时自动创建 |
 | `/help` | 命令列表 |
-| `/new [目录]` | 新建会话并绑定 |
+| `/new [目录]` | 新建会话并绑定。默认名 `飞书·YYYYMMDD·新建会话n`，n 按天从 1 开始只增不减（删会话、重命名都不回收序号） |
 | `/sessions` | 会话列表卡片，点按钮切换 |
 | `/switch <序号\|id>` | 文本方式切换会话 |
 | `/rename <标题>` | 重命名当前会话 |
@@ -862,7 +862,7 @@ logs/                      运行日志（不入库）
 | `npm run test:admin` / `test:init` / `test:identity` / `test:github` / `test:serve-password` | 后台、初始化、身份注入、serve 密码 |
 | `npm run probe:names [chat_id]` / `probe:msg` | 飞书接口探针，打印权限与字段 |
 
-`scripts/test-cards.mjs` 与 `scripts/probe-thread.mjs` 没有对应的 npm 脚本，用 `node <路径>` 运行。
+`scripts/test-cards.mjs`、`scripts/test-prompt-ids.mjs`、`scripts/test-session-seq.mjs` 与 `scripts/probe-thread.mjs` 没有对应的 npm 脚本，用 `node <路径>` 运行。
 
 `selftest` 需要 serve 正在运行，会真实创建与删除会话。跑测试前确认配置指向测试用的实例。
 
