@@ -538,7 +538,7 @@ const main = async () => {
         mode: 'pat',
         token: 'ghp_test_dump',
         gitName: 'Lil_P',
-        gitEmail: '5654062+lil-p-bot[bot]@users.noreply.github.com',
+        gitEmail: '353668500+lil-p-bot[bot]@users.noreply.github.com',
       },
       configDir,
     })

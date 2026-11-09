@@ -177,9 +177,18 @@ opencode 后端的代理跑在常驻 serve 里，桥接没法向已启动的进�
   "privateKeyPath": "~/.config/opencode-feishu-bridge/github-app.pem",
   "token": "",
   "gitName": "Lil_O",
-  "gitEmail": "5653982+lil-o-bot[bot]@users.noreply.github.com"
+  "gitEmail": "353665731+lil-o-bot[bot]@users.noreply.github.com"
 }
 ```
+
+`gitEmail` 的数字部分是**机器人用户的 ID**，不是 App ID。两者形式不同、效果也不同：
+
+| 形式 | GitHub 是否关联到机器人账号 |
+|---|---|
+| `353665731+lil-o-bot[bot]@users.noreply.github.com`（用户 ID） | 是，提交显示机器人标识 |
+| `5653982+lil-o-bot[bot]@users.noreply.github.com`（App ID） | 否，提交显示为普通文本 |
+
+填 App ID 不会报错，只是提交关联不到账号——PR 页面里自己的提交没有头像、合并提交却有。查 ID 的办法：`curl -H "Authorization: Bearer <安装令牌>" https://api.github.com/users/<bot名>[bot]`，返回的 `id` 就是。
 
 | 字段 | 说明 |
 |---|---|
