@@ -228,12 +228,14 @@ export class FeishuTransport {
       raw = ''
     }
 
-    // 只抹掉 @我自己 的占位符；@别人 保留成 @名字。
-    // 否则模型既不知道被 @ 的是谁，也不知道这句话是冲谁说的。
+    // 所有 @ 占位符都还原成 @姓名，包括 @我自己的。
+    // 抹掉自己的那份会让语义断裂：人类说「@Lil_O @Lil_P 你们三个」，
+    // 而模型只看到「@Lil_P 你们三个」——既不知道被点的有自己，
+    // 也数不清这句话冲几个人说。名字取飞书事件里 mentions 的 name
     let text = raw
     for (const mt of mentions) {
       if (!mt?.key) continue
-      text = text.split(mt.key).join(mt === selfMention ? '' : `@${mt.name || '某人'}`)
+      text = text.split(mt.key).join(`@${mt.name || '某人'}`)
     }
     text = text.trim()
     if (!text) return
@@ -273,7 +275,10 @@ export class FeishuTransport {
      */
     const chatName = isGroup ? await this.resolveChatName(m.chat_id) : ''
     const where = isGroup ? (chatName ? `群「${chatName}」` : '群聊') : '私聊'
-    const scope = isGroup ? (m.root_id ? '话题内' : '主聊天流') : ''
+    // 会话 id 是溯源主键：话题内给 thread_id（omt_ 开头），主聊天流给 chat_id
+    // （oc_ 开头，没有 thread_id 可用）。模型拿这两个 id 可以自己去飞书
+    // 拉这条会话的消息历史，看到没有 @ 它的那些轮次
+    const scope = isGroup ? (m.root_id ? `话题内 · thread ${m.thread_id || '未知'}` : `主聊天流 · chat ${m.chat_id}`) : ''
     const when = new Date(Number(m.create_time) || Date.now()).toLocaleString('zh-CN', { hour12: false })
     const nick = (await this.resolveSenderName(m.chat_id, userId)) || ''
     const sender = nick ? `${nick} · ${userId}` : userId || '未知'
@@ -332,7 +337,10 @@ export class FeishuTransport {
       '对方 open_id 只认本应用视角，来源只有两处：它给你发过的消息，完整 id 就在本行上方「发送者」标注里；人类直接告诉你（人类还可以在配置的 feishu.names 里声明它的名字，声明后标注会同时带上名字和 id）。' +
       '这两处都没有，飞书也没有按应用查机器人 open_id 的接口，你拿不到——请人类给你，不要猜 id、也不要用普通文本 @名字 冒充（那只是字面字符，唤不醒任何人）。' +
       '在话题里发言要用 --reply 回复该话题内已有的一条 om_ 消息，不要新开发布到主聊天流。' +
-      '你的终态回复呈现在卡片上，卡片不唤醒任何人]'
+      '你的终态回复呈现在卡片上，卡片不唤醒任何人]\n' +
+      '[溯源 · 需要本条消息之前的话题上下文时，用 feishu-cli 拉取来源标注里 thread（话题）或 chat（群）对应的消息历史，' +
+      '能看到没有 @ 你的轮次和其他人的发言。feishu-cli 不一定在 PATH 里，先用 command -v feishu-cli 或查看 ~/.local/bin 定位可执行文件；' +
+      '子命令与参数用法随版本变化，不确定时先跑 feishu-cli msg --help 查，不要凭记忆猜命令]'
     )
   }
 
