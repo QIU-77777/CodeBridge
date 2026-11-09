@@ -275,52 +275,23 @@ export class FeishuTransport {
     const isBot = data?.sender?.sender_type === 'app'
 
     /**
-     * 给模型标一行来源。
+     * 给模型拼前缀。
      *
      * 以前只发正文，模型看到的就是一句光秃秃的中文，于是它得靠 `ls` / 读仓库
      * 反推「我在哪儿、谁在跟我说话」—— 实测一次打招呼花了 9 分 12 秒、48 步。
-     * 把来源和发送者 open_id 一并给出来：既省掉这轮探索，也让它有能力 @ 回去
-     * （@ 某人需要对方完整的 open_id，靠猜是猜不到的）。
-     *
      * 名字只来自配置里的 feishu.names（人工声明）或群成员接口，攒不到就只给
      * id —— id 必须完整，截断了就 @ 不回去。
+     *
+     * 四行：来源标注（在哪、谁说的）→ 协作 id → 身份 → 可@的同伴，最后拼配置里
+     * 的 always 前缀。拼装在 buildPrefix 里，纯函数，测试直接喂事件字段。
      */
     const chatName = isGroup ? await this.resolveChatName(m.chat_id) : ''
-    const a = this.tpl.always
-    const where = isGroup
-      ? chatName
-        ? render(a.where.groupNamed, { name: chatName })
-        : a.where.groupFallback
-      : a.where.private
-    // 会话 id 是溯源主键：话题内带 thread_id（omt_ 开头），拿不到时退
-    // root_id——话题根消息一定带 thread_id，agent 读到根消息能顺到话题；
-    // 主聊天流带 chat_id（没有 thread_id 可用）。id 走模板变量
-    const scope = isGroup
-      ? m.root_id
-        ? render(a.scope.thread, { thread: m.thread_id || m.root_id })
-        : render(a.scope.main, { chat: m.chat_id })
-      : ''
-    const when = new Date(Number(m.create_time) || Date.now()).toLocaleString('zh-CN', { hour12: false })
     const nick = (await this.resolveSenderName(m.chat_id, userId)) || ''
-    const sender = nick
-      ? render(a.sender.named, { name: nick, id: userId })
-      : userId
-        ? render(a.sender.idOnly, { id: userId })
-        : a.sender.unknown
-    const senderType = isBot ? a.senderType.bot : a.senderType.user
-    const origin = isGroup
-      ? render(a.origin.group, { where, scope, sender, senderType, when })
-      : render(a.origin.private, { where, sender, senderType, when })
-    // 第二行：告诉模型「你是谁」。多机器人同机时，代理用飞书 CLI 发言读的是
-    // 机器级配置，默认应用可能是别的实例的——真实事故里 Lil_P 的代理发出的
-    // 问候以 Lil_O 的应用到达群里。声明身份之外，pi 后端的桥接还会把本实例
-    // 凭证注入子进程环境（src/pi.js childEnv），两句互相印证
-    const identity = this.identityLine(self)
-    // 第三部分：配置里的 prompt 前缀，按模式分两路。always 的（含用户自定义）
-    // 并进本条消息的前缀；once 的（协作规则）单独交给上层——它只在该会话的
-    // 第一条消息拼，之后靠上下文记住，每轮重复只是白烧 token
+    // 配置里的 prompt 前缀，按模式分两路。always 的（含用户自定义）并进本条
+    // 消息的前缀；once 的（协作规则）单独交给上层——它只在该会话的第一条消息
+    // 拼，之后靠上下文记住，每轮重复只是白烧 token
     const { always, once } = this.prefixTexts(isGroup)
-    const originBlock = [origin, identity, always].filter(Boolean).join('\n')
+    const originBlock = this.buildPrefix({ m, self, userId, isBot, chatName, nick, always })
 
     await this.onMessage({
       chatId: m.chat_id,
@@ -374,6 +345,77 @@ export class FeishuTransport {
       else always = append(always, text)
     }
     return { always, once }
+  }
+
+  /**
+   * 拼发给模型的前缀：来源标注 + 协作 id + 身份 + 可@的同伴 + 自定义前缀。
+   *
+   * 为什么把 id 全给出来：飞书里 agent 之间的每一次互动都要落到具体的
+   * chat / thread / message 上——@ 唤醒别人要 chat_id，拉话题历史要
+   * thread_id，回话题里发言要 root 消息 id，精确回复本条要 msg id。这些 id
+   * 事件里全都有，以前只往下传了一个 thread，于是每次协作都得先去
+   * logs/bridge.log 里翻剩下的（真实事故：回复话题前满仓库找 root 消息 id）。
+   *
+   * 纯函数：不碰网络，测试直接喂事件字段（scripts/test-prompt-ids.mjs）。
+   */
+  buildPrefix({ m, self, userId = '', isBot = false, chatName = '', nick = '', always = '' }) {
+    const a = this.tpl.always
+    const isGroup = m.chat_type === 'group'
+    const sender = nick
+      ? render(a.sender.named, { name: nick, id: userId })
+      : userId
+        ? render(a.sender.idOnly, { id: userId })
+        : a.sender.unknown
+    // 可@的同伴：来源只有配置里的 feishu.names。open_id 按应用隔离——我眼里
+    // Lil_O 的 id 和 Lil_O 眼里自己的 id 不是同一个值，所以这里给的必须是
+    // 「本应用视角」的那一个，也正是 @ 唤醒时要传的值
+    const peers = Object.entries(this.cfg.names || {})
+      .filter(([id]) => id && id !== self?.open_id)
+      .map(([id, name]) => `${name || '?'}=${id}`)
+      .join(' · ')
+    // 变量一次备齐，每个模板自己取所需：实例覆盖了某个模板时，不会因为
+    // 「代码只给那一版传了变量」而渲染出空占位符
+    const vars = {
+      name: chatName,
+      chat: m.chat_id || '',
+      thread: m.thread_id || m.root_id || '',
+      root: m.root_id || '',
+      msg: m.message_id || '',
+      self: self?.open_id || '未知',
+      peers,
+      sender,
+      senderType: isBot ? a.senderType.bot : a.senderType.user,
+      when: new Date(Number(m.create_time) || Date.now()).toLocaleString('zh-CN', { hour12: false }),
+    }
+    const where = isGroup
+      ? chatName
+        ? render(a.where.groupNamed, vars)
+        : a.where.groupFallback
+      : a.where.private
+    // 会话 id 是溯源主键：话题内带 thread_id（omt_ 开头），拿不到时退
+    // root_id——话题根消息一定带 thread_id，agent 读到根消息能顺到话题；
+    // 主聊天流带 chat_id（没有 thread_id 可用）。id 本身在下面的 ids 行
+    vars.where = where
+    vars.scope = isGroup
+      ? m.root_id
+        ? render(a.scope.thread, vars)
+        : render(a.scope.main, vars)
+      : ''
+
+    const origin = isGroup ? render(a.origin.group, vars) : render(a.origin.private, vars)
+    const ids = isGroup
+      ? m.root_id
+        ? render(a.ids.thread, vars)
+        : render(a.ids.main, vars)
+      : render(a.ids.private, vars)
+    const peersLine = peers ? render(a.peers.list, vars) : a.peers.empty || ''
+    // 身份行：告诉模型「你是谁」。多机器人同机时，代理用飞书 CLI 发言读的是
+    // 机器级配置，默认应用可能是别的实例的——真实事故里 Lil_P 的代理发出的
+    // 问候以 Lil_O 的应用到达群里。声明身份之外，pi 后端的桥接还会把本实例
+    // 凭证注入子进程环境（src/pi.js childEnv），两句互相印证
+    const identity = this.identityLine(self)
+
+    return [origin, ids, identity, peersLine, always].filter(Boolean).join('\n')
   }
 
   /**

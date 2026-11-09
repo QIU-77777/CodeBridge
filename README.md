@@ -534,7 +534,7 @@ npm run dry
 | `feishu.listen` | 单向放行名单。A 的 `listen` 含 B 时，B 的 @ 能唤醒 A | `[]` |
 | `feishu.requireMention` | 群里是否必须 @ 本机器人才响应 | `true` |
 | `feishu.botOpenId` | 机器人自身 open_id。留空则启动时向飞书查询 | `""` |
-| `feishu.names` | `open_id → 显示名`，用于消息来源标注 | `{}` |
+| `feishu.names` | `open_id → 显示名`，用于来源标注显示名字，并渲染成前缀里的「可@的 id」一行 | `{}` |
 | `opencode.url` | serve 地址 | `http://127.0.0.1:19876` |
 | `opencode.password` | serve 密码，与 `OPENCODE_SERVER_PASSWORD` 一致 | `""` |
 | `opencode.defaultDirectory` | `/new` 不带目录时使用；pi 每次执行也起在该目录 | `$HOME` |
@@ -565,6 +565,8 @@ prompts.json
 │   ├── origin          { group | private }                    互斥：群 / 私聊
 │   ├── where           { groupNamed | groupFallback | private } 互斥：群名 / 私聊
 │   ├── scope           { thread | main }                      互斥：话题 / 主聊天流
+│   ├── ids             { thread | main | private }              互斥：协作要用的 id 一行
+│   ├── peers           { list | empty }                         互斥：可@的同伴 id
 │   ├── sender          { named | idOnly | unknown }           互斥：发送者信息完整度
 │   ├── senderType      { user | bot }                         互斥：人 / 机器人
 │   ├── identityLine    { pi | opencode }                      互斥：后端类型
@@ -573,24 +575,26 @@ prompts.json
     └── rules           协作与溯源规则（整段文本，不是互斥组）
 ```
 
-`always` 下各项是**并行拼接**的：一条消息的前缀依次放入来源标注、身份声明、配置里的 always 前缀。只有字典**内部**的键才是「选其中之一」，选谁由代码按运行时条件决定。来源标注里的 `where`、`scope`、`sender`、`senderType`、`when` 是同时填入的变量，不互斥。
+`always` 下各项是**并行拼接**的：一条消息的前缀依次放入来源标注、协作 id、身份声明、可@的同伴、配置里的 always 前缀。只有字典**内部**的键才是「选其中之一」，选谁由代码按运行时条件决定。来源标注里的 `where`、`scope`、`sender`、`senderType`、`when` 是同时填入的变量，不互斥。
 
 | 频率 | 模板键 | 互斥选项 | 选择条件 | 变量 |
 |---|---|---|---|---|
 | always | `always.origin` | `group` / `private` | 群消息 / 私聊 | `where` `scope` `sender` `senderType` `when` |
 | always | `always.where` | `groupNamed` / `groupFallback` / `private` | 群名取到 / 取不到 / 私聊 | `name` |
-| always | `always.scope` | `thread` / `main` | 话题内 / 主聊天流；私聊时整段为空 | `thread` / `chat` |
+| always | `always.scope` | `thread` / `main` | 话题内 / 主聊天流；私聊时整段为空 | 无 |
+| always | `always.ids` | `thread` / `main` / `private` | 话题内 / 主聊天流 / 私聊 | `chat` `thread` `root` `msg` `self` |
+| always | `always.peers` | `list` / `empty` | `feishu.names` 有声明 / 一条也没有 | `peers` |
 | always | `always.sender` | `named` / `idOnly` / `unknown` | 名字+id / 只有 id / 都拿不到 | `name` `id` |
 | always | `always.senderType` | `user` / `bot` | 人类 / 机器人 | 无 |
 | always | `always.identityLine` | `pi` / `opencode` | 后端类型 | `who` `app` |
 | always | `always.identityApp` | 无（标量） | 配了 `appId` 才拼 | `appId` |
 | once | `once.rules` | 无（整段文本） | 只在群里、且是会话第一条消息 | 无 |
 
-两种频率的差别只看「什么时候进模型上下文」：
+`always.ids` 装的是**协作要用的全部 id**：`chat` 用于 `msg send --receive-id` @ 唤醒别人，`thread` 用于 `msg thread-messages` 拉话题历史，`root` 用于 `msg reply` 回到话题里发言，`msg` 用于精确回复本条，`self` 是自己的 open_id（@ 判定与自我介绍都要用）。这些 id 事件里全都有，早期只传了 `thread`，agent 每次协作都得先去 `logs/bridge.log` 里翻剩下的。`always.peers` 渲染 `feishu.names` 里声明的同伴，open_id 按应用隔离，这里给的必须是本应用视角的值。
 
 | 组 | 何时发 | 装什么 |
 |---|---|---|
-| `always` | 每一次 @ 本机器人。私聊每条、群里每条命中 @ 的消息都带 | 本条消息的动态信息：来源标注、身份声明，加上 `prompt.prefixes` 里所有 `mode: "always"` 的自定义前缀 |
+| `always` | 每一次 @ 本机器人。私聊每条、群里每条命中 @ 的消息都带 | 本条消息的动态信息：来源标注、协作 id、身份声明、可@的同伴，加上 `prompt.prefixes` 里所有 `mode: "always"` 的自定义前缀 |
 | `once` | 该会话第一条消息，只一次；`src/handler.js` 判定走了 `createAndBind()` 的那次。续聊不拼，私聊也不拼 | 静态规则 `once.rules`。拼过之后留在会话历史里，每轮重复只是白烧 token |
 
 `once.rules` 的开关在配置的 `prompt.prefixes`：`id: "rules"` 的条目存在且 `mode: "once"` 才发；把 `mode` 改成 `always` 就变成每条都发（会话被压缩、规则滚出上下文时可这样兜底），删掉条目则关闭。
@@ -668,7 +672,7 @@ prompts.json
 - @ 判定按 `open_id` 精确比对。`feishu.botOpenId` 显式填写后，多机器人同群时只响应 @ 自己的消息；取不到自身 open_id 时会退化成「@ 任何人都会响应」，启动日志会给出告警。
 - 没有 @ 的消息在进入处理流程前直接丢弃，模型看不到它。被 @ 的是别人时，日志记一行 `[skip]`，带被 @ 者的名字。
 - 占位符处理：@ 本机器人的占位符被删掉，@ 别人的占位符还原成 `@姓名`，模型能看见这句话在跟谁说。
-- 每条消息前拼一行来源标注，包含群名或私聊、主聊天流或话题内、发送者完整 `open_id`、人还是机器人、时间。名字来自 `feishu.names` 或群成员接口（`im:chat.members:read`）；两者都没有时只显示 `open_id`。
+- 每条消息前拼前缀，依次是来源标注（群名或私聊、主聊天流或话题内、发送者完整 `open_id`、人还是机器人、时间）、协作 id 一行（`chat` / `thread` / `root` / `msg` / `self`）、身份声明、可@的同伴 id。名字来自 `feishu.names` 或群成员接口（`im:chat.members:read`）；两者都没有时只显示 `open_id`。
 
 放行闸门取 `feishu.allowlist` 与 `feishu.listen` 的并集，由人在配置或管理后台维护。`open_id` 按应用隔离，填写错误时只会静默失效，加完去看 `logs/bridge.log` 是否出现「拒绝非白名单用户」。
 
@@ -933,7 +937,7 @@ logs/                      运行日志（不入库）
 
 | 文档 | 内容 |
 |---|---|
-| [prompts.json](prompts.json) | 发给模型的全部提示词模板：`always` 的来源标注与身份声明、`once` 的协作规则，含互斥字典说明 |
+| [prompts.json](prompts.json) | 发给模型的全部提示词模板：`always` 的来源标注、协作 id、可@的同伴与身份声明，`once` 的协作规则，含互斥字典说明 |
 | [docs/design-notes.md](docs/design-notes.md) | 实现笔记：飞书卡片 2.0 的坑、状态与并发、opencode 版本一致性、群聊话题模型 |
 | [docs/pi-backend.md](docs/pi-backend.md) | pi 后端方案：合成事件、会话、超时、GitHub 身份、prompt 前缀、事故复盘 |
 | [docs/tmux-ops.md](docs/tmux-ops.md) | tmux 运维层方案与验收标准 |

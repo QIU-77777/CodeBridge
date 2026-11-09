@@ -628,6 +628,9 @@ if (process.argv.includes('--live')) {
   ok(/群「桥接话题探针」/.test(o1), '来源标注带群名', o1)
   ok(/主聊天流/.test(o1), '来源标注区分主聊天流 / 话题内', o1)
   ok(/ou_lild（机器人）/.test(o1), '来源标注带发送者 open_id 和「人 / 机器人」', o1)
+  ok(/chat oc_g/.test(o1), '主聊天流的来源标注带群 id（@ 唤醒别人要用）', o1)
+  ok(/msg om_o1/.test(o1), '主聊天流的来源标注带本条消息 id', o1)
+  ok(/self ou_me/.test(o1), '来源标注带自己的 open_id', o1)
   ok(/小d · ou_lild/.test(o1), '知道名字时显示「名字 · open_id」，id 保持完整以便 @ 回去', o1)
   // 协作机制说明：默认每会话只带一次（oncePrefix），不再混在每条消息的 origin 里
   // ——规则是静态的，第一条带过就在会话历史里，每轮重复只是白烧 token
@@ -660,6 +663,9 @@ if (process.argv.includes('--live')) {
     sender: { sender_id: { open_id: 'ou_user' }, sender_type: 'user' },
   })
   ok(/话题内/.test(got[1]?.origin || ''), '话题里的消息标注为「话题内」')
+  ok(/root om_o1/.test(got[1]?.origin || ''), '话题里的来源标注带话题根消息 id（回话题发言要用）', got[1]?.origin)
+  ok(/msg om_o2/.test(got[1]?.origin || ''), '话题里的来源标注带本条消息 id', got[1]?.origin)
+  ok(/thread omt_1/.test(got[1]?.origin || ''), '话题里的来源标注带话题 id（拉话题历史要用）', got[1]?.origin)
   ok(/ou_user（用户）/.test(got[1]?.origin || ''), '人类发送者标为「用户」')
   ok(got[1]?.oncePrefix !== undefined, 'oncePrefix 字段每条消息都带（由上层决定拼不拼）')
 
