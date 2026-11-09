@@ -19,6 +19,7 @@
     "test:github": "node scripts/test-github-app.mjs",
     "test:admin": "node scripts/test-admin.mjs && node scripts/test-admin-api.mjs",
     "test:busy": "node scripts/test-busy.mjs",
+    "test:cmd-route": "node scripts/test-cmd-route.mjs",
     "test:runfail": "node scripts/test-runfail.mjs",
     "test:wedge": "node scripts/test-wedge.mjs",
     "test:render": "node scripts/test-render.mjs",

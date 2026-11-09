@@ -495,7 +495,12 @@ export class Bridge {
     }
 
     const ctx = this.ctxOf(msg)
-    if (text.startsWith('/')) return this.onCommand(msg, ctx)
+    // 命令分流用 cmdText（feishu.js 剥掉开头 @ 的版本），不用 text：
+    // @ 占位符全部还原之后，群里「@Lil_P /help」的 text 不再以 / 开头，
+    // 拿 text 判定会把命令当普通消息发给模型。老调用方没有 cmdText 时
+    // 退回 text，行为与改动前一致
+    const cmd = (msg.cmdText ?? msg.text ?? '').trim()
+    if (cmd.startsWith('/')) return this.onCommand({ ...msg, text: cmd }, ctx)
     return this.runPrompt(msg, ctx)
   }
 
