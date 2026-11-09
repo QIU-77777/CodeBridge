@@ -43,6 +43,7 @@
     "maxParallel": 2
   },
   "prompt": {
+    "templates": {},
     "prefixes": [
       { "id": "rules", "mode": "once", "text": "" }
     ]

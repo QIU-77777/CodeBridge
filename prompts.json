@@ -1,0 +1,49 @@
+{
+  "_readme": [
+    "本文件 = 发给模型的全部文案。代码只做 {{变量}} 替换，不保存任何提示词。",
+    "顶层按发送频率分组：always = 每次 @ 本机器人都发；once = 只在群会话第一条消息发一次，之后靠会话历史记住。",
+    "always 下的每个字典都是一组【互斥选项】：运行时按条件只选其中一个，不是把全部选项拼起来。",
+    "互斥组 · always.origin       { group | private }                  群消息 / 私聊",
+    "互斥组 · always.where        { groupNamed | groupFallback | private }  群名取到 / 取不到 / 私聊",
+    "互斥组 · always.scope        { thread | main }                    话题内 / 主聊天流（私聊时整个 scope 为空）",
+    "互斥组 · always.sender       { named | idOnly | unknown }         名字+id / 只有 id / 拿不到 id",
+    "互斥组 · always.senderType   { user | bot }                       人类 / 机器人",
+    "互斥组 · always.identityLine { pi | opencode }                    pi 后端 / opencode 后端",
+    "不是互斥的：always 下的各项彼此并行拼接；origin 模板里的 where/scope/sender/senderType/when 是同时填入的变量；identityApp 是一段片段；once.rules 是整段文本。",
+    "覆盖方式：实例 config.json 的 prompt.templates 用同样的路径深合并，只改一个键不会冲掉同组其余选项。",
+    "前缀开关：prompt.prefixes 里 id 为 rules 的条目控制 once.rules 是否发送；text 填写则用该实例自己的版本，删掉条目即关闭。",
+    "_readme 只是注释，不会发给模型。"
+  ],
+  "always": {
+    "origin": {
+      "group": "[飞书 · {{where}} · {{scope}} · 发送者 {{sender}}（{{senderType}}） · {{when}}]",
+      "private": "[飞书 · {{where}} · 发送者 {{sender}}（{{senderType}}） · {{when}}]"
+    },
+    "where": {
+      "groupNamed": "群「{{name}}」",
+      "groupFallback": "群聊",
+      "private": "私聊"
+    },
+    "scope": {
+      "thread": "话题内 · thread {{thread}}",
+      "main": "主聊天流 · chat {{chat}}"
+    },
+    "sender": {
+      "named": "{{name}} · {{id}}",
+      "idOnly": "{{id}}",
+      "unknown": "未知"
+    },
+    "senderType": {
+      "user": "用户",
+      "bot": "机器人"
+    },
+    "identityLine": {
+      "pi": "[身份 · 你是 {{who}}{{app}} · 桥接已为本进程注入你的飞书凭证，用 feishu-cli / lark-cli 发言就是以你的身份发出]",
+      "opencode": "[身份 · 你是 {{who}}{{app}} · 本机飞书 CLI 的默认身份以机器配置为准，不一定是你的应用，发言前请核对]"
+    },
+    "identityApp": "（飞书应用 {{appId}}）"
+  },
+  "once": {
+    "rules": "[协作 · 唤醒另一个 agent 的唯一方法：用 feishu-cli 发一条带 at 标签的新 text 消息。命令模板（只替换 open_id，其余照抄）：feishu-cli msg send --receive-id <群 chat_id> --receive-id-type chat_id --text '<at user_id=\"对方 open_id\"></at> 要说的话'。对方 open_id 只认本应用视角，来源只有两处：它给你发过的消息，完整 id 就在本行上方「发送者」标注里；人类直接告诉你（人类还可以在配置的 feishu.names 里声明它的名字，声明后标注会同时带上名字和 id）。这两处都没有，飞书也没有按应用查机器人 open_id 的接口，你拿不到——请人类给你，不要猜 id、也不要用普通文本 @名字 冒充（那只是字面字符，唤不醒任何人）。在话题里发言要用 --reply 回复该话题内已有的一条 om_ 消息，不要新开发布到主聊天流。你的终态回复呈现在卡片上，卡片不唤醒任何人]\n[溯源 · 需要本条消息之前的话题上下文时，用 feishu-cli 拉取来源标注里 thread（话题）或 chat（群）对应的消息历史，能看到没有 @ 你的轮次和其他人的发言。feishu-cli 不一定在 PATH 里，先用 command -v feishu-cli 或查看 ~/.local/bin 定位可执行文件；子命令与参数用法随版本变化，不确定时先跑 feishu-cli msg --help 查，不要凭记忆猜命令]"
+  }
+}

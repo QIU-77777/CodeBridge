@@ -28,6 +28,9 @@ export const CONFIG_PATH = join(CONFIG_DIR, 'config.json')
 export const STATE_PATH = join(CONFIG_DIR, 'state.json')
 /** 入库的模板，只有占位符；首次运行照它生成 config.json */
 export const TEMPLATE_PATH = join(REPO, 'config.example.json')
+/** 发给模型的全部文案。代码里不保存提示词，实例可用 prompt.templates 深合并覆盖 */
+export const PROMPTS_PATH = join(REPO, 'prompts.json')
+export const PROMPT_TEMPLATES = JSON.parse(readFileSync(PROMPTS_PATH, 'utf8'))
 
 export const DEFAULTS = {
   backend: {
@@ -124,23 +127,19 @@ export const DEFAULTS = {
     maxParallel: 2,
   },
   prompt: {
-    // prompt 前缀。每条消息发给模型前，正文前面会拼一段前缀，分两种模式：
-    //   always = 每条消息都拼。内置的来源标注（群名/话题/发送者/时间）和身份
-    //            声明属于这类——它们携带**本条消息**的动态数据，由代码生成
-    //   once   = 每个会话的第一条消息拼一次，之后靠上下文记住。协作规则属于
-    //            这类——规则是静态的，每轮重复只是白烧 token
-    //
-    // 条目说明：
-    //   id: 'rules' 是内置的协作机制说明，text 留空 = 用内置默认文本，
-    //               填写 = 用你的版本（只在群里拼，私聊没有同伴）
-    //   其他 id     = 自定义前缀，纯静态文本，想加几条加几条
-    //   mode 缺失   = 按 always 处理
-    //   删掉某个条目 = 关闭该前缀
+    // 提示词模板。默认全部来自仓库根的 prompts.json，按 always / once 分组，
+    // 组内的字典是互斥选项。实例可深合并覆盖任意一层。
+    templates: {},
+    // 前缀条目。always 每条消息都拼；once 每个会话第一条拼一次。
+    //   id: 'rules'  text 留空 = 用 templates.once.rules；填写 = 用你的版本
+    //   其他 id      自定义前缀，纯静态文本
+    //   mode 缺失    按 always 处理
+    //   删掉条目     关闭该前缀
     prefixes: [{ id: 'rules', mode: 'once', text: '' }],
   },
 }
 
-function deepMerge(base, override) {
+export function deepMerge(base, override) {
   const out = { ...base }
   for (const [k, v] of Object.entries(override || {})) {
     if (v && typeof v === 'object' && !Array.isArray(v) && typeof base[k] === 'object' && !Array.isArray(base[k])) {
@@ -168,6 +167,10 @@ export function loadConfig() {
   }
 
   const cfg = deepMerge(DEFAULTS, fileCfg)
+
+  // 提示词模板放在合并之后：默认文件打底，实例 prompt.templates 深合并覆盖。
+  // 嵌套结构下只写一个键也能保留同组其余选项，config.json 写 {} 则全用默认。
+  cfg.prompt.templates = deepMerge(PROMPT_TEMPLATES, cfg.prompt.templates || {})
 
   // 环境变量优先于文件
   if (process.env.OCB_BACKEND) cfg.backend.type = process.env.OCB_BACKEND

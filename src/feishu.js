@@ -1,4 +1,12 @@
 import * as Lark from '@larksuiteoapi/node-sdk'
+import { PROMPT_TEMPLATES, deepMerge } from './config.js'
+
+/** 用运行时数据填充 {{变量}}。缺失的变量替换成空串，避免占位符泄漏给模型 */
+function render(template, vars) {
+  return String(template ?? '').replace(/\{\{(\w+)\}\}/g, (_, key) =>
+    vars[key] === undefined || vars[key] === null ? '' : String(vars[key]),
+  )
+}
 
 /**
  * 飞书侧传输层：长连接收事件 + 发/改卡片。
@@ -33,6 +41,10 @@ export class FeishuTransport {
     // prompt 前缀配置（src/config.js 的 prompt 段）：来源标注是每条消息都带的
     // 动态数据，协作规则这类静态说明走 once 模式，每个会话只带一次
     this.promptCfg = config.prompt || {}
+    // 发给模型的文案模板。默认来自 prompts.json，按 always / once 分组，组内
+    // 字典是互斥选项。测试与探针直接构造时 config 里没有 templates，这里兜底。
+    // 深合并让实例只覆盖一个选项也能保留同组其余选项。
+    this.tpl = deepMerge(PROMPT_TEMPLATES, config.prompt?.templates || {})
     this.log = logger
     this.onMessage = onMessage
     this.onCardAction = onCardAction
@@ -274,21 +286,31 @@ export class FeishuTransport {
      * id —— id 必须完整，截断了就 @ 不回去。
      */
     const chatName = isGroup ? await this.resolveChatName(m.chat_id) : ''
-    const where = isGroup ? (chatName ? `群「${chatName}」` : '群聊') : '私聊'
-    // 会话 id 是溯源主键：话题内给 thread_id（omt_ 开头），主聊天流给 chat_id
-    // （oc_ 开头，没有 thread_id 可用）。thread_id 缺失时退到 root_id——话题
-    // 的根消息一定带 thread_id，agent 读到根消息就能顺到话题，比「未知」有用
+    const a = this.tpl.always
+    const where = isGroup
+      ? chatName
+        ? render(a.where.groupNamed, { name: chatName })
+        : a.where.groupFallback
+      : a.where.private
+    // 会话 id 是溯源主键：话题内带 thread_id（omt_ 开头），拿不到时退
+    // root_id——话题根消息一定带 thread_id，agent 读到根消息能顺到话题；
+    // 主聊天流带 chat_id（没有 thread_id 可用）。id 走模板变量
     const scope = isGroup
       ? m.root_id
-        ? `话题内 · thread ${m.thread_id || m.root_id}`
-        : `主聊天流 · chat ${m.chat_id}`
+        ? render(a.scope.thread, { thread: m.thread_id || m.root_id })
+        : render(a.scope.main, { chat: m.chat_id })
       : ''
     const when = new Date(Number(m.create_time) || Date.now()).toLocaleString('zh-CN', { hour12: false })
     const nick = (await this.resolveSenderName(m.chat_id, userId)) || ''
-    const sender = nick ? `${nick} · ${userId}` : userId || '未知'
-    const origin =
-      `[飞书 · ${where}${scope ? ` · ${scope}` : ''} · ` +
-      `发送者 ${sender}（${isBot ? '机器人' : '用户'}） · ${when}]`
+    const sender = nick
+      ? render(a.sender.named, { name: nick, id: userId })
+      : userId
+        ? render(a.sender.idOnly, { id: userId })
+        : a.sender.unknown
+    const senderType = isBot ? a.senderType.bot : a.senderType.user
+    const origin = isGroup
+      ? render(a.origin.group, { where, scope, sender, senderType, when })
+      : render(a.origin.private, { where, sender, senderType, when })
     // 第二行：告诉模型「你是谁」。多机器人同机时，代理用飞书 CLI 发言读的是
     // 机器级配置，默认应用可能是别的实例的——真实事故里 Lil_P 的代理发出的
     // 问候以 Lil_O 的应用到达群里。声明身份之外，pi 后端的桥接还会把本实例
@@ -322,46 +344,13 @@ export class FeishuTransport {
   }
 
   /**
-   * 协作机制说明：怎么唤醒另一个 agent。
-   *
-   * 唯一的方法是某一方用飞书 CLI 发一条**新的 text 消息**，内容里带真正的
-   * at 标签。写在卡片正文或普通文本里的 `@名字` 只是字面字符，不产生飞书提醒
-   * ——这条规则不可能靠模型自己悟出来，而 agent 之间的每次对话都要用它。
-   *
-   * 光说「要发真 mention」不够：实测 agent 知道规则却发不出来，因为它同时缺
-   * 两样东西——对方的 open_id（按应用隔离，没有按名查的接口）和 at 标签的
-   * 命令写法。所以这行把命令模板、id 来源、拿不到时的出路一次给全：
-   *
-   *   - id 来源只有两处：它给你发过的消息（「发送者」标注里带完整 id），以及
-   *     人类直接告诉你。人类也可以在配置的 feishu.names 里声明名字，声明后
-   *     标注会同时带上名字和 id。都没有就问人类要，不要猜。
-   *   - at 标签必须写在 --text 里；话题内用 --reply 回到同一个话题。命令
-   *     模板照抄，只替换 id。
-   */
-  collabLine() {
-    return (
-      '[协作 · 唤醒另一个 agent 的唯一方法：用 feishu-cli 发一条带 at 标签的新 text 消息。' +
-      '命令模板（只替换 open_id，其余照抄）：feishu-cli msg send --receive-id <群 chat_id> --receive-id-type chat_id ' +
-      '--text \'<at user_id="对方 open_id"></at> 要说的话\'。' +
-      '对方 open_id 只认本应用视角，来源只有两处：它给你发过的消息，完整 id 就在本行上方「发送者」标注里；人类直接告诉你（人类还可以在配置的 feishu.names 里声明它的名字，声明后标注会同时带上名字和 id）。' +
-      '这两处都没有，飞书也没有按应用查机器人 open_id 的接口，你拿不到——请人类给你，不要猜 id、也不要用普通文本 @名字 冒充（那只是字面字符，唤不醒任何人）。' +
-      '在话题里发言要用 --reply 回复该话题内已有的一条 om_ 消息，不要新开发布到主聊天流。' +
-      '你的终态回复呈现在卡片上，卡片不唤醒任何人]\n' +
-      '[溯源 · 需要本条消息之前的话题上下文时，用 feishu-cli 拉取来源标注里 thread（话题）或 chat（群）对应的消息历史，' +
-      '能看到没有 @ 你的轮次和其他人的发言。feishu-cli 不一定在 PATH 里，先用 command -v feishu-cli 或查看 ~/.local/bin 定位可执行文件；' +
-      '子命令与参数用法随版本变化，不确定时先跑 feishu-cli msg --help 查，不要凭记忆猜命令]'
-    )
-  }
-
-  /**
    * 把配置里的 prompt 前缀按模式分成两堆。
    *
-   * always：每条消息都拼——静态文本（用户自定义条目）并进来源标注那段。
-   * once：每个会话的第一条消息拼一次——由上层在新建会话时决定要不要拼。
+   * always：每条消息都拼，静态文本并进来源标注那段。
+   * once：每个会话的第一条消息拼一次，由上层决定要不要拼。
    *
-   * 内置的 `rules` 条目：text 留空用内置默认（collabLine），填写则覆盖；
-   * 只在群里拼（私聊没有同伴）。自定义条目纯静态文本，两种模式都生效。
-   * 删掉某个条目就是关闭它——所以这里不做任何「必须有一个」的兜底。
+   * id 为 rules 的条目：text 留空用 templates.once.rules（prompts.json），
+   * 填写则用你的版本。只在群里拼，私聊没有同伴。删掉条目即关闭该前缀。
    */
   prefixTexts(isGroup) {
     const list = this.promptCfg?.prefixes || []
@@ -376,7 +365,7 @@ export class FeishuTransport {
       let text
       if (p.id === 'rules') {
         if (!isGroup) continue // 协作规则只在群里有意义
-        text = p.text || this.collabLine()
+        text = p.text || this.tpl.once.rules
       } else {
         text = p.text
       }
@@ -394,11 +383,10 @@ export class FeishuTransport {
   identityLine(self) {
     const who = self?.name || this.cfg.botName || ''
     if (!who) return ''
-    const app = this.cfg.appId ? `（飞书应用 ${this.cfg.appId}）` : ''
-    if (this.backendType === 'pi') {
-      return `[身份 · 你是 ${who}${app} · 桥接已为本进程注入你的飞书凭证，用 feishu-cli / lark-cli 发言就是以你的身份发出]`
-    }
-    return `[身份 · 你是 ${who}${app} · 本机飞书 CLI 的默认身份以机器配置为准，不一定是你的应用，发言前请核对]`
+    const a = this.tpl.always
+    const app = this.cfg.appId ? render(a.identityApp, { appId: this.cfg.appId }) : ''
+    const key = this.backendType === 'pi' ? 'pi' : 'opencode'
+    return render(a.identityLine[key], { who, app })
   }
 
   async handleCardAction(data) {

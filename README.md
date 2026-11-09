@@ -7,6 +7,8 @@
 - 配置与状态放在家目录，仓库内只保留不含密钥的模板 `config.example.json`。
 - 运行时依赖只有一个：`@larksuiteoapi/node-sdk`。
 
+![技术原理图](docs/images/structure.png)
+
 更细的产品说明、截图、卡片渲染细节与后台逐步操作见 [README.full.md](README.full.md)。设计取舍见 [docs/design-notes.md](docs/design-notes.md)。
 
 ---
@@ -513,7 +515,7 @@ npm run dry
 
 ## 配置
 
-`config.example.json` 是唯一模板，`src/config.js` 的 `DEFAULTS` 提供缺省值。文件配置覆盖默认值，环境变量覆盖文件配置。配置在进程启动时读取，修改后重启实例生效。
+`config.example.json` 是配置模板，`prompts.json` 保存发给模型的全部文案（按 `always` / `once` 分组，互斥选项收在字典里），`src/config.js` 的 `DEFAULTS` 提供其余缺省值。文件配置覆盖默认值，环境变量覆盖文件配置。配置在进程启动时读取，修改后重启实例生效。
 
 ### 字段
 
@@ -547,7 +549,72 @@ npm run dry
 | `behavior.maxBodyChars` | 卡片正文字符上限，超出保留尾部 | `6000` |
 | `behavior.idleTimeoutMs` | 仅 opencode 后端：多久没有事件就判定卡死并收尾，`0` 关闭 | `300000` |
 | `behavior.maxParallel` | 整机同时运行的任务数，`0` 表示不限 | `2` |
+| `prompt.templates` | 按同路径深合并覆盖 `prompts.json` 里的提示词模板，只写一个键不影响同组其余选项 | `{}` |
 | `prompt.prefixes` | 发给模型的文本前缀数组，条目含 `id`、`mode`（`once` / `always`）、`text` | `[{ "id": "rules", "mode": "once", "text": "" }]` |
+
+### 提示词模板
+
+发给模型的全部文案放在仓库根的 `prompts.json`。`src/feishu.js` 只做 `{{变量}}` 替换，代码里不保存提示词。打开该文件即可审阅与编辑，改动作用于所有未覆盖该键的实例。模板在进程启动时读取，编辑后重启实例生效。
+
+文件按**发送频率**分成两层，同一类的互斥选项收进一个字典，打开就能看出「这组里选一个」：
+
+```
+prompts.json
+├── _readme             文件内的说明，不发给模型
+├── always              每次 @ 本机器人都发
+│   ├── origin          { group | private }                    互斥：群 / 私聊
+│   ├── where           { groupNamed | groupFallback | private } 互斥：群名 / 私聊
+│   ├── scope           { thread | main }                      互斥：话题 / 主聊天流
+│   ├── sender          { named | idOnly | unknown }           互斥：发送者信息完整度
+│   ├── senderType      { user | bot }                         互斥：人 / 机器人
+│   ├── identityLine    { pi | opencode }                      互斥：后端类型
+│   └── identityApp     飞书应用片段（标量，不是互斥组）
+└── once                只在群会话第一条消息发一次
+    └── rules           协作与溯源规则（整段文本，不是互斥组）
+```
+
+`always` 下各项是**并行拼接**的：一条消息的前缀依次放入来源标注、身份声明、配置里的 always 前缀。只有字典**内部**的键才是「选其中之一」，选谁由代码按运行时条件决定。来源标注里的 `where`、`scope`、`sender`、`senderType`、`when` 是同时填入的变量，不互斥。
+
+| 频率 | 模板键 | 互斥选项 | 选择条件 | 变量 |
+|---|---|---|---|---|
+| always | `always.origin` | `group` / `private` | 群消息 / 私聊 | `where` `scope` `sender` `senderType` `when` |
+| always | `always.where` | `groupNamed` / `groupFallback` / `private` | 群名取到 / 取不到 / 私聊 | `name` |
+| always | `always.scope` | `thread` / `main` | 话题内 / 主聊天流；私聊时整段为空 | `thread` / `chat` |
+| always | `always.sender` | `named` / `idOnly` / `unknown` | 名字+id / 只有 id / 都拿不到 | `name` `id` |
+| always | `always.senderType` | `user` / `bot` | 人类 / 机器人 | 无 |
+| always | `always.identityLine` | `pi` / `opencode` | 后端类型 | `who` `app` |
+| always | `always.identityApp` | 无（标量） | 配了 `appId` 才拼 | `appId` |
+| once | `once.rules` | 无（整段文本） | 只在群里、且是会话第一条消息 | 无 |
+
+两种频率的差别只看「什么时候进模型上下文」：
+
+| 组 | 何时发 | 装什么 |
+|---|---|---|
+| `always` | 每一次 @ 本机器人。私聊每条、群里每条命中 @ 的消息都带 | 本条消息的动态信息：来源标注、身份声明，加上 `prompt.prefixes` 里所有 `mode: "always"` 的自定义前缀 |
+| `once` | 该会话第一条消息，只一次；`src/handler.js` 判定走了 `createAndBind()` 的那次。续聊不拼，私聊也不拼 | 静态规则 `once.rules`。拼过之后留在会话历史里，每轮重复只是白烧 token |
+
+`once.rules` 的开关在配置的 `prompt.prefixes`：`id: "rules"` 的条目存在且 `mode: "once"` 才发；把 `mode` 改成 `always` 就变成每条都发（会话被压缩、规则滚出上下文时可这样兜底），删掉条目则关闭。
+
+单个实例要改某条文案时，在该实例 `config.json` 的 `prompt.templates` 里写**同样的嵌套路径**。合并是深合并，只改一个选项不会冲掉同组其余选项：
+
+```json
+"prompt": {
+  "templates": {
+    "always": {
+      "senderType": { "bot": "另一个 Agent" },
+      "identityLine": { "pi": "[身份 · 你是 {{who}}，凭证已注入]" }
+    },
+    "once": {
+      "rules": "[协作 · 你的规则文本]"
+    }
+  },
+  "prefixes": [
+    { "id": "rules", "mode": "once", "text": "" }
+  ]
+}
+```
+
+`prefixes` 里 `id: "rules"` 的 `text` 填写后会覆盖 `templates.once.rules`，但只对该实例生效；`text` 留空就是用模板文件里的版本。
 
 ### 环境变量
 
@@ -764,6 +831,7 @@ admin 按模板生成 `config.json`（权限 600，含 appSecret）、安装 lau
 
 ```
 config.example.json        配置模板（可入库）
+prompts.json               发给模型的全部提示词模板（可入库）
 src/                       桥接主体，ESM
 admin/                     本地管理后台
 scripts/                   初始化、体检、启动、测试、探针
@@ -784,6 +852,7 @@ logs/                      运行日志（不入库）
 | `npm run dry` | 无飞书的终端 REPL，全链路模拟 |
 | `OC_PW=<密码> npm run selftest -- --model <providerID/modelID>` | 真实模型集成自测：建会话、发 prompt、删会话、流式聚合、卡片回调、白名单、@ 判定 |
 | `npm run test:render` / `test:patch` | 卡片渲染与 patch 顺序 |
+| `npm run test:cmd-route` | 群里「@机器人 /命令」的分流，含缺少 `cmdText` 时的回退 |
 | `npm run test:busy` / `test:runfail` / `test:wedge` | 排队、运行失败、看门狗收尾 |
 | `npm run test:pi` / `test:pi-cli-sessions` | pi 后端与终端会话 |
 | `npm run test:admin` / `test:init` / `test:identity` / `test:github` / `test:serve-password` | 后台、初始化、身份注入、serve 密码 |
@@ -864,6 +933,7 @@ logs/                      运行日志（不入库）
 
 | 文档 | 内容 |
 |---|---|
+| [prompts.json](prompts.json) | 发给模型的全部提示词模板：`always` 的来源标注与身份声明、`once` 的协作规则，含互斥字典说明 |
 | [README.full.md](README.full.md) | 完整版说明：产品截图、卡片渲染细节、管理后台逐步操作、多机器人协作、排障全集 |
 | [docs/design-notes.md](docs/design-notes.md) | 实现笔记：飞书卡片 2.0 的坑、状态与并发、opencode 版本一致性、群聊话题模型 |
 | [docs/pi-backend.md](docs/pi-backend.md) | pi 后端方案：合成事件、会话、超时、GitHub 身份、prompt 前缀、事故复盘 |
