@@ -9,7 +9,7 @@
 
 ![技术原理图](docs/images/structure.png)
 
-更细的产品说明、截图、卡片渲染细节与后台逐步操作见 [README.full.md](README.full.md)。设计取舍见 [docs/design-notes.md](docs/design-notes.md)。
+产品截图、卡片渲染细节与后台操作见下文各节，设计取舍见 [docs/design-notes.md](docs/design-notes.md)。
 
 ---
 
@@ -934,7 +934,6 @@ logs/                      运行日志（不入库）
 | 文档 | 内容 |
 |---|---|
 | [prompts.json](prompts.json) | 发给模型的全部提示词模板：`always` 的来源标注与身份声明、`once` 的协作规则，含互斥字典说明 |
-| [README.full.md](README.full.md) | 完整版说明：产品截图、卡片渲染细节、管理后台逐步操作、多机器人协作、排障全集 |
 | [docs/design-notes.md](docs/design-notes.md) | 实现笔记：飞书卡片 2.0 的坑、状态与并发、opencode 版本一致性、群聊话题模型 |
 | [docs/pi-backend.md](docs/pi-backend.md) | pi 后端方案：合成事件、会话、超时、GitHub 身份、prompt 前缀、事故复盘 |
 | [docs/tmux-ops.md](docs/tmux-ops.md) | tmux 运维层方案与验收标准 |
