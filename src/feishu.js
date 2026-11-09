@@ -276,9 +276,13 @@ export class FeishuTransport {
     const chatName = isGroup ? await this.resolveChatName(m.chat_id) : ''
     const where = isGroup ? (chatName ? `群「${chatName}」` : '群聊') : '私聊'
     // 会话 id 是溯源主键：话题内给 thread_id（omt_ 开头），主聊天流给 chat_id
-    // （oc_ 开头，没有 thread_id 可用）。模型拿这两个 id 可以自己去飞书
-    // 拉这条会话的消息历史，看到没有 @ 它的那些轮次
-    const scope = isGroup ? (m.root_id ? `话题内 · thread ${m.thread_id || '未知'}` : `主聊天流 · chat ${m.chat_id}`) : ''
+    // （oc_ 开头，没有 thread_id 可用）。thread_id 缺失时退到 root_id——话题
+    // 的根消息一定带 thread_id，agent 读到根消息就能顺到话题，比「未知」有用
+    const scope = isGroup
+      ? m.root_id
+        ? `话题内 · thread ${m.thread_id || m.root_id}`
+        : `主聊天流 · chat ${m.chat_id}`
+      : ''
     const when = new Date(Number(m.create_time) || Date.now()).toLocaleString('zh-CN', { hour12: false })
     const nick = (await this.resolveSenderName(m.chat_id, userId)) || ''
     const sender = nick ? `${nick} · ${userId}` : userId || '未知'
@@ -307,6 +311,11 @@ export class FeishuTransport {
       origin: originBlock,
       oncePrefix: once,
       text,
+      // 命令判定用剥掉开头 @ 的版本。@ 占位符全部还原之后，群里
+      // 「@Lil_P /help」的 text 不再以 / 开头，handler 的命令分流认不出它，
+      // 命令会被当普通消息发给模型。text 给模型看（保留 @，语义完整），
+      // cmdText 专供 startsWith('/') 判定，两处各取所需
+      cmdText: text.replace(/^(@\S+\s+)+/, ''),
       messageId: m.message_id,
       chatType: m.chat_type,
     })

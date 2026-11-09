@@ -528,7 +528,8 @@ if (process.argv.includes('--live')) {
   ok(got.length === 0, '话题里也必须 @，不再免 @')
 
   await t.handleImMessage(ev('@_user_1 你好', me))
-  ok(got.length === 1 && got[0].text === '你好', '@ 我本人 → 处理，且自己的占位符被抹掉')
+  ok(got.length === 1 && got[0].text === '@Lil_O 你好', '@ 我本人 → 处理，且自己的占位符还原成 @Lil_O')
+  ok(got[0].cmdText === '你好', '命令判定用的 cmdText 剥掉了开头的 @')
 
   await t.handleImMessage(
     ev('@_user_1 你看下 @_user_2', [
@@ -536,12 +537,20 @@ if (process.argv.includes('--live')) {
       { key: '@_user_2', id: { open_id: 'ou_u2' }, name: '张三' },
     ]),
   )
-  ok(got.length === 2 && got[1].text === '你看下 @张三', '@ 了我和别人 → 别人保留成 @名字，模型知道在跟谁说话')
+  ok(got.length === 2 && got[1].text === '@Lil_O 你看下 @张三', '@ 了我和别人 → 全部还原成 @名字，模型知道在跟谁说话')
+  ok(got[1].cmdText === '你看下 @张三', '多个 @ 开头时 cmdText 只剥开头那一串')
+
+  // @ 还原不能让命令分流失效：群里「@我 /help」的 text 不再以 / 开头，
+  // handler 靠 feishu.js 给的 cmdText 认命令。这条路径坏过的现象是
+  // help 卡片、/new、/stop 全部失效，且不报错——命令被当普通消息发了出去
+  await t.handleImMessage(ev('@_user_1 /help', me))
+  ok(got.length === 3 && got[2].text === '@Lil_O /help', '「@我 /help」的正文保留 @，语义完整')
+  ok(got[2].cmdText === '/help', '「@我 /help」的 cmdText 是 /help，命令分流认得出来')
 
   await t.handleImMessage(
     ev('hi', [], { chat_type: 'p2p', chat_id: 'oc_dm' }),
   )
-  ok(got.length === 3, '私聊不受影响，不需要 @')
+  ok(got.length === 4, '私聊不受影响，不需要 @')
 }
 
 // ---------- 6.3 拿不到自身 open_id 时退化为「@ 谁都算」（并在启动时告警） ----------
