@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!--
+    CodeBridge 管理后台的站点图标。
+
+    造型取自产品名里的「桥」：一段桥面、一道拱、三根吊杆，两端落点用小圆点
+    收口，隐喻「本地 coding agent 到 飞书」两头接上。配色用侧边栏产品标里
+    Bridge 那一半的强调色（CSS 变量 accent，取值 2f54eb），描边语言与导航
+    图标一致：2 单位描边、圆头圆角、无填充。设计规范禁 emoji 与外链图，
+    所以这是仓库内的本地 SVG。
+
+    注意：XML 注释里不能出现连续两个连字符，写 CSS 变量名时要避开。
+  -->
+  <rect width="32" height="32" rx="7" fill="#2f54eb"/>
+  <g fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <!-- 桥面 -->
+    <path d="M5 14h22"/>
+    <!-- 拱 -->
+    <path d="M8.5 14c0 4.2 3.4 6.7 7.5 6.7s7.5-2.5 7.5-6.7"/>
+    <!-- 吊杆 -->
+    <path d="M12.2 14v5.3M16 14v6.7M19.8 14v5.3"/>
+  </g>
+  <!-- 两端落点 -->
+  <circle cx="5" cy="14" r="1.5" fill="#fff"/>
+  <circle cx="27" cy="14" r="1.5" fill="#fff"/>
+</svg>
