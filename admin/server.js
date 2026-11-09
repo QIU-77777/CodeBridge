@@ -33,6 +33,7 @@ const REPO = resolve(fileURLToPath(import.meta.url), '../..')
 /** admin 自己监听的端口。新建实例自动分配 serve 端口时要避开它 */
 let OWN_PORT = null
 const INDEX_HTML = join(REPO, 'admin', 'public', 'index.html')
+const FAVICON_SVG = join(REPO, 'admin', 'public', 'favicon.svg')
 const DEFAULT_PORT = 19877
 
 // ---------- 参数解析 ----------
@@ -692,6 +693,17 @@ export function startAdmin({ host, port } = parseArgs(process.argv.slice(2))) {
         const html = readFileSync(INDEX_HTML)
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' })
         return res.end(html)
+      }
+      if (url.pathname === '/favicon.svg') {
+        // 站点图标。路径写死不从请求里取，没有目录穿越的面；文件缺失时退化成
+        // 204，和 .ico 的行为一致——浏览器拿不到图标不该让整个页面打不开
+        if (!existsSync(FAVICON_SVG)) {
+          res.writeHead(204)
+          return res.end()
+        }
+        const svg = readFileSync(FAVICON_SVG)
+        res.writeHead(200, { 'Content-Type': 'image/svg+xml; charset=utf-8', 'Cache-Control': 'public, max-age=3600' })
+        return res.end(svg)
       }
       if (url.pathname === '/favicon.ico') {
         res.writeHead(204)

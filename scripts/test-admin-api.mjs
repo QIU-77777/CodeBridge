@@ -69,7 +69,14 @@ const BASE = `http://127.0.0.1:${server.address().port}`
 // 目录名推出实例名（instanceNameOf 的规则），接口按名字寻址
 const NAME = 'apitest'
 
-const readCfg = () => JSON.parse(readFileSync(CONFIG_PATH, 'utf8'))
+const readCfg = () => {
+  try {
+    return JSON.parse(readFileSync(CONFIG_PATH, 'utf8'))
+  } catch (err) {
+    // 读不出来就让断言带着路径和原因失败，比静默返回空对象好排查
+    throw new Error(`读取 ${CONFIG_PATH} 失败: ${err.message}`)
+  }
+}
 
 async function call(path, body, withHeader = true) {
   const headers = { 'Content-Type': 'application/json' }
@@ -176,6 +183,31 @@ try {
     ).status === 405,
     'backends 接口只接受 GET',
   )
+
+  // 站点图标：/favicon.svg 要能取到，且页面里真的引用了它。少了这一步，
+  // 浏览器标签页只会显示默认图标，而 index.html 里的 link 会 404
+  {
+    const svg = await fetch(`${BASE}/favicon.svg`)
+    ok(svg.status === 200, 'favicon.svg 路由可取', String(svg.status))
+    ok(
+      (svg.headers.get('content-type') || '').includes('image/svg+xml'),
+      'Content-Type 是 image/svg+xml',
+      svg.headers.get('content-type') || '',
+    )
+    const body = await svg.text()
+    ok(body.includes('<svg') && body.includes('</svg>'), '返回的是完整 SVG')
+    // XML 注释里不能出现连续两个连字符，否则整个文件解析失败、图标不显示
+    // （实测过一次：注释里写了 CSS 变量名 --accent，五个尺寸全部加载失败）
+    const comments = [...body.matchAll(/<!--([\s\S]*?)-->/g)].map((m) => m[1])
+    ok(
+      comments.every((c) => !c.includes('--')),
+      '注释里没有连续连字符（否则 SVG 解析失败）',
+      comments.find((c) => c.includes('--')) || '',
+    )
+    const html = await (await fetch(`${BASE}/`)).text()
+    ok(html.includes('href="/favicon.svg"'), '页面引用了 favicon.svg')
+    ok(html.includes('rel="icon"'), '引用带 rel="icon"')
+  }
   // serve 密码变更必须提示重启 serve：serve 是长跑进程，启动时把密码读进
   // 自己的环境，之后改配置不会跟着变。不提示的话用户以为改完就生效，而桥接
   // 拿着新密码连旧 serve，全程 401——现象是「毫无反应」而不是报错
