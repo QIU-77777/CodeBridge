@@ -354,8 +354,9 @@ sqlite3 ~/.local/share/opencode/opencode.db "
 |---|---|---|
 | 组件级 | `scripts/probe-card.mjs` | 平台收不收这种结构 |
 | 行为探针 | `scripts/probe-thread.mjs` | 飞书话题的 `thread_id` / `root_id` 到底是什么 |
-| 单元级 | `scripts/test-cards.mjs`（173 项） | Markdown 解析、卡片结构、大小、看门狗、错误提示、二进制选择、话题绑定、并行上限、@ 判定、来源标注与协作 id |
-| 单元级 | `scripts/test-prompt-ids.mjs`（29 项） | 前缀里的协作 id：话题内 / 主聊天流 / 私聊三种形态、自身 id 缺失、没有 names、实例覆盖模板后变量仍可取 |
+| 单元级 | `scripts/test-cards.mjs`（178 项） | Markdown 解析、卡片结构、大小、看门狗、错误提示、二进制选择、话题绑定、并行上限、@ 判定、来源标注与协作 id |
+| 单元级 | `scripts/test-prompt-ids.mjs`（39 项） | 前缀里的协作 id：话题内 / 主聊天流 / 私聊三种形态、自身 id 缺失、没有 names、实例覆盖模板后变量仍可取 |
+| 单元级 | `scripts/test-session-seq.mjs`（17 项） | 会话默认名「飞书·YYYYMMDD·新建会话n」：按天累加、跨天归 1、占号即落盘、并发不撞号、创建失败跳号 |
 | 单元级 | `scripts/test-pi.mjs`（137 项） | pi JSONL 解析、流式事件映射、合成事件、超时、中止、静默收尾、会话续聊、飞书与 GitHub 身份注入 |
 | 单元级 | `scripts/test-patch-order.mjs`（29 项） | 卡片 patch 串行与合并：终态一定最后生效，在途积压的刷新合并且带最新快照 |
 | 单元级 | `scripts/test-github-app.mjs`（55 项） | GitHub App 身份：JWT 形状与签名、token 缓存与到期刷新、401 重试、四路环境注入、真实 git 下注入助手压过机器级助手、凭证助手协议、gh 包装脚本、未配置时零改动 |
@@ -490,6 +491,18 @@ key = root:<root_id || message_id>
 成本控制：群名走 `/im/v1/chats/:chat_id` 且缓存，一条消息一次接口太贵；没权限就静默降级成「群聊」。发送者名字要 `im:chat.members:read`，默认没开，所以只给 open_id——够用，因为真正需要名字的是人，而人已经和 open_id 绑定在 allowlist 里了。
 
 前缀在 `src/feishu.js` 的 `buildPrefix()` 里拼，纯函数、不碰网络，测试直接喂事件字段（`scripts/test-prompt-ids.mjs`）。它不参与 `/命令` 解析，也不占 `MAX_PROMPT_CHARS`。
+
+### 会话默认名：飞书·YYYYMMDD·新建会话n
+
+最初会话默认名是「飞书 · 2026/11/9 20:07:27」，只有时间。列表里多个群、多个话题的会话分不清是谁，人类要求换成带日期和序号的组合名。
+
+序号 n 按天从 1 开始，只增不减：删会话、改会话名都不回收序号。若按现存同名会话数推 n，删掉一个或改掉一个名字，下一个就会发回已用过的号，新名字与历史重名。计数器落在桥接自己的 `state.json`（`sessionSeq: { day, n }`），与后端会话无联动，重启不丢；每个实例一份，两个后端都经过 `createAndBind()` 建会话，放这一处两个后端都覆盖。
+
+两个细节：占号是同步的——先读改写落盘拿到 n，再去调后端创建，两个话题同时新建不会撞同一个 n；占号后立即 `flush` 而不走 300ms 防抖，这中间进程被杀的话，重启会把同一个号再发一次，撞上已建成的同名会话。后端创建失败会跳过一个号，跳号无害，重号有害，选跳号。
+
+跨天口径：日期是名字的一段，日期换了序号从头计（`20261109·新建会话4`，第二天 `20261110·新建会话1`），同一天内只增不减。若要日期每天换、序号跨天连续涨，去掉按天判断即可。
+
+标题生成在 `src/handler.js` 的 `createAndBind()`，计数器在 `Store.nextSessionSeq()`，测试见 `scripts/test-session-seq.mjs`。
 
 ### 状态里两个 id 不能混
 

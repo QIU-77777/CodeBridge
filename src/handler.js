@@ -17,6 +17,12 @@ import { truncate } from './render.js'
 
 const MAX_PROMPT_CHARS = 20000
 
+/** 本地时区的 YYYYMMDD，用于会话默认名 */
+export function dayStamp(d = new Date()) {
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}`
+}
+
 export class Bridge {
   /**
    * @param {object} opts
@@ -1136,7 +1142,13 @@ export class Bridge {
       const [providerID, ...idParts] = model.split('/')
       if (providerID && idParts.length) modelRef = { providerID, id: idParts.join('/') }
     }
-    const title = `飞书 · ${new Date().toLocaleString('zh-CN', { hour12: false })}`
+    // 会话默认名：飞书·YYYYMMDD·新建会话n。n 按天从 1 开始，只增不减——
+    // 删会话、改会话名都不回收序号（按现存同名会话数推会把发过的号再发
+    // 出去，与历史重名），计数器在 store 里落盘，见 Store.nextSessionSeq。
+    // 先同步占号再发起创建：两个话题同时新建不会撞号；后端创建失败会跳过
+    // 一个号，跳号无害
+    const day = dayStamp()
+    const title = `飞书·${day}·新建会话${this.store.nextSessionSeq(day)}`
     const session = await this.oc.createSession({ title, directory, model: modelRef })
     this.store.set(ctx.key, {
       sessionId: session.id,

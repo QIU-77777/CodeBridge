@@ -77,6 +77,29 @@ export class Store {
     this.scheduleSave()
   }
 
+  /**
+   * 新建会话的按天序号，只增不减。
+   *
+   * 为什么需要计数器：会话默认名是「飞书·YYYYMMDD·新建会话n」，n 若按现存
+   * 同名会话数推，删掉一个会话、或把一个会话改名为别的，下一个就会发回已
+   * 用过的号，新名字与历史重名。计数器与后端会话无联动，删会话、改会话名
+   * 都碰不到它；落盘后重启不丢。
+   *
+   * 同步占号：调用方拿到号才去建会话，两个话题同时新建不会撞同一个 n。
+   * 后端创建失败会跳过一个号——跳号无害，重号有害。
+   *
+   * 占号后立即 flush 而不走防抖：号发出去了会话却还没建成，这中间进程被杀
+   * 的话，重启会把同一个号再发一次，撞上已建成的同名会话。
+   */
+  nextSessionSeq(day) {
+    const cur = this.data.sessionSeq
+    const n = cur && cur.day === day ? cur.n + 1 : 1
+    this.data.sessionSeq = { day, n }
+    this.dirty = true
+    this.flush()
+    return n
+  }
+
   all() {
     return Object.values(this.data.chats)
   }
