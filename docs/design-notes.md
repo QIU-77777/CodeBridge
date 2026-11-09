@@ -356,7 +356,7 @@ sqlite3 ~/.local/share/opencode/opencode.db "
 | 行为探针 | `scripts/probe-thread.mjs` | 飞书话题的 `thread_id` / `root_id` 到底是什么 |
 | 单元级 | `scripts/test-cards.mjs`（178 项） | Markdown 解析、卡片结构、大小、看门狗、错误提示、二进制选择、话题绑定、并行上限、@ 判定、来源标注与协作 id |
 | 单元级 | `scripts/test-prompt-ids.mjs`（39 项） | 前缀里的协作 id：话题内 / 主聊天流 / 私聊三种形态、自身 id 缺失、没有 names、实例覆盖模板后变量仍可取 |
-| 单元级 | `scripts/test-session-seq.mjs`（17 项） | 会话默认名「飞书·YYYYMMDD·新建会话n」：按天累加、跨天归 1、占号即落盘、并发不撞号、创建失败跳号 |
+| 单元级 | `scripts/test-session-seq.mjs`（22 项） | 会话默认名「飞书·YYYYMMDD·新建会话n」：按天累加、跨天归 1、占号即落盘、并发与创建交叠不撞号、创建失败跳号、旧版 state.json 无 sessionSeq 时归 1 且绑定不丢 |
 | 单元级 | `scripts/test-pi.mjs`（137 项） | pi JSONL 解析、流式事件映射、合成事件、超时、中止、静默收尾、会话续聊、飞书与 GitHub 身份注入 |
 | 单元级 | `scripts/test-patch-order.mjs`（29 项） | 卡片 patch 串行与合并：终态一定最后生效，在途积压的刷新合并且带最新快照 |
 | 单元级 | `scripts/test-github-app.mjs`（55 项） | GitHub App 身份：JWT 形状与签名、token 缓存与到期刷新、401 重试、四路环境注入、真实 git 下注入助手压过机器级助手、凭证助手协议、gh 包装脚本、未配置时零改动 |

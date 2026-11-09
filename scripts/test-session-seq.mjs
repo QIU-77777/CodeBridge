@@ -10,7 +10,7 @@
  * 历史上的重名。计数器落盘（state.json 的 sessionSeq），重启不丢。
  */
 import { fileURLToPath } from 'node:url'
-import { readFileSync, mkdtempSync, rmSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -114,6 +114,52 @@ function makeBridge(store, behavior = {}) {
   const nums = created.map((t) => Number(t.match(/新建会话(\d+)$/)[1])).sort((x, y) => x - y)
   ok(nums.length === 2 && nums[0] !== nums[1], '两个话题同时建会话不撞号', created.join(' | '))
   ok(s1.id !== s2.id, '两个会话 id 不同')
+}
+
+// ---------- 6b. 创建交叠时也不撞号 ----------
+//
+// 上一项的 createSession 立即返回，两次占号被微任务队列串开，覆盖不到
+// 「两个建会话请求真的在后端那头重叠」的形态。这里让 createSession 内部
+// await 20ms 再返回，两个 createAndBind 同时发起：占号段在第一个 await
+// 之前且全程同步，重叠时拿到的号仍然是 1 和 2
+{
+  const path = join(root, 'e2.json')
+  const created = []
+  const oc = {
+    async createSession({ title }) {
+      await new Promise((r) => setTimeout(r, 20))
+      created.push(title)
+      return { id: `ses_${created.length}`, title, location: { directory: '/tmp' } }
+    },
+  }
+  const b = new Bridge({ oc, store: new Store(path), config: { behavior: {}, feishu: {}, opencode: {} }, transport: {}, logger: quiet })
+  const mk = (k) => ({ key: `root:${k}`, chatId: 'oc_1', replyTo: k })
+  await Promise.all([b.createAndBind(mk('om_a'), '/tmp'), b.createAndBind(mk('om_b'), '/tmp')])
+  const nums = created.map((t) => Number(t.match(/新建会话(\d+)$/)[1])).sort((x, y) => x - y)
+  ok(nums[0] === 1 && nums[1] === 2, '创建请求重叠时号仍然是 1、2', created.join(' | '))
+  const onDisk = JSON.parse(readFileSync(path, 'utf8'))
+  ok(onDisk.sessionSeq?.n === 2, '落盘计数器记到 2', JSON.stringify(onDisk.sessionSeq))
+}
+
+// ---------- 6c. 旧版 state.json 没有 sessionSeq 字段 ----------
+//
+// 存量文件只有 version + chats：load 整对象替换后 cur 为 undefined，走 else
+// 分支返回 1，既有绑定一个不丢；day 是旧日期的 sessionSeq 同样归 1
+{
+  const path = join(root, 'g.json')
+  writeFileSync(
+    path,
+    JSON.stringify({ version: 1, chats: { 'root:om_old': { sessionId: 'ses_old', chatId: 'oc_1', replyTo: 'om_old', key: 'root:om_old' } } }),
+    'utf8',
+  )
+  const st = new Store(path)
+  ok(st.nextSessionSeq(dayStamp()) === 1, '旧文件（无 sessionSeq）首个序号是 1')
+  ok(st.get('root:om_old')?.sessionId === 'ses_old', '旧文件的会话绑定不丢')
+
+  const path2 = join(root, 'h.json')
+  writeFileSync(path2, JSON.stringify({ version: 1, chats: {}, sessionSeq: { day: '20260101', n: 57 } }), 'utf8')
+  const st2 = new Store(path2)
+  ok(st2.nextSessionSeq(dayStamp()) === 1, '计数器是旧日期时序号归 1')
 }
 
 // ---------- 7. 创建失败跳号，不回填 ----------
