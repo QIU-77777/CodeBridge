@@ -628,6 +628,9 @@ if (process.argv.includes('--live')) {
   ok(/群「桥接话题探针」/.test(o1), '来源标注带群名', o1)
   ok(/主聊天流/.test(o1), '来源标注区分主聊天流 / 话题内', o1)
   ok(/ou_lild（机器人）/.test(o1), '来源标注带发送者 open_id 和「人 / 机器人」', o1)
+  ok(/chat oc_g/.test(o1), '主聊天流的来源标注带群 id（@ 唤醒别人要用）', o1)
+  ok(/msg om_o1/.test(o1), '主聊天流的来源标注带本条消息 id', o1)
+  ok(/self ou_me/.test(o1), '来源标注带自己的 open_id', o1)
   ok(/小d · ou_lild/.test(o1), '知道名字时显示「名字 · open_id」，id 保持完整以便 @ 回去', o1)
   // 协作机制说明：默认每会话只带一次（oncePrefix），不再混在每条消息的 origin 里
   // ——规则是静态的，第一条带过就在会话历史里，每轮重复只是白烧 token
@@ -660,8 +663,32 @@ if (process.argv.includes('--live')) {
     sender: { sender_id: { open_id: 'ou_user' }, sender_type: 'user' },
   })
   ok(/话题内/.test(got[1]?.origin || ''), '话题里的消息标注为「话题内」')
+  ok(/root om_o1/.test(got[1]?.origin || ''), '话题里的来源标注带话题根消息 id（回话题发言要用）', got[1]?.origin)
+  ok(/msg om_o2/.test(got[1]?.origin || ''), '话题里的来源标注带本条消息 id', got[1]?.origin)
+  ok(/thread omt_1/.test(got[1]?.origin || ''), '话题里的来源标注带话题 id（拉话题历史要用）', got[1]?.origin)
   ok(/ou_user（用户）/.test(got[1]?.origin || ''), '人类发送者标为「用户」')
   ok(got[1]?.oncePrefix !== undefined, 'oncePrefix 字段每条消息都带（由上层决定拼不拼）')
+
+  // 主聊天流里的引用回复：root_id 有值、thread_id 缺失。飞书对任何回复都返回
+  // root_id，只有真话题消息才带 thread_id——拿 root_id 判「在话题里」会把它
+  // 误标成话题内，thread 一行还会拿到 om_ 消息 id
+  await t.handleImMessage({
+    message: {
+      message_type: 'text',
+      chat_type: 'group',
+      chat_id: 'oc_g',
+      message_id: 'om_o2q',
+      content: JSON.stringify({ text: '@_user_1 引用回复' }),
+      mentions: me,
+      root_id: 'om_o1',
+    },
+    sender: { sender_id: { open_id: 'ou_user' }, sender_type: 'user' },
+  })
+  ok(/主聊天流/.test(got[2]?.origin || ''), '主聊天流的引用回复标为主聊天流', got[2]?.origin)
+  ok(!/话题内/.test(got[2]?.origin || ''), '主聊天流的引用回复不标成话题内', got[2]?.origin)
+  ok(!/thread/.test(got[2]?.origin || ''), '没有 thread_id 就不出现 thread 段', got[2]?.origin)
+  ok(!/root/.test(got[2]?.origin || ''), '主聊天流不出现 root 段', got[2]?.origin)
+  ok(/msg om_o2q/.test(got[2]?.origin || ''), '主聊天流的引用回复带本条消息 id', got[2]?.origin)
 
   await t.handleImMessage({
     message: {
@@ -673,9 +700,9 @@ if (process.argv.includes('--live')) {
     },
     sender: { sender_id: { open_id: 'ou_user' }, sender_type: 'user' },
   })
-  ok(/私聊/.test(got[2]?.origin || ''), '私聊标注为「私聊」')
-  ok(!(got[2]?.oncePrefix || ''), '私聊不带协作说明（群里没有其他 agent）')
-  ok(!/\[协作 ·/.test(got[2]?.origin || ''), '私聊的来源标注里也没有协作说明')
+  ok(/私聊/.test(got[3]?.origin || ''), '私聊标注为「私聊」')
+  ok(!(got[3]?.oncePrefix || ''), '私聊不带协作说明（群里没有其他 agent）')
+  ok(!/\[协作 ·/.test(got[3]?.origin || ''), '私聊的来源标注里也没有协作说明')
 
   // 配置化：text 填了就用用户的版本；自定义 always 条目并进每条消息的 origin
   const t2 = new FeishuTransport(
@@ -701,9 +728,9 @@ if (process.argv.includes('--live')) {
     },
     sender: { sender_id: { open_id: 'ou_user' }, sender_type: 'user' },
   })
-  ok(/我的协作规则：先问再做。/.test(got[3]?.oncePrefix || ''), 'rules 的 text 填了就覆盖内置默认', got[3]?.oncePrefix)
-  ok(/回答用中文。/.test(got[3]?.origin || ''), '自定义 always 前缀并进每条消息的来源标注', got[3]?.origin)
-  ok(!/\[协作 ·/.test(got[3]?.oncePrefix || ''), '覆盖后不再出现内置默认文本')
+  ok(/我的协作规则：先问再做。/.test(got[4]?.oncePrefix || ''), 'rules 的 text 填了就覆盖内置默认', got[4]?.oncePrefix)
+  ok(/回答用中文。/.test(got[4]?.origin || ''), '自定义 always 前缀并进每条消息的来源标注', got[4]?.origin)
+  ok(!/\[协作 ·/.test(got[4]?.oncePrefix || ''), '覆盖后不再出现内置默认文本')
 
   // 删掉 rules 条目 = 关闭协作说明
   const t3 = new FeishuTransport(
@@ -721,7 +748,7 @@ if (process.argv.includes('--live')) {
     },
     sender: { sender_id: { open_id: 'ou_user' }, sender_type: 'user' },
   })
-  ok(!(got[4]?.oncePrefix || ''), 'prefixes 清空后不再拼任何 once 前缀')
+  ok(!(got[5]?.oncePrefix || ''), 'prefixes 清空后不再拼任何 once 前缀')
 
   const cached = await t.resolveChatName('oc_g')
   ok(cached === '桥接话题探针' && t.chatNames.size === 1, '群名只取一次，后续走缓存')

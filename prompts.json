@@ -6,6 +6,8 @@
     "互斥组 · always.origin       { group | private }                  群消息 / 私聊",
     "互斥组 · always.where        { groupNamed | groupFallback | private }  群名取到 / 取不到 / 私聊",
     "互斥组 · always.scope        { thread | main }                    话题内 / 主聊天流（私聊时整个 scope 为空）",
+    "互斥组 · always.ids          { thread | main | private }          协作要用的 id 一行。thread 形态带 chat/thread/root/msg/self，main 带 chat/msg/self，private 带 msg/self；在不在话题里看 thread_id，root_id 在任何回复场景都会返回，不能当判据",
+    "互斥组 · always.peers        { list | empty }                    可@的同伴 id，来自配置 feishu.names（本应用视角），只在群里拼",
     "互斥组 · always.sender       { named | idOnly | unknown }         名字+id / 只有 id / 拿不到 id",
     "互斥组 · always.senderType   { user | bot }                       人类 / 机器人",
     "互斥组 · always.identityLine { pi | opencode }                    pi 后端 / opencode 后端",
@@ -25,8 +27,17 @@
       "private": "私聊"
     },
     "scope": {
-      "thread": "话题内 · thread {{thread}}",
-      "main": "主聊天流 · chat {{chat}}"
+      "thread": "话题内",
+      "main": "主聊天流"
+    },
+    "ids": {
+      "thread": "协作 id · chat {{chat}} · thread {{thread}} · root {{root}} · msg {{msg}} · self {{self}}",
+      "main": "协作 id · chat {{chat}} · msg {{msg}} · self {{self}}",
+      "private": "协作 id · msg {{msg}} · self {{self}}"
+    },
+    "peers": {
+      "list": "可@的 id · {{peers}}",
+      "empty": ""
     },
     "sender": {
       "named": "{{name}} · {{id}}",
@@ -44,6 +55,6 @@
     "identityApp": "（飞书应用 {{appId}}）"
   },
   "once": {
-    "rules": "[协作 · 唤醒另一个 agent 的唯一方法：用 feishu-cli 发一条带 at 标签的新 text 消息。命令模板（只替换 open_id，其余照抄）：feishu-cli msg send --receive-id <群 chat_id> --receive-id-type chat_id --text '<at user_id=\"对方 open_id\"></at> 要说的话'。对方 open_id 只认本应用视角，来源只有两处：它给你发过的消息，完整 id 就在本行上方「发送者」标注里；人类直接告诉你（人类还可以在配置的 feishu.names 里声明它的名字，声明后标注会同时带上名字和 id）。这两处都没有，飞书也没有按应用查机器人 open_id 的接口，你拿不到——请人类给你，不要猜 id、也不要用普通文本 @名字 冒充（那只是字面字符，唤不醒任何人）。在话题里发言要用 --reply 回复该话题内已有的一条 om_ 消息，不要新开发布到主聊天流。你的终态回复呈现在卡片上，卡片不唤醒任何人]\n[溯源 · 需要本条消息之前的话题上下文时，用 feishu-cli 拉取来源标注里 thread（话题）或 chat（群）对应的消息历史，能看到没有 @ 你的轮次和其他人的发言。feishu-cli 不一定在 PATH 里，先用 command -v feishu-cli 或查看 ~/.local/bin 定位可执行文件；子命令与参数用法随版本变化，不确定时先跑 feishu-cli msg --help 查，不要凭记忆猜命令]"
+    "rules": "[协作 · 唤醒另一个 agent 的唯一方法：用 feishu-cli 发一条带 at 标签的新 text 消息。命令模板（只替换 open_id，其余照抄）：feishu-cli msg send --receive-id <群 chat_id> --receive-id-type chat_id --text '<at user_id=\"对方 open_id\"></at> 要说的话'。对方 open_id 只认本应用视角，来源有三处：前缀里的「可@的 id」一行（配置 feishu.names 声明过的，名字与 id 成对给出）；它给你发过的消息，「发送者」标注里是完整 id；人类直接告诉你。这三处都没有，飞书也没有按应用查机器人 open_id 的接口，你拿不到——请人类给你，不要猜 id、也不要用普通文本 @名字 冒充（那只是字面字符，唤不醒任何人）。在话题里发言要用 --reply 回复该话题内已有的一条 om_ 消息，不要新开发布到主聊天流；回复目标取前缀「协作 id」一行里的 root（话题根消息）或 msg（人类刚发的这条）。你的终态回复呈现在卡片上，卡片不唤醒任何人]\n[溯源 · 需要本条消息之前的话题上下文时，用 feishu-cli 拉取前缀「协作 id」一行里 thread（话题）或 chat（群）对应的消息历史，能看到没有 @ 你的轮次和其他人的发言。feishu-cli 不一定在 PATH 里，先用 command -v feishu-cli 或查看 ~/.local/bin 定位可执行文件；子命令与参数用法随版本变化，不确定时先跑 feishu-cli msg --help 查，不要凭记忆猜命令]"
   }
 }

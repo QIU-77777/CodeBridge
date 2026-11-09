@@ -354,7 +354,8 @@ sqlite3 ~/.local/share/opencode/opencode.db "
 |---|---|---|
 | 组件级 | `scripts/probe-card.mjs` | 平台收不收这种结构 |
 | 行为探针 | `scripts/probe-thread.mjs` | 飞书话题的 `thread_id` / `root_id` 到底是什么 |
-| 单元级 | `scripts/test-cards.mjs`（155 项） | Markdown 解析、卡片结构、大小、看门狗、错误提示、二进制选择、话题绑定、并行上限、@ 判定 |
+| 单元级 | `scripts/test-cards.mjs`（173 项） | Markdown 解析、卡片结构、大小、看门狗、错误提示、二进制选择、话题绑定、并行上限、@ 判定、来源标注与协作 id |
+| 单元级 | `scripts/test-prompt-ids.mjs`（29 项） | 前缀里的协作 id：话题内 / 主聊天流 / 私聊三种形态、自身 id 缺失、没有 names、实例覆盖模板后变量仍可取 |
 | 单元级 | `scripts/test-pi.mjs`（137 项） | pi JSONL 解析、流式事件映射、合成事件、超时、中止、静默收尾、会话续聊、飞书与 GitHub 身份注入 |
 | 单元级 | `scripts/test-patch-order.mjs`（29 项） | 卡片 patch 串行与合并：终态一定最后生效，在途积压的刷新合并且带最新快照 |
 | 单元级 | `scripts/test-github-app.mjs`（55 项） | GitHub App 身份：JWT 形状与签名、token 缓存与到期刷新、401 重试、四路环境注入、真实 git 下注入助手压过机器级助手、凭证助手协议、gh 包装脚本、未配置时零改动 |
@@ -376,12 +377,13 @@ src/render.js    事件 → 运行态聚合（文本、工具、状态机）
 src/md.js        Markdown → 卡片元素（表格/代码块/标题/列表分段解析）
 src/cards.js     飞书卡片模板（card 2.0）
 src/handler.js   命令分发、消息处理、卡片回调、看门狗
-src/feishu.js    飞书长连接与消息收发
+src/feishu.js    飞书长连接与消息收发、来源标注与协作 id 前缀（buildPrefix）
 src/index.js     入口（含 --dry 模式、单实例锁）
 src/which-opencode.js  选哪个 opencode 二进制（桌面版 CLI 优先）
 
 scripts/selftest.mjs    集成自测（23 项）
-scripts/test-cards.mjs  卡片、markdown、看门狗、错误提示、话题绑定、@ 判定、来源标注测试与 prompt 前缀模式（155 项；--live 多 3 项）
+scripts/test-cards.mjs  卡片、markdown、看门狗、错误提示、话题绑定、@ 判定、来源标注测试与 prompt 前缀模式（173 项；--live 多 3 项）
+scripts/test-prompt-ids.mjs  前缀协作 id 的离线测试（29 项）
 scripts/doctor.mjs      环境体检（含版本一致性检查）
 scripts/which-opencode.mjs  打印选中的二进制，供 up.sh 调用
 scripts/probe-card.mjs  卡片 schema 探针
@@ -468,17 +470,26 @@ key = root:<root_id || message_id>
 
 最初 `oc.prompt(sessionId, text)` 只发正文。结果一次「在群里打个招呼」跑了 **9 分 12 秒、48 步**——模型先去 `ls`、读仓库、翻 bridge 源码，才反推出「这条消息来自飞书、我在哪个群」。
 
-这些信息在事件里本来就有，只是没往下传。现在每条 prompt 前面拼一行：
+这些信息在事件里本来就有，只是没往下传。现在每条 prompt 前面拼四行：
 
 ```
-[飞书 · 群「桥接话题探针」 · 话题内 · 发送者 ou_c4f80436…（机器人） · 2026/11/5 20:18:05]
+[飞书 · 群「桥接话题探针」 · 话题内 · 发送者 邱琪光 · ou_f15edffe49c8366b3dbd645d1d5aab62（用户） · 2026/11/9 19:52:09]
+协作 id · chat oc_eaae4e2d9fa07208665004e2b84e2a4b · thread omt_1994229a070f5b52 · root om_x100b60275ef530a0cf50e8a4b17cbee · msg om_x100b602f7053e4a0c1b2f70a5dbe0d9 · self ou_5279ca234690b8ec1a407cb11f4ed014
+[身份 · 你是 Lil_P（飞书应用 cli_aa67d936263add19） · 桥接已为本进程注入你的飞书凭证，用 feishu-cli / lark-cli 发言就是以你的身份发出]
+可@的 id · Lil_O=ou_47de1abdda79bfefd2c4737d9f1e763e · 邱琪光=ou_f15edffe49c8366b3dbd645d1d5aab62
 ```
 
-三个字段各有用途：群名/私聊解决「我在哪」；**完整 open_id** 解决「@ 回去」——@ 某人需要对方完整 id，猜不出来，之前模型只能写字面量 `@LiLO`，对方收不到提醒；`sender_type` 区分人与机器人，用于决定语气和防循环。
+第一行三个字段各有用途：群名/私聊解决「我在哪」；**完整 open_id** 解决「@ 回去」——@ 某人需要对方完整 id，猜不出来，之前模型只能写字面量 `@LiLO`，对方收不到提醒；`sender_type` 区分人与机器人，用于决定语气和防循环。
+
+第二行是协作要用的全部 id。飞书里 agent 之间的每一次互动都要落到具体的 chat / thread / message 上：@ 唤醒别人要 `chat_id`（`msg send --receive-id`），拉话题历史要 `thread_id`（`msg thread-messages`），回话题里发言要 root 消息 id（`msg reply`），精确回复本条要 `msg id`，`self` 是自己的 open_id。这些 id 事件里全都有，但早期只往下传了一个 `thread`——真实事故里 agent 为了拿到话题根消息 id，先去翻 `logs/bridge.log`，又去读 `store.js` 反推绑定键格式，白烧十几步。现在一次性给全，`logs/bridge.log` 退回纯排障用途。
+
+「在不在话题里」的判据是 `thread_id`，不是 `root_id`。飞书对**任何**回复都返回 `root_id`（指向被引用的那条），主聊天流里一句普通的引用回复同样带 `root_id`；只有真话题消息才带 `thread_id`。用 `root_id` 判会把主聊天流的引用回复标成「话题内」，`thread` 一行还会拿到 `om_` 消息 id，模型照着跑 `msg thread-messages` 必然失败。这条判据同时管 `scope` 与 `ids` 两行；会话绑定键（`root:${rootId}`）仍按 `root_id` 算，那是另一套语义——同一被回复消息下的对话算一个会话，与位置标注无关。
+
+第四行的同伴 id 来自配置里的 `feishu.names`。open_id 按应用隔离：我眼里 Lil_O 的 id 和 Lil_O 眼里自己的 id 不是同一个值，所以这里给的必须是「本应用视角」的那一个，也正是 @ 唤醒时要传的值。
 
 成本控制：群名走 `/im/v1/chats/:chat_id` 且缓存，一条消息一次接口太贵；没权限就静默降级成「群聊」。发送者名字要 `im:chat.members:read`，默认没开，所以只给 open_id——够用，因为真正需要名字的是人，而人已经和 open_id 绑定在 allowlist 里了。
 
-这行是在 `runPrompt` 里拼的，不参与 `/命令` 解析，也不占 `MAX_PROMPT_CHARS`。
+前缀在 `src/feishu.js` 的 `buildPrefix()` 里拼，纯函数、不碰网络，测试直接喂事件字段（`scripts/test-prompt-ids.mjs`）。它不参与 `/命令` 解析，也不占 `MAX_PROMPT_CHARS`。
 
 ### 状态里两个 id 不能混
 
