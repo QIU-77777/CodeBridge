@@ -356,6 +356,7 @@ sqlite3 ~/.local/share/opencode/opencode.db "
 | 行为探针 | `scripts/probe-thread.mjs` | 飞书话题的 `thread_id` / `root_id` 到底是什么 |
 | 单元级 | `scripts/test-cards.mjs`（178 项） | Markdown 解析、卡片结构、大小、看门狗、错误提示、二进制选择、话题绑定、并行上限、@ 判定、来源标注与协作 id |
 | 单元级 | `scripts/test-prompt-ids.mjs`（39 项） | 前缀里的协作 id：话题内 / 主聊天流 / 私聊三种形态、自身 id 缺失、没有 names、实例覆盖模板后变量仍可取 |
+| 单元级 | `scripts/test-up-sh.mjs`（22 项） | 起停脚本：bash 不认的块注释、launchctl 调用套超时（kickstart 会挂住）、最后一次 bootstrap 不吞错误、起不来时非 0 退出、status.sh 的 pid 来自 launchctl print 而非 pgrep |
 | 单元级 | `scripts/test-session-seq.mjs`（22 项） | 会话默认名「飞书·YYYYMMDD·新建会话n」：按天累加、跨天归 1、占号即落盘、并发与创建交叠不撞号、创建失败跳号、旧版 state.json 无 sessionSeq 时归 1 且绑定不丢 |
 | 单元级 | `scripts/test-pi.mjs`（137 项） | pi JSONL 解析、流式事件映射、合成事件、超时、中止、静默收尾、会话续聊、飞书与 GitHub 身份注入 |
 | 单元级 | `scripts/test-patch-order.mjs`（29 项） | 卡片 patch 串行与合并：终态一定最后生效，在途积压的刷新合并且带最新快照 |
@@ -384,7 +385,8 @@ src/which-opencode.js  选哪个 opencode 二进制（桌面版 CLI 优先）
 
 scripts/selftest.mjs    集成自测（23 项）
 scripts/test-cards.mjs  卡片、markdown、看门狗、错误提示、话题绑定、@ 判定、来源标注测试与 prompt 前缀模式（173 项；--live 多 3 项）
-scripts/test-prompt-ids.mjs  前缀协作 id 的离线测试（29 项）
+scripts/test-prompt-ids.mjs  前缀协作 id 的离线测试（39 项）
+scripts/test-up-sh.mjs  起停脚本的源码断言与失败路径验证（22 项）
 scripts/doctor.mjs      环境体检（含版本一致性检查）
 scripts/which-opencode.mjs  打印选中的二进制，供 up.sh 调用
 scripts/probe-card.mjs  卡片 schema 探针
