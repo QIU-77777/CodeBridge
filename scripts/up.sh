@@ -14,18 +14,47 @@ AGENT_LABELS="$(ocb_label serve) $LABEL_APP"
 agent_installed() { [ -f "$HOME/Library/LaunchAgents/$1.plist" ]; }
 agent_loaded() { launchctl print "gui/$UID_NUM/$1" >/dev/null 2>&1; }
 
+/**
+ * 起一个 launchd 服务，三条路依次试，最后一条不吞错误：
+ *   1. 已加载 → kickstart -k 重启它；kickstart 失败就接着往下试
+ *   2. 没加载（或上一条失败）→ bootstrap
+ *   3. 还失败 → 等 2 秒再 bootstrap 一次，错误照实打出来
+ *
+ * 为什么不能只看 launchctl print 判「要不要 bootstrap」：down.sh 刚 bootout
+ * 的服务在 launchd 里还会停留一小会儿（进程已收到 SIGTERM，launchd 排定的清理
+ * 还没执行），这时 print 是成功的，于是走 kickstart——而 kickstart 对一个正在
+ * 拆除的服务必然失败，错误又被 >/dev/null 吞掉。现象是 up.sh 打印「已重启」、
+ * 状态却显示没起来，且不留任何线索。真实事故（2026-11-10）：重启默认实例时
+ * serve 的 label 再没被加载过，桥接进入「连不上 opencode serve」的重启循环。
+ */
+start_label() {
+  local label="$1"
+  local plist="$HOME/Library/LaunchAgents/$label.plist"
+  if agent_loaded "$label" && launchctl kickstart -k "gui/$UID_NUM/$label" 2>/dev/null; then
+    return 0
+  fi
+  if launchctl bootstrap "gui/$UID_NUM" "$plist" 2>/dev/null; then
+    return 0
+  fi
+  # bootout 的清理没做完时 bootstrap 会失败，等一会儿再来
+  sleep 2
+  launchctl bootstrap "gui/$UID_NUM" "$plist"
+}
+
 if agent_installed "$LABEL_APP"; then
+  FAILED=0
   for label in $AGENT_LABELS; do
     agent_installed "$label" || continue
-    if agent_loaded "$label"; then
-      launchctl kickstart -k "gui/$UID_NUM/$label" >/dev/null 2>&1
-    else
-      launchctl bootstrap "gui/$UID_NUM" "$HOME/Library/LaunchAgents/$label.plist" >/dev/null 2>&1
+    if ! start_label "$label"; then
+      echo "❌ 起不来: $label"
+      echo "   手工看: launchctl print gui/$UID_NUM/$label"
+      FAILED=1
     fi
   done
   echo "→ 这两个进程由 launchd 托管，已重启"
   sleep 6
   ./scripts/status.sh
+  [ "$FAILED" = 0 ] || exit 1
   exit 0
 fi
 

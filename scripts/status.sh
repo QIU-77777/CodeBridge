@@ -23,11 +23,17 @@ LABEL_APP="$(ocb_label app)"
 if [ -n "${OCB_INSTANCE:-}" ]; then echo "   实例: $OCB_INSTANCE  ($LABEL_APP)"; fi
 if [ -f "$HOME/Library/LaunchAgents/$LABEL_APP.plist" ]; then
   if launchctl print "gui/$UID_NUM/$LABEL_APP" >/dev/null 2>&1; then
-    BPID=$(pgrep -f "node .*src/index.js" | head -1)
+    # pid 必须问 launchd 要，不能 pgrep：多实例同机时 "node src/index.js" 有
+    # 好几份，pgrep | head -1 会捡到别的实例的进程，把没起来的这个说成「运行
+    # 中」。真实事故（2026-11-10）：默认实例的桥接正在重启循环里，状态却显示另
+    # 一个实例的 pid 正常，排查因此被带偏
+    PR=$(launchctl print "gui/$UID_NUM/$LABEL_APP" 2>/dev/null)
+    BPID=$(printf '%s\n' "$PR" | awk '/^[[:space:]]*pid = [0-9]+/{print $3; exit}')
     if [ -n "$BPID" ]; then
       echo "   ✅ 运行中  pid=$BPID  已跑 $(ps -o etime= -p "$BPID" | tr -d ' ')  （launchd 托管）"
     else
-      echo "   ⏳ launchd 已加载但进程不在，通常几秒内会被拉起；看 logs/bridge.log"
+      echo "   ⏳ launchd 已加载但进程不在（可能在重启循环，看 logs/bridge.log）"
+      printf '%s\n' "$PR" | grep -E '^[[:space:]]*(state|last exit code) = ' | sed 's/^/      /'
     fi
   else
     echo "   ⏸️  launchd 里是暂停状态（启动：./scripts/up.sh）"
