@@ -14,29 +14,50 @@ AGENT_LABELS="$(ocb_label serve) $LABEL_APP"
 agent_installed() { [ -f "$HOME/Library/LaunchAgents/$1.plist" ]; }
 agent_loaded() { launchctl print "gui/$UID_NUM/$1" >/dev/null 2>&1; }
 
-/**
- * 起一个 launchd 服务，三条路依次试，最后一条不吞错误：
- *   1. 已加载 → kickstart -k 重启它；kickstart 失败就接着往下试
- *   2. 没加载（或上一条失败）→ bootstrap
- *   3. 还失败 → 等 2 秒再 bootstrap 一次，错误照实打出来
- *
- * 为什么不能只看 launchctl print 判「要不要 bootstrap」：down.sh 刚 bootout
- * 的服务在 launchd 里还会停留一小会儿（进程已收到 SIGTERM，launchd 排定的清理
- * 还没执行），这时 print 是成功的，于是走 kickstart——而 kickstart 对一个正在
- * 拆除的服务必然失败，错误又被 >/dev/null 吞掉。现象是 up.sh 打印「已重启」、
- * 状态却显示没起来，且不留任何线索。真实事故（2026-11-10）：重启默认实例时
- * serve 的 label 再没被加载过，桥接进入「连不上 opencode serve」的重启循环。
- */
+# 给命令套超时。macOS 没有 timeout 命令，而 launchctl 对「程序路径错误」的
+# label 会无限期卡住（kickstart 等一个永远起不来的进程，不返回）——不套超时
+# 会把 up.sh 连同 admin 的 HTTP 请求一起挂死。真实事故：2026-11-10 两次跑
+# start_label 都被空闲看门狗杀掉，原因就是 kickstart 挂住不放。
+# 用法：run_with_timeout <秒> <命令...>
+run_with_timeout() {
+  local secs="$1"; shift
+  "$@" &
+  local pid=$!
+  # 看门狗：到点杀掉主命令，然后自己也退，不留野进程
+  (
+    sleep "$secs"
+    kill "$pid" 2>/dev/null
+  ) &
+  local killer=$!
+  wait "$pid" 2>/dev/null
+  local rc=$?
+  kill "$killer" 2>/dev/null
+  wait "$killer" 2>/dev/null
+  return "$rc"
+}
+
+# 起一个 launchd 服务，三条路依次试，最后一条不吞错误：
+#   1. 已加载 → kickstart -k 重启它；kickstart 失败或超时就接着往下试
+#   2. 没加载（或上一条失败）→ bootstrap
+#   3. 还失败 → 等 2 秒再 bootstrap 一次，错误照实打出来
+#
+# 为什么不能只看 launchctl print 判「要不要 bootstrap」：down.sh 刚 bootout
+# 的服务在 launchd 里还会停留一小会儿（进程已收到 SIGTERM、launchd 排定的清理
+# 还没执行），这时 print 是成功的，于是走 kickstart——而 kickstart 对一个正在
+# 拆除的服务必然失败，错误又被 >/dev/null 吞掉。现象是 up.sh 打印「已重启」、
+# 状态却显示没起来，且不留任何线索。真实事故（2026-11-10）：重启默认实例时
+# serve 的 label 再没被加载过，桥接进入「连不上 opencode serve」的重启循环。
 start_label() {
   local label="$1"
   local plist="$HOME/Library/LaunchAgents/$label.plist"
-  if agent_loaded "$label" && launchctl kickstart -k "gui/$UID_NUM/$label" 2>/dev/null; then
+  if agent_loaded "$label" && run_with_timeout 10 launchctl kickstart -k "gui/$UID_NUM/$label" 2>/dev/null; then
     return 0
   fi
-  if launchctl bootstrap "gui/$UID_NUM" "$plist" 2>/dev/null; then
+  if run_with_timeout 10 launchctl bootstrap "gui/$UID_NUM" "$plist" 2>/dev/null; then
     return 0
   fi
-  # bootout 的清理没做完时 bootstrap 会失败，等一会儿再来
+  # bootout 的清理没做完时 bootstrap 会失败，等一会儿再来。这条既不套超时也
+  # 不吞错误：它是最后一次尝试，失败必须把 launchctl 的原话亮出来
   sleep 2
   launchctl bootstrap "gui/$UID_NUM" "$plist"
 }
