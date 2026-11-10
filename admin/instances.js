@@ -140,9 +140,13 @@ export function discoverInstances() {
     if (seen.has(dir)) continue
     seen.set(dir, { name: instanceNameOf(dir), dir, label: null, plistPath: null, managed: false })
   }
-  // admin 进程自身的 OCB_CONFIG_DIR 也纳入（自定义路径且没建 plist 时看得见）
+  // admin 进程自身的 OCB_CONFIG_DIR 也纳入（自定义路径且没建 plist 时看得见）。
+  // 目录里得有 config.json 或 state.json 才纳入：默认实例改名成带后缀的实例后
+  // （配置目录搬走），缺省目录已经不在，无条件纳入会在总览里多出一行幽灵实例——
+  // 未托管、pid 空、会话 0，指向一个不存在的目录。真实事故：2026-11-10 把默认
+  // 实例改名成 lil-o 之后，admin 总览里除了 lil-o 还挂着一个 default
   const own = defaultConfigDir()
-  if (!seen.has(own)) {
+  if (!seen.has(own) && (existsSync(join(own, 'config.json')) || existsSync(join(own, 'state.json')))) {
     seen.set(own, { name: instanceNameOf(own), dir: own, label: null, plistPath: null, managed: false })
   }
   return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name))

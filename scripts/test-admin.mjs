@@ -152,6 +152,29 @@ try {
     rmSync(fakeHome, { recursive: true, force: true })
   }
 
+  // 2c. 缺省配置目录不存在时，不能凭空多出一个指向它的幽灵实例。默认实例改名成
+  // 带后缀的实例后（配置目录搬走），缺省目录就不在了；admin 曾经无条件把
+  // defaultConfigDir() 纳入列表，总览里于是多出一行「default」：未托管、pid 空、
+  // 会话 0，目录指向不存在的地方。真实事故：2026-11-10 默认实例改名成 lil-o 之后
+  {
+    const fakeHome = mkdtempSync(join(tmpdir(), 'ocb-ghost-'))
+    const homeDir = join(fakeHome, 'home')
+    const piDir = join(homeDir, '.config', 'opencode-feishu-bridge-pi')
+    mkdirSync(piDir, { recursive: true })
+    writeFileSync(join(piDir, 'config.json'), '{}')
+    // 故意不创建缺省目录 ~/.config/opencode-feishu-bridge。
+    // OCB_CONFIG_DIR 必须显式清空：子进程默认继承调用方环境，那里可能指着某个
+    // 真实实例的目录，own 就落到一个存在的目录上，幽灵场景根本构造不出来
+    const found = discoverUnderEnv({ HOME: homeDir, OCB_CONFIG_DIR: '' })
+    ok(
+      !found.some((i) => i.name === 'default'),
+      '缺省配置目录不存在时不多出 default 实例',
+      JSON.stringify(found.map((i) => i.name)),
+    )
+    ok(found.some((i) => i.name === 'pi' && i.dir === piDir), '目录扫描仍然发现已存在的实例')
+    rmSync(fakeHome, { recursive: true, force: true })
+  }
+
   // 3. 起停环境变量：default 不带 OCB_INSTANCE，其余带；OCB_CONFIG_DIR 始终传递
   const envDefault = names.instanceEnv('default', '/tmp/x')
   ok(envDefault.OCB_INSTANCE === '' && envDefault.OCB_CONFIG_DIR === '/tmp/x', 'default 实例的 OCB_INSTANCE 为空')

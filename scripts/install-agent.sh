@@ -90,28 +90,39 @@ done
 BACKEND_TYPE=$("$NODE" -e "try{console.log((require('$CONFIG').backend||{}).type||'opencode')}catch{console.log('opencode')}" 2>/dev/null || echo opencode)
 
 # 只有 opencode 实例需要 serve；pi / dsh 是一次性子进程，不需要常驻服务
-LABELS=("$LABEL_APP")
+NEED_SERVE=0
 if [ "$BACKEND_TYPE" = "opencode" ]; then
   write_plist "$LABEL_SERVE" serve.sh serve.log
   echo "已写入 $PLIST_DIR/$LABEL_SERVE.plist"
-  LABELS+=("$LABEL_SERVE")
+  NEED_SERVE=1
 else
   echo "后端 ${BACKEND_TYPE}：跳过 opencode serve（只有 opencode 实例需要）"
 fi
 write_plist "$LABEL_APP" bridge.sh bridge.log
 echo "已写入 $PLIST_DIR/$LABEL_APP.plist"
 
-for label in "${LABELS[@]}"; do
+# 起一个 label：先 bootout 再 bootstrap，最后 enable
+boot_label() {
+  local label="$1"
   launchctl bootout "gui/$UID_NUM/$label" 2>/dev/null || true
   launchctl bootstrap "gui/$UID_NUM" "$PLIST_DIR/$label.plist"
   launchctl enable "gui/$UID_NUM/$label" 2>/dev/null || true
-done
+}
 
-# 等 serve 就绪，再让飞书长连接那边确认没问题
-if [ "$BACKEND_TYPE" = "opencode" ]; then
+# 启动顺序：先把 serve 拉起来并等它就绪，最后才 bootstrap 桥接。
+# 反过来（先 app 后 serve）会让桥接第一次启动时连不上 serve：src/index.js 的
+# 启动检查直接退出 1，launchd 要等 ThrottleInterval 10 秒才拉起第二次，这十几秒
+# 里机器人不应答，日志里还留一行「❌ 连不上 opencode serve」。真实事故：
+# 2026-11-10 把默认实例改名成 lil-o 后全新安装，桥接第一次启动即失败
+if [ "$NEED_SERVE" = "1" ]; then
+  boot_label "$LABEL_SERVE"
+  # 就绪检查打本实例配置里的地址，不写死 19876：实例可以换端口
+  SERVE_URL=$("$NODE" -e "try{console.log(require('$CONFIG').opencode.url||'http://127.0.0.1:19876')}catch{console.log('http://127.0.0.1:19876')}" 2>/dev/null || echo 'http://127.0.0.1:19876')
   for i in $(seq 1 30); do
     PW=$("$NODE" -e "try{console.log(require('$CONFIG').opencode.password||'')}catch{console.log('')}" 2>/dev/null || echo '')
-    if curl -s -m 2 -u "opencode:$PW" http://127.0.0.1:19876/api/info >/dev/null 2>&1; then
+    # 必须 200：端口上换成别的服务也会应答（404），那样不算 serve 就绪
+    CODE=$(curl -s -m 2 -o /dev/null -w '%{http_code}' -u "opencode:$PW" "$SERVE_URL/api/info" 2>/dev/null || echo 000)
+    if [ "$CODE" = "200" ]; then
       echo "✅ serve 已就绪"
       break
     fi
@@ -119,6 +130,7 @@ if [ "$BACKEND_TYPE" = "opencode" ]; then
     sleep 1
   done
 fi
+boot_label "$LABEL_APP"
 
 sleep 4
 echo

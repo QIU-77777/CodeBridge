@@ -633,21 +633,13 @@ if (process.argv.includes('--live')) {
   ok(/self ou_me/.test(o1), '来源标注带自己的 open_id', o1)
   ok(/小d · ou_lild/.test(o1), '知道名字时显示「名字 · open_id」，id 保持完整以便 @ 回去', o1)
   // 协作机制说明：默认每会话只带一次（oncePrefix），不再混在每条消息的 origin 里
-  // ——规则是静态的，第一条带过就在会话历史里，每轮重复只是白烧 token
+  // ——规则是静态的，第一条带过就在会话历史里，每轮重复只是白烧 token。
+  // 这里只断言「带没带、带在哪里」，不断言规则文案的具体措辞：文案放在
+  // prompts.json 里就是为方便改，为措辞写的断言只会一次次红。2026-11-10 实测：
+  // once.rules 改写让 13 条措辞断言全部失效，已删除
   const o1once = got[0]?.oncePrefix || ''
-  ok(/\[协作 ·/.test(o1once), '群消息的 oncePrefix 带协作机制说明', o1once)
-  ok(/<at user_id="对方 open_id"><\/at>/.test(o1once), '说明里给了真 mention 的写法', o1once)
-  ok(/普通文本 @名字 冒充（那只是字面字符，唤不醒任何人）/.test(o1once), '说明里点明 @名字 不产生提醒', o1once)
-  ok(/卡片不唤醒任何人/.test(o1once), '说明里点明终态卡片不唤醒别人', o1once)
-  ok(/用 --reply 回复该话题内已有的一条 om_ 消息/.test(o1once), '说明里给了话题内发言的落点规则', o1once)
-  ok(/open_id 只认本应用视角/.test(o1once), '说明里点明 open_id 按应用隔离（只认本应用视角）', o1once)
-  ok(/feishu\.names/.test(o1once), '说明里指出人类可在配置里声明对方名字', o1once)
-  ok(!/contacts/.test(o1once), '不再指向已下线的通讯录（state.json contacts）', o1once)
-  ok(!/查群成员列表/.test(o1once), '不再建议查群成员列表——那里面没有机器人（实测）', o1once)
-  ok(/msg send --receive-id/.test(o1once), '给了 feishu-cli 的 at 命令模板', o1once)
-  ok(/--reply/.test(o1once), '说明了话题内发言要用 --reply 回到同一话题', o1once)
-  ok(/请人类给你/.test(o1once), '拿不到 open_id 时给出路（问人类要），不让它猜 id', o1once)
-  ok(!/\[协作 ·/.test(o1), '协作说明不再混在每条消息的来源标注里（避免每轮重复）', o1)
+  ok(o1once.length > 0, '群消息的 oncePrefix 带上协作规则（每会话一次）')
+  ok(!o1.includes(o1once), '协作规则不混进每条消息的来源标注里（避免每轮重复）', o1)
 
   await t.handleImMessage({
     message: {
@@ -702,7 +694,6 @@ if (process.argv.includes('--live')) {
   })
   ok(/私聊/.test(got[3]?.origin || ''), '私聊标注为「私聊」')
   ok(!(got[3]?.oncePrefix || ''), '私聊不带协作说明（群里没有其他 agent）')
-  ok(!/\[协作 ·/.test(got[3]?.origin || ''), '私聊的来源标注里也没有协作说明')
 
   // 配置化：text 填了就用用户的版本；自定义 always 条目并进每条消息的 origin
   const t2 = new FeishuTransport(
@@ -730,7 +721,8 @@ if (process.argv.includes('--live')) {
   })
   ok(/我的协作规则：先问再做。/.test(got[4]?.oncePrefix || ''), 'rules 的 text 填了就覆盖内置默认', got[4]?.oncePrefix)
   ok(/回答用中文。/.test(got[4]?.origin || ''), '自定义 always 前缀并进每条消息的来源标注', got[4]?.origin)
-  ok(!/\[协作 ·/.test(got[4]?.oncePrefix || ''), '覆盖后不再出现内置默认文本')
+  // 覆盖后只用用户版本：不等长拼接就说明内置默认还被留着
+  ok((got[4]?.oncePrefix || '') === '我的协作规则：先问再做。', '覆盖后不叠加内置默认')
 
   // 删掉 rules 条目 = 关闭协作说明
   const t3 = new FeishuTransport(

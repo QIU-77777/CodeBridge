@@ -116,6 +116,21 @@ start_label ai.qiguang.ocbridge.definitely-not-installed
   ok(out.trim().length > 0, '失败时有输出（错误不静默）', out.slice(0, 120))
 }
 
+// ---------- 6. install-agent.sh 的启动顺序：serve 就绪后才 bootstrap 桥接 ----------
+// 反过来（先 app 后 serve）会让桥接第一次启动时连不上 serve：src/index.js 的启动
+// 检查直接退出 1，launchd 要等 ThrottleInterval 10 秒才拉起第二次，这十几秒里机器人
+// 不应答，日志里还留一行「❌ 连不上 opencode serve」。真实事故：2026-11-10 把默认
+// 实例改名成 lil-o 后全新安装，桥接第一次启动即失败
+const install = readFileSync(join(REPO, 'scripts', 'install-agent.sh'), 'utf8')
+const iServeBoot = install.indexOf('boot_label "$LABEL_SERVE"')
+const iAppBoot = install.indexOf('boot_label "$LABEL_APP"')
+const iReady = install.indexOf('serve 已就绪')
+ok(iServeBoot > 0, 'install-agent.sh 用 boot_label 起 serve')
+ok(iAppBoot > iServeBoot, 'serve 先 bootstrap，桥接放最后', `serve@${iServeBoot} app@${iAppBoot}`)
+ok(iReady > iServeBoot && iReady < iAppBoot, 'serve 就绪等待夹在两次 bootstrap 之间', `ready@${iReady}`)
+ok(!/127\.0\.0\.1:19876\/api\/info/.test(install), '就绪检查不打死 19876（实例可以换端口）')
+ok(/\$SERVE_URL\/api\/info/.test(install), '就绪检查打本实例配置里的 serve 地址')
+
 console.log()
 if (fail) {
   console.log(`❌ 有失败：${pass} 通过 / ${fail} 失败`)
