@@ -338,6 +338,12 @@ const main = async () => {
     const r = await b.prompt(s.id, '读一下项目')
     ok(r.ok === true, '流式运行正常结束')
 
+    // 建会话时配置没写默认模型，索引里 model 是 null；跑起来后真实模型补写进去，
+    // /sessions 卡片的模型位和管理后台的模型列才有东西可显示
+    const idxAfter = JSON.parse(readFileSync(join(sessionDir, 'index.json'), 'utf8'))
+    ok(idxAfter[s.id]?.model?.id === 'step-5-preview', '真实模型补进会话索引（模型列不再空）')
+    ok(idxAfter[s.id]?.model?.providerID === 'stepfun-platform', '补写进索引的模型带 provider')
+
     const types = events.map((e) => e.type)
     const iTerminal = types.indexOf('session.execution.succeeded')
     const iFirstText = types.findIndex((t) => t === 'session.text.delta')

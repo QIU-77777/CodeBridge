@@ -154,6 +154,27 @@ try {
   ok(sessions.sessions?.[0]?.model === 'deepseek/deepseek-v4-pro', '模型拼成 provider/id')
   ok(sessions.sessions?.[0]?.updatedAt === 9000, '更新时间带回')
 
+  // 索引里 model 为 null 的老会话（建会话时没配默认模型）：模型从会话文件头部的
+  // model_change 行解析，不必等它再跑一次。桥接只对跑起来的会话补写索引
+  writeFileSync(
+    join(INSTANCE_DIR, 'pi-sessions', '2026-11-06T07-11-35-911Z_pi-old0001.jsonl'),
+    JSON.stringify({ type: 'session', version: 3, id: 'pi-old0001', timestamp: '2026-11-06T07:11:35.911Z', cwd: '/tmp/old' }) +
+      '\n' +
+      JSON.stringify({ type: 'model_change', id: 'a1', parentId: null, provider: 'deepseek', modelId: 'deepseek-v4-pro' }) +
+      '\n' +
+      JSON.stringify({ type: 'message', id: 'm1', message: { role: 'user', content: '读一下' } }) +
+      '\n',
+  )
+  const sessionsDerived = await fetch(`${BASE}/api/instances/${NAME}/sessions`, { headers: { Accept: 'application/json' } }).then((x) => x.json())
+  ok(
+    sessionsDerived.sessions?.find((x) => x.id === 'pi-old0001')?.model === 'deepseek/deepseek-v4-pro',
+    '索引没写模型时从会话文件头部解析（老会话也有模型）',
+  )
+  ok(
+    sessionsDerived.sessions?.find((x) => x.id === 'pi-new0002')?.model === 'deepseek/deepseek-v4-pro',
+    '索引写了模型时仍以索引为准',
+  )
+
   // 索引损坏时明确报错，不静默返回空列表
   writeFileSync(join(INSTANCE_DIR, 'pi-sessions', 'index.json'), '{ 这不是 JSON')
   const sessionsBad = await fetch(`${BASE}/api/instances/${NAME}/sessions`, { headers: { Accept: 'application/json' } }).then((x) => x.json())

@@ -15,7 +15,7 @@
 import { createServer } from 'node:http'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { existsSync, readFileSync, writeFileSync, renameSync, copyFileSync, chmodSync, unlinkSync, rmSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, renameSync, copyFileSync, chmodSync, unlinkSync, rmSync, readdirSync, openSync, readSync, closeSync } from 'node:fs'
 import { collectAll, collectInstance, discoverInstances } from './instances.js'
 import { scanBackends } from './backends.js'
 import { startInstance, stopInstance, restartInstance, doctor, readLog, installInstance, rollbackService } from './control.js'
@@ -623,7 +623,7 @@ async function handleApi(req, res, url) {
           id: s.id || '',
           title: s.title || '',
           directory: s.location?.directory || '',
-          model: s.model?.id ? [s.model.providerID, s.model.id].filter(Boolean).join('/') : '',
+          model: piModelOf(found.dir, s),
           updatedAt: s.time?.updated || null,
         }))
       return sendJson(res, 200, { applicable: true, sessions })
@@ -632,7 +632,10 @@ async function handleApi(req, res, url) {
       return sendJson(res, 200, { applicable: false })
     }
     try {
-      const json = await ocGet(cfg, '/api/session?limit=100&order=desc')
+      // limit 放到 500：会话页「飞书绑定」表的模型列要把每个绑定键的 sessionId
+      // 解析成模型，100 条覆盖不全（实测一个实例 193 条会话、24 个绑定，只有
+      // 16 个落在前 100 条里）。页面展示仍按 100 条截断，见 index.html
+      const json = await ocGet(cfg, '/api/session?limit=500&order=desc')
       const sessions = (json.data || []).map((s) => ({
         id: s.id,
         title: s.title || '',
@@ -672,6 +675,62 @@ function readJsonSafe(dir) {
   } catch (err) {
     throw new Error(`配置解析失败: ${err.message}`)
   }
+}
+
+/** pi 会话文件头部读取字节数。model_change 在第二行，64KB 足够覆盖 */
+const PI_HEAD_BYTES = 64 * 1024
+
+/**
+ * pi 会话的模型名（provider/id）。
+ *
+ * 索引里没有就回读会话文件的头部：第二行 model_change 写着 provider 与
+ * modelId。建会话时配置没写默认模型，索引里 model 是 null，老会话因此也能
+ * 显示模型，不必等它再跑一次；新会话由桥接在运行中补写进索引（src/pi.js
+ * 的 _patchIndexModel）。读不到就返回空字符串，由页面显示成 —
+ */
+function piModelOf(configDir, entry) {
+  const fromIndex = entry?.model?.id
+    ? [entry.model.providerID, entry.model.id].filter(Boolean).join('/')
+    : ''
+  if (fromIndex || !entry?.id) return fromIndex
+  const dir = join(configDir, 'pi-sessions')
+  let files = []
+  try {
+    files = readdirSync(dir).filter((f) => f.endsWith(`_${entry.id}.jsonl`))
+  } catch {
+    return ''
+  }
+  for (const f of files) {
+    let fd
+    try {
+      fd = openSync(join(dir, f), 'r')
+      const buf = Buffer.allocUnsafe(PI_HEAD_BYTES)
+      const n = readSync(fd, buf, 0, PI_HEAD_BYTES, 0)
+      for (const line of buf.toString('utf8', 0, n).split('\n')) {
+        if (!line.startsWith('{')) continue
+        let ev
+        try {
+          ev = JSON.parse(line)
+        } catch {
+          continue
+        }
+        if (ev?.type === 'model_change' && ev.modelId) {
+          return [ev.provider, ev.modelId].filter(Boolean).join('/')
+        }
+      }
+    } catch {
+      /* 这个文件读不了就试下一个 */
+    } finally {
+      if (fd !== undefined) {
+        try {
+          closeSync(fd)
+        } catch {
+          /* noop */
+        }
+      }
+    }
+  }
+  return ''
 }
 
 // ---------- 启动 ----------

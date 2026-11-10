@@ -32,6 +32,20 @@ export function defaultConfigDir() {
 }
 
 /**
+ * 不带环境变量覆盖的缺省配置目录。
+ *
+ * plist 里没写 OCB_CONFIG_DIR 时，launchd 拉起的那个桥接进程读的就是这个
+ * 目录；admin 自己的 OCB_CONFIG_DIR 只回答「admin 是哪个实例」，不能顺带
+ * 把别的实例的目录改成自己。曾经这里兜底用 defaultConfigDir()，admin 从
+ * 带 OCB_CONFIG_DIR 的会话（pi 子进程）里启动时，缺省实例的 plist 会被指到
+ * 那个实例的目录，两条记录在去重时撞车：名字全变成 default、缺省实例的
+ * launchd label 与托管标记丢失，页面上的起停按钮变成「安装常驻服务」提示。
+ */
+function baseConfigDir() {
+  return join(homedir(), '.config', CONFIG_PREFIX)
+}
+
+/**
  * 配置目录 -> 实例名。只用于没有 plist 的实例（展示用），
  * 缺省实例叫 default，其余取目录名的前缀后缀。
  */
@@ -73,7 +87,7 @@ function plistEnv(plistPath, key) {
 /**
  * 扫描 launchd plist。一个 app 服务就是一个实例；配套的 .serve 服务不重复计。
  * 实例名从 label 推，配置目录取 plist 里 install-agent.sh 写进去的
- * OCB_CONFIG_DIR（缺失时退回默认解析规则）。
+ * OCB_CONFIG_DIR（缺失时退回不带环境覆盖的缺省目录）。
  */
 function scanPlists() {
   let files = []
@@ -89,7 +103,7 @@ function scanPlists() {
     const name = instanceNameFromLabel(label)
     if (!name) continue
     const plistPath = join(PLIST_DIR, f)
-    const dir = plistEnv(plistPath, 'OCB_CONFIG_DIR') || defaultConfigDir()
+    const dir = plistEnv(plistPath, 'OCB_CONFIG_DIR') || baseConfigDir()
     out.push({ name, dir, label, plistPath, managed: true })
   }
   return out

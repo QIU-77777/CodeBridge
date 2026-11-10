@@ -455,6 +455,26 @@ export class PiBackend {
     st.modelSent = true
     const provider = message.provider || ''
     this._emit(sessionId, 'backend.meta', { model: provider ? `${provider}/${model}` : model })
+    this._patchIndexModel(sessionId, { providerID: provider, id: model })
+  }
+
+  /**
+   * 把运行中拿到的真实模型补进会话索引。
+   *
+   * 建会话时配置没写默认模型，index.json 里 model 是 null，而真实模型只写在
+   * pi 的助手消息里：/sessions 卡片的模型位和管理后台的模型列因此一直是空的。
+   * 索引是桥接自己的文件，这里补写；admin 仍然只读索引，不与桥接争抢写入
+   */
+  _patchIndexModel(sessionId, model) {
+    if (!model?.id) return
+    try {
+      const s = this._load()[sessionId]
+      if (!s) return
+      s.model = { providerID: model.providerID || '', id: model.id }
+      this._save()
+    } catch (err) {
+      this.log.warn?.(`补写会话模型失败: ${err.message}`)
+    }
   }
 
   /**

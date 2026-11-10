@@ -15,7 +15,7 @@
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
-import { mkdtempSync, readFileSync, rmSync, statSync, existsSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, existsSync, writeFileSync } from 'node:fs'
 import { tmpdir, homedir } from 'node:os'
 
 let pass = 0
@@ -58,6 +58,21 @@ function configDirUnderEnv(env) {
   return r.stdout.trim()
 }
 
+/**
+ * 在给定环境下跑 discoverInstances()。子进程跑：PLIST_DIR 与 CONFIG_BASE 都是
+ * import 时按 homedir() 算出来的，改 HOME 才能同时隔开 plist 扫描与目录扫描。
+ */
+function discoverUnderEnv(env) {
+  const code = `import(${JSON.stringify(INSTANCES)}).then((m) => console.log(JSON.stringify(m.discoverInstances())))`
+  const r = spawnSync(process.execPath, ['-e', code], {
+    cwd: REPO,
+    env: { ...process.env, ...env },
+    encoding: 'utf8',
+  })
+  if (r.status !== 0) throw new Error(`子进程失败: ${(r.stderr || '').slice(0, 200)}`)
+  return JSON.parse(r.stdout.trim())
+}
+
 try {
   // 1. 目录解析一致性：三种输入逐个对照
   const cases = [
@@ -79,6 +94,63 @@ try {
   ok(names.instanceNameFromLabel('ai.qiguang.ocbridge.pi.app') === 'pi', '带实例的 label 推出实例名')
   ok(names.instanceNameFromLabel('ai.qiguang.ocbridge.foo.bar.app') === 'foo.bar', '实例名含点也能正确切分')
   ok(names.instanceNameFromLabel('ai.qiguang.ocbridge.serve') === null, 'serve 服务不推实例名')
+
+  // 2b. 实例发现不能被 admin 自己的 OCB_CONFIG_DIR 带偏。admin 常从 pi 子进程
+  // 里拉起（那里的环境带着实例的 OCB_CONFIG_DIR），缺省实例的 plist 没有这个
+  // 键，兜底必须是不带环境覆盖的缺省目录。曾经兜底用 defaultConfigDir()，两条
+  // 记录在去重时撞车：名字全变 default、缺省实例的 label 与托管标记丢失，
+  // 页面上起停按钮变成「安装常驻服务」提示，按名字解析的接口全打到另一个实例
+  {
+    const fakeHome = mkdtempSync(join(tmpdir(), 'ocb-disc-'))
+    const homeDir = join(fakeHome, 'home')
+    const agentsDir = join(homeDir, 'Library', 'LaunchAgents')
+    const defaultDir = join(homeDir, '.config', 'opencode-feishu-bridge')
+    const piDir = join(homeDir, '.config', 'opencode-feishu-bridge-pitest')
+    mkdirSync(agentsDir, { recursive: true })
+    mkdirSync(defaultDir, { recursive: true })
+    mkdirSync(piDir, { recursive: true })
+    writeFileSync(join(defaultDir, 'config.json'), '{}')
+    writeFileSync(join(piDir, 'config.json'), '{}')
+    const plistHead =
+      '<?xml version="1.0" encoding="UTF-8"?>\n' +
+      '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n' +
+      '<plist version="1.0">\n<dict>\n'
+    const plistTail = '</dict>\n</plist>\n'
+    // 缺省实例的 plist：install-agent.sh 不给它写 OCB_CONFIG_DIR
+    writeFileSync(
+      join(agentsDir, 'ai.qiguang.ocbridge.app.plist'),
+      `${plistHead}  <key>Label</key><string>ai.qiguang.ocbridge.app</string>\n${plistTail}`,
+    )
+    // 命名实例的 plist：install-agent.sh 把它的配置目录写进环境变量
+    writeFileSync(
+      join(agentsDir, 'ai.qiguang.ocbridge.pitest.app.plist'),
+      `${plistHead}  <key>Label</key><string>ai.qiguang.ocbridge.pitest.app</string>\n` +
+        '  <key>EnvironmentVariables</key>\n  <dict>\n' +
+        `    <key>OCB_CONFIG_DIR</key><string>${piDir}</string>\n  </dict>\n${plistTail}`,
+    )
+
+    // admin 带着命名实例的 OCB_CONFIG_DIR 启动（复现真实事故的环境）
+    const found = discoverUnderEnv({ HOME: homeDir, OCB_CONFIG_DIR: piDir })
+    const byName = Object.fromEntries(found.map((i) => [i.name, i]))
+    ok(found.length === 2, '两个实例都被发现，没有互相覆盖', JSON.stringify(found.map((i) => i.name)))
+    ok(
+      new Set(found.map((i) => i.name)).size === found.length,
+      '实例名不重复',
+      found.map((i) => i.name).join(','),
+    )
+    ok(byName.default?.dir === defaultDir, '缺省实例的目录是缺省配置目录，不跟着 admin 的 OCB_CONFIG_DIR 走', byName.default?.dir)
+    ok(byName.default?.label === 'ai.qiguang.ocbridge.app', '缺省实例保留自己的 launchd label')
+    ok(byName.default?.managed === true, '缺省实例仍是托管实例（起停按钮不消失）')
+    ok(byName.pitest?.dir === piDir, '命名实例的目录取自己 plist 里的 OCB_CONFIG_DIR')
+    ok(byName.pitest?.label === 'ai.qiguang.ocbridge.pitest.app', '命名实例保留自己的 launchd label')
+    ok(byName.pitest?.managed === true, '命名实例仍是托管实例')
+
+    // 不带环境变量时行为不变：缺省实例仍然第一个、托管标记仍然在
+    const clean = discoverUnderEnv({ HOME: homeDir, OCB_CONFIG_DIR: '' })
+    const cleanDefault = clean.find((i) => i.name === 'default')
+    ok(clean.length === 2 && cleanDefault?.dir === defaultDir && cleanDefault?.managed === true, '不带环境变量时发现结果不变')
+    rmSync(fakeHome, { recursive: true, force: true })
+  }
 
   // 3. 起停环境变量：default 不带 OCB_INSTANCE，其余带；OCB_CONFIG_DIR 始终传递
   const envDefault = names.instanceEnv('default', '/tmp/x')
@@ -495,6 +567,42 @@ try {
     ok(html.includes('当前不限制'), '空表时把闸门真实语义（不限制）说清楚')
     ok(!html.includes('自动攒'), '页面文案不再提已下线的自动攒通讯录')
     ok(!/\u{1f916}/.test(html), '通讯录不再用 emoji 图标（设计规范禁用）')
+  }
+
+  // 7d. 页面用到的 state 字段必须都在 state 字面量里声明过。会话页的
+  // loadSessionsTab() 用 ++state.ssReqId 做请求代次，而 state 里没有这个
+  // 字段：++undefined 得 NaN，NaN !== NaN 恒为真，每次请求都在渲染前被当成
+  // 「已过期」提前返回，整个会话页停在空模板上（真实故障）。结构断言看不见
+  // 运行期错误，这里用文本比对把「用了没声明的字段」挡住
+  {
+    // 去掉注释再比对：注释里出现的 state.json 指的是状态文件，不是页面字段
+    const jsOnly = indexHtml
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^[ \t]*\/\/.*$/gm, '')
+    const stateStart = jsOnly.indexOf('const state = {')
+    const stateEnd = jsOnly.indexOf('\n}', stateStart)
+    const stateLiteral = jsOnly.slice(stateStart, stateEnd)
+    const declared = new Set([...stateLiteral.matchAll(/^\s{2}(\w+):/gm)].map((m) => m[1]))
+    const used = new Set([...jsOnly.matchAll(/\bstate\.(\w+)/g)].map((m) => m[1]))
+    const missing = [...used].filter((k) => !declared.has(k))
+    ok(declared.has('ssReqId'), 'state 里声明了 ssReqId（会话页请求代次）')
+    ok(missing.length === 0, '页面用到的 state 字段全部已声明', missing.join(','))
+  }
+
+  // 7e. 会话页模型列的数据来源。「飞书绑定」表原来读 state.chats 的 model 字段，
+  // 而 store 的记录形状里虽然有这个字段，却没有任何写入方——整列恒为 —。
+  // 现在按 sessionId 从会话列表 join，接口为覆盖全部绑定把 limit 放到 500，
+  // 页面展示仍截 100 条
+  {
+    const ssFn = indexHtml.slice(indexHtml.indexOf('async function loadSessionsTab'))
+    ok(/modelOfSession/.test(ssFn), '飞书绑定表的模型列按 sessionId 从会话列表解析')
+    ok(/modelOfSession\.get\(c\.sessionId\)/.test(ssFn), '绑定没指向会话时显示 —')
+    ok(/\.slice\(0, 100\)/.test(ssFn), '后端会话表展示截到 100 条（接口多拉是为了模型列）')
+    const serverSrc = await import('node:fs').then((fs) =>
+      fs.readFileSync(join(REPO, 'admin', 'server.js'), 'utf8'),
+    )
+    ok(/limit=500/.test(serverSrc), '会话接口多拉到 500 条，覆盖全部飞书绑定')
+    ok(/piModelOf/.test(serverSrc), 'pi 会话的模型在索引缺失时回读会话文件头部')
   }
 
   // 8. 页面结构：名字编辑入口必须真的在页面上。

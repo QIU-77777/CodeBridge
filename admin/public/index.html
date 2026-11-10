@@ -540,6 +540,11 @@ const state = {
   tab: 'overview',
   // busy：起停操作执行中，总览轮询让路，避免操作列按钮在「启动」和「重启/停止」之间跳变
   busy: false,
+  // ssReqId：会话页的请求代次。快速切换实例时旧响应晚到就按代次丢掉，不把
+  // 上个实例的数据写进本页。这个字段必须在这里声明：++undefined 得到 NaN，
+  // 而 NaN !== NaN 恒为真，每次请求都会在渲染前被当成「已过期」提前返回，
+  // 整个会话页停在空模板上（这个故障真实发生过）
+  ssReqId: 0,
   log: { since: 0, follow: true, timer: null, name: '', file: 'bridge' },
   backends: null,
 }
@@ -698,7 +703,7 @@ async function loadOverview() {
     $('head-host').textContent = location.host
     renderSummary(json.instances)
     const rows = json.instances.map((i) => {
-      const serve = !i.serve.applicable ? '<span class="faint">不适用</span>'
+      const serve = !i.serve.applicable ? ''
         : i.serve.ok ? `<span class="badge green"><span class="dot green"></span>v${esc(i.serve.version || '?')}</span>`
         : `<span class="badge red" title="${esc(i.serve.error || '')}"><span class="dot red"></span>无响应</span>`
       const pi = !i.pi.applicable ? '' : i.pi.ok
@@ -725,7 +730,7 @@ async function loadOverview() {
         <td><b>${esc(i.name)}</b></td>
         <td>${statusBadge(i.process)} ${busy}${errBadge}</td>
         <td class="mono">${esc(i.backend)}</td>
-        <td>${serve}${pi ? '<br>' + pi : ''}</td>
+        <td>${[serve, pi].filter(Boolean).join('<br>')}</td>
         <td class="mono"><span class="clip" title="${esc(i.appId || '')}">${esc(i.appId || '—')}</span>${i.botOpenId ? `<br><span class="clip dim" title="${esc(i.botOpenId)}">${esc(i.botOpenId)}</span>` : ''}</td>
         <td class="mono dim"><span class="clip" title="${esc(i.dir)}">${esc(i.dir)}</span></td>
         <td class="mono">${pidCell}</td>
@@ -1216,19 +1221,23 @@ async function loadSessionsTab() {
         '。无法列出飞书绑定。</td></tr>'
     } else {
       const chats = Object.values(detail.state?.chats || {})
+      // 模型列取绑定会话的当前模型：会话列表这一轮已经拉过，按 sessionId 查表即可，
+      // 不再给每个绑定单独发一次请求。绑定没指向会话、或会话不在列表里，显示 —
+      const modelOfSession = new Map((sessions.sessions || []).map((s) => [s.id, s.model || '']))
       const clip = (v, n) => '<span class="clip" title="' + esc(v || '') + '">' + esc(short(v, n)) + '</span>'
       chatsTbody.innerHTML = chats.map((c) => '<tr>' +
           '<td class="mono">' + clip(c.key, 24) + '</td>' +
           '<td class="mono">' + clip(c.chatId, 22) + '</td>' +
           '<td class="mono">' + clip(c.sessionId, 20) + '</td>' +
           '<td class="mono">' + clip(c.directory, 28) + '</td>' +
-          '<td class="mono">' + esc(c.model || '—') + '</td>' +
+          '<td class="mono">' + esc(modelOfSession.get(c.sessionId) || '—') + '</td>' +
           '<td class="mono dim">' + fmtTime(c.updatedAt) + '</td>' +
         '</tr>').join('')
         || '<tr><td colspan="6" class="dim">还没有任何飞书聊天绑定到会话。</td></tr>'
     }
 
-    // 后端会话：失败 / 接口报错 / 真空 / 有数据，四种情况四句话
+    // 后端会话：失败 / 接口报错 / 真空 / 有数据，四种情况四句话。
+    // 展示截到 100 条（接口为模型列解析多拉了一些），排序由后端给
     const stbody = $('ss-sessions').querySelector('tbody')
     const errRow = (msg) => '<tr><td colspan="5" class="err">' + msg + '</td></tr>'
     if (sessions.failed) {
@@ -1240,7 +1249,7 @@ async function loadSessionsTab() {
         '<tr><td colspan="5" class="dim">还没有会话。在飞书里 @ 它并说一句话，第一个会话就会出现。</td></tr>'
     } else {
       const botBadge = ' <span class="badge gray"><span class="dot gray"></span>机器人</span>'
-      stbody.innerHTML = (sessions.sessions || []).map((s) => {
+      stbody.innerHTML = (sessions.sessions || []).slice(0, 100).map((s) => {
         const isBot = /^飞书 · /.test(s.title || '')
         return '<tr>' +
           '<td>' + esc(s.title || '（无标题）') + (isBot ? botBadge : '') + '</td>' +
