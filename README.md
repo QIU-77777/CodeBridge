@@ -573,12 +573,16 @@ npm run dry
 
 `once.rules` 是两版共用的行为准则，措辞保持布局无关。改提示词基本只需要改 `layout.xml` 里的那几行；改完用 `npm run probe:prompt` 看真正发出的 body。
 
-文件按**发送频率**分成两层，同一类的互斥选项收进一个字典，打开就能看出「这组里选一个」：
+文件里只剩模板数据，没有任何说明性字段。`layout.xml` 是默认的完整 XML 提示词；`always` / `once` 是 `behavior.promptLayout=plain` 回退时用的互斥选项组，打开就能看出「这组里选一个」：
 
 ```
 prompts.json
-├── _readme             文件内的说明，不发给模型
-├── always              每次 @ 本机器人都发
+├── layout.xml          默认：逐行写死的完整提示词
+│   ├── profile         { 6 行 }  会话第一条才带
+│   ├── context         { 7 行 }  每条都带
+│   ├── task            { 3 行 }  每条都带
+│   └── variants        identity / source / ids 的值模板，按后端与场景各选一句
+├── always              plain 模式：每次 @ 本机器人都发
 │   ├── origin          { group | private }                    互斥：群 / 私聊
 │   ├── where           { groupNamed | groupFallback | private } 互斥：群名 / 私聊
 │   ├── scope           { thread | main }                      互斥：话题 / 主聊天流
@@ -587,12 +591,13 @@ prompts.json
 │   ├── sender          { named | idOnly | unknown }           互斥：发送者信息完整度
 │   ├── senderType      { user | bot }                         互斥：人 / 机器人
 │   ├── identityLine    { pi | opencode }                      互斥：后端类型
-│   └── identityApp     飞书应用片段（标量，不是互斥组）
-└── once                只在群会话第一条消息发一次
-    └── rules           协作与溯源规则（整段文本，不是互斥组）
+│   ├── identityApp     飞书应用片段（标量，不是互斥组）
+│   └── topicContext    话题近况头（标量，群里被 @ 唤醒时拼上）
+└── once                plain 模式：只在群会话第一条消息发一次
+    └── rules           协作与溯源规则（整段文本，xml 模式也经 {{rules}} 复用）
 ```
 
-`always` 下各项是**并行拼接**的：一条消息的前缀依次放入来源标注、协作 id、身份声明、可@的同伴、配置里的 always 前缀。只有字典**内部**的键才是「选其中之一」，选谁由代码按运行时条件决定。来源标注里的 `where`、`scope`、`sender`、`senderType`、`when` 是同时填入的变量，不互斥。
+`plain` 模式下，`always` 下各项是**并行拼接**的：一条消息的前缀依次放入来源标注、协作 id、身份声明、可@的同伴、配置里的 always 前缀。只有字典**内部**的键才是「选其中之一」，选谁由代码按运行时条件决定。来源标注里的 `where`、`scope`、`sender`、`senderType`、`when` 是同时填入的变量，不互斥。
 
 | 频率 | 模板键 | 互斥选项 | 选择条件 | 变量 |
 |---|---|---|---|---|

@@ -1,31 +1,5 @@
 {
-  "_readme": [
-    "本文件 = 发给模型的全部文案。代码只做 {{变量}} 替换，不保存任何提示词。",
-    "顶层按发送频率分组：always = 每次 @ 本机器人都发；once = 只在群会话第一条消息发一次，之后靠会话历史记住。",
-    "还有第三组 layout.xml：behavior.promptLayout=xml 时，body 改为 <profile> / <context> / <task> 三段 XML，段内是键值行；plain 时仍走 always + once 的方括号线性拼装。两套文案互不干扰。",
-    "always 下的每个字典都是一组【互斥选项】：运行时按条件只选其中一个，不是把全部选项拼起来。",
-    "互斥组 · always.origin       { group | private }                  群消息 / 私聊",
-    "互斥组 · always.where        { groupNamed | groupFallback | private }  群名取到 / 取不到 / 私聊",
-    "互斥组 · always.scope        { thread | main }                    话题内 / 主聊天流（私聊时整个 scope 为空）",
-    "互斥组 · always.ids          { thread | main | private }          协作要用的 id 一行。thread 形态带 chat/thread/root/msg/self，main 带 chat/msg/self，private 带 msg/self；在不在话题里看 thread_id，root_id 在任何回复场景都会返回，不能当判据",
-    "互斥组 · always.peers        { list | empty }                    可@的同伴 id，来自配置 feishu.names（本应用视角），只在群里拼",
-    "互斥组 · always.sender       { named | idOnly | unknown }         名字+id / 只有 id / 拿不到 id",
-    "互斥组 · always.senderType   { user | bot }                       人类 / 机器人",
-    "互斥组 · always.identityLine { pi | opencode }                    pi 后端 / opencode 后端",
-    "不是互斥的：always 下的各项彼此并行拼接；origin 模板里的 where/scope/sender/senderType/when 是同时填入的变量；identityApp 是一段片段；topicContext 是一段片段（话题近况，群里被 @ 唤醒时由桥接拼上，{{n}} 是实际条数）；once.rules 是整段文本。",
-    "覆盖方式：实例 config.json 的 prompt.templates 用同样的路径深合并，只改一个键不会冲掉同组其余选项。",
-    "前缀开关：prompt.prefixes 里 id 为 rules 的条目控制 once.rules 是否发送；text 填写则用该实例自己的版本，删掉条目即关闭。",
-    "_readme 只是注释，不会发给模型。"
-  ],
   "layout": {
-    "_readme": [
-      "layout.xml 的 profile / context / task 三段按顺序拼起来，就是**发给模型的完整提示词**：每个数组元素是一行（或带换行的一小块），从上到下读一遍即所得，只有 {{变量}} 会被实例数据替换。要改提示词，改这里就行。",
-      "行的取舍规则：某元素引用的任一 {{变量}} 取到空值时，整行/整块自动消失。所以私聊不会留下空的「你的同伴」键、没近况时不会出现空的「话题近况」键、没有规则时不留空的「行为准则」标题——不需要在文件里写条件语法，也不需要代码判断某一行该不该有。",
-      "src/prompt-layout.js 只做四件事：选段（会话第一条才带 profile）、用 variants 算出少数值模板、逐元素填 {{变量}} 并丢空、把不可信变量值里的同名闭合标签中和。它不拼标签、不决定行序、不保存任何提示词。",
-      "variants 里的 identity / source / ids 是「变量值」的小模板：按后端、群聊私聊、话题内主聊天流各选一句，填进主模板的同名变量。它们只是值，不是结构。",
-      "行为准则正文复用 once.rules（只维护一份、措辞布局无关），通过 {{rules}} 变量填入；契约说明直接写在 profile 段里，是这份完整提示词的一部分。",
-      "behavior.promptLayout=plain 时不读这一节，改走下面的 always + once 旧方括号拼装，两套文案互不干扰。"
-    ],
     "xml": {
       "profile": [
         "<profile>",

@@ -232,7 +232,7 @@ trace 里应该只有我们的助手在跑（`github-app-credential.mjs get`）�
 | `always` | 每条消息都拼 | 携带**本条消息**动态数据的内容：来源标注（群名 / 话题 / 发送者 / 时间）、协作 id（chat / thread / root / msg / self）、可@的同伴、身份声明。文案模板在 `prompts.json` 的 `always` 组，取值由代码生成，不走 `prefixes` |
 | `once` | 每个会话的第一条消息拼一次 | 静态规则：协作机制说明，模板是 `prompts.json` 的 `once.rules`。第一条拼过之后它就在会话历史里，后续消息靠上下文记住——每轮重复只是白烧 token |
 
-模板文件也按 `always` / `once` 分两层，和这里的 `prefixes.mode` 是同一个频率概念：前者管每条消息的标注、协作 id 与身份，后者管静态规则发几次。互斥选项（群 / 私聊、话题 / 主聊天流、pi / opencode 等）在模板文件里收成字典，运行时只选一个，清单见 `prompts.json` 的 `_readme`。
+模板文件也按 `always` / `once` 分两层，和这里的 `prefixes.mode` 是同一个频率概念：前者管每条消息的标注、协作 id 与身份，后者管静态规则发几次。互斥选项（群 / 私聊、话题 / 主聊天流、pi / opencode 等）在模板文件里收成字典，运行时只选一个，清单直接看 `prompts.json` 的 `always` 组键名。
 
 ```json
 "prompt": {

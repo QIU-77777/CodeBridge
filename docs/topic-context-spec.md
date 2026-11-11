@@ -205,7 +205,7 @@
 3. **规则 1 那句改准确**：保留「可主动维持进程」，补上「桥接不会把新消息推给你，跟进只能自己周期性拉历史，或等下一次被 @ 唤醒——那时近况块会刷新」。
 4. **`identityLine.opencode` 改为与 pi 同语义**：`[身份 · 你是 {{who}}{{app}} · 启动 serve 时已注入本实例凭证，用 feishu-cli / lark-cli 发言就是以你的身份发出；若 serve 由别的方式启动，先用 echo $FEISHU_APP_ID 核对]`。保留 `{{who}}{{app}}` 变量契约不变。
 
-另外 `_readme` 补两行：标注 `topicContext` 仅群里发、记录上述 always/once 分工，以及**实例覆盖的坑**。
+另外 `_readme`（指当时的提案副本，根 `prompts.json` 现已不含说明性字段）补两行：标注 `topicContext` 仅群里发、记录上述 always/once 分工，以及**实例覆盖的坑**。
 
 ### 替换步骤与校验
 
