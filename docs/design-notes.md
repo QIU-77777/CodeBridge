@@ -362,6 +362,7 @@ sqlite3 ~/.local/share/opencode/opencode.db "
 | 单元级 | `scripts/test-patch-order.mjs`（29 项） | 卡片 patch 串行与合并：终态一定最后生效，在途积压的刷新合并且带最新快照 |
 | 单元级 | `scripts/test-github-app.mjs`（55 项） | GitHub App 身份：JWT 形状与签名、token 缓存与到期刷新、401 重试、四路环境注入、真实 git 下注入助手压过机器级助手、凭证助手协议、gh 包装脚本、未配置时零改动 |
 | 单元级 | `scripts/test-runfail.mjs` / `test-wedge.mjs` / `test-busy.mjs` / `test-render.mjs` | 失败即转红、patch 挂死与看门狗收殓、忙等三选一与队列、RunState 分段保留 |
+| 单元级 | `scripts/test-errors.mjs`（48 项） | 错误分类：每类真实错误文本归对类、hint 带下一步、优先级（具体错误名先于宽泛规则）、失败卡片渲染分类标签、未知错误不臆测 |
 | 集成级 | `scripts/selftest.mjs`（23 项） | 真实建会话、真实 prompt、流式聚合、命令、回调、白名单 |
 | 端到端 | `scripts/e2e-table.mjs` | 真实模型输出 → 真实事件流 → 真实卡片 |
 
@@ -376,6 +377,7 @@ src/config.js    配置加载（文件 + 环境变量）
 src/store.js     chat→session 绑定持久化（防抖 + 原子写）
 src/oc.js        opencode v2 HttpApi 客户端 + SSE 订阅（指数退避重连）
 src/render.js    事件 → 运行态聚合（文本、工具、状态机）
+src/errors.js    错误文本 → 分类 + 下一步提示（卡片渲染层单点调用）
 src/md.js        Markdown → 卡片元素（表格/代码块/标题/列表分段解析）
 src/cards.js     飞书卡片模板（card 2.0）
 src/handler.js   命令分发、消息处理、卡片回调、看门狗
@@ -519,7 +521,7 @@ key = root:<root_id || message_id>
 **P0**
 1. **上下文引用（真正的多轮）**——现在每句话都是独立任务，「上面那个方案」没有指代对象。做法是把上一张卡片的结论摘要带进下一次 prompt，引用范围只取最近一张，并在卡片上标注「已引用上一条结论」。
 2. **执行前计划审批**——权限卡片已有 `once / always / reject` 三态基建，缺的是从「工具级」提到「计划级」：模型先出计划，人点通过再执行。这解决的是信任问题，优先级应高于任何功能新增。
-3. **失败自恢复**——错误分类（网络 / 模型不可用 / 会话丢失 / 权限不足），每类给一条明确的下一步操作，而不是把原始堆栈丢给人。
+3. ~~**失败自恢复**~~（已完成）——错误分类（网络 / 模型不可用 / 会话丢失 / 权限不足），每类给一条明确的下一步操作，而不是把原始堆栈丢给人。实现见 `src/errors.js`：分类表按优先级排列，渲染层（`runCard`）单点翻译成「分类标签 + 下一步」的 notation 小字；handler 只存原始错误文本，不再各自拼提示。认不出的错误宁可不给提示——乱指路比不指路更糟。测试 `scripts/test-errors.mjs`。
 
 **P1**
 4. 轨迹按需展开（默认折叠，点一下看最近 6 个工具调用摘要）

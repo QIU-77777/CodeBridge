@@ -858,6 +858,7 @@ logs/                      运行日志（不入库）
 | `npm run test:render` / `test:patch` | 卡片渲染与 patch 顺序 |
 | `npm run test:cmd-route` | 群里「@机器人 /命令」的分流，含缺少 `cmdText` 时的回退 |
 | `npm run test:busy` / `test:runfail` / `test:wedge` | 排队、运行失败、看门狗收尾 |
+| `npm run test:errors` | 失败卡片的错误分类与「下一步」提示 |
 | `npm run test:pi` / `test:pi-cli-sessions` | pi 后端与终端会话 |
 | `npm run test:admin` / `test:init` / `test:identity` / `test:github` / `test:serve-password` | 后台、初始化、身份注入、serve 密码 |
 | `npm run probe:names [chat_id]` / `probe:msg` | 飞书接口探针，打印权限与字段 |

@@ -21,6 +21,7 @@
     "test:busy": "node scripts/test-busy.mjs",
     "test:cmd-route": "node scripts/test-cmd-route.mjs",
     "test:runfail": "node scripts/test-runfail.mjs",
+    "test:errors": "node scripts/test-errors.mjs",
     "test:wedge": "node scripts/test-wedge.mjs",
     "test:render": "node scripts/test-render.mjs",
     "test:serve-password": "node scripts/test-serve-password.mjs",

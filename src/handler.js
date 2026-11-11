@@ -224,14 +224,14 @@ export class Bridge {
     const isToolEvent = /tool/i.test(type)
     const payloadError = isToolEvent ? null : ev.data?.error
     if (run.state.status === 'running' && (payloadError || (!isToolEvent && /error|failed/i.test(type)))) {
+      // 只存原始错误文本，「这是什么问题 + 接下来干什么」由卡片渲染层统一
+      // 翻译（src/errors.js 的 classifyError）——曾经在这里临时拼过一句
+      // 上下文过长的续命提示，和 cards.js 的已知错误翻译各一份，改一处漏
+      // 一处，收敛成单点后两边不会漂
       const message =
         payloadError?.message || ev.data?.message || `执行失败（${type || '未知事件'}）`
-      // 提供商拒输入多数是上下文过长，卡片上直接给续命办法
-      const hint = /invalid|input/i.test(message + type)
-        ? '（上下文可能过长：发 /new 开新会话续上）'
-        : ''
       run.state.status = 'failed'
-      run.state.error = { message: message + hint }
+      run.state.error = { message }
       run.state.updatedAt = Date.now()
       this.log.warn?.(`会话 ${sid} 事件 ${type} 判定失败: ${message}`)
       this.flushRun(sid)
