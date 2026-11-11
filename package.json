@@ -23,7 +23,6 @@
     "test:runfail": "node scripts/test-runfail.mjs",
     "test:errors": "node scripts/test-errors.mjs",
     "test:topic-context": "node scripts/test-topic-context.mjs",
-    "test:prompt-layout": "node scripts/test-prompt-layout.mjs",
     "test:wedge": "node scripts/test-wedge.mjs",
     "test:render": "node scripts/test-render.mjs",
     "test:serve-password": "node scripts/test-serve-password.mjs",

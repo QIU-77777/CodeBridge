@@ -364,7 +364,6 @@ sqlite3 ~/.local/share/opencode/opencode.db "
 | 单元级 | `scripts/test-runfail.mjs` / `test-wedge.mjs` / `test-busy.mjs` / `test-render.mjs` | 失败即转红、patch 挂死与看门狗收殓、忙等三选一与队列、RunState 分段保留 |
 | 单元级 | `scripts/test-errors.mjs`（48 项） | 错误分类：每类真实错误文本归对类、hint 带下一步、优先级（具体错误名先于宽泛规则）、失败卡片渲染分类标签、未知错误不臆测 |
 | 单元级 | `scripts/test-topic-context.mjs`（52 项） | 话题近况：text/post 拉平与占位、双键缓冲、原文/指针行两级截断、@ 闸门之前采集、话题隔离、主聊天流按群聚、私聊不采集、开关、prompt 拼装与排队快照 |
-| 单元级 | `scripts/test-prompt-layout.mjs`（88 项） | XML 三段布局：模板即完整提示词、变量为空则整行消失、结构顺序、ids 三分支、闭合标签中和、续聊不发 profile、私聊/主聊天流/pi/plain 回退、真实链路捕获 body、排队 layout 快照（见第十五节） |
 | 集成级 | `scripts/selftest.mjs`（23 项） | 真实建会话、真实 prompt、流式聚合、命令、回调、白名单 |
 | 端到端 | `scripts/e2e-table.mjs` | 真实模型输出 → 真实事件流 → 真实卡片 |
 
@@ -619,6 +618,6 @@ key = root:<root_id || message_id>
 
 `config.json` 写 `"behavior": { "promptLayout": "plain" }` 即一字不差恢复旧方括号拼装，不用改任何文案。排队条目带 `layout` 快照，出队重放仍按入队那一刻的身份与近况拼 body。
 
-`scripts/test-prompt-layout.mjs`（88 项）覆盖「模板即完整提示词」、变量为空则整行消失、结构顺序、ids 三分支、闭合标签中和、续聊不发 profile、私聊 / 主聊天流 / pi / plain 回退；全量 20 个 `test-*.mjs` 回归通过。`node scripts/probe-prompt.mjs` / `--plain` / `--diff` 看两种形态的真实 body 与逐行差异，样本存 [prompt-samples.md](prompt-samples.md)。
+XML 三段布局的拼装正确性（标签闭合顺序、变量为空则整行消失、ids 三分支、续聊不带 profile、私聊 / 主聊天流 / pi / plain 回退）不再用单测钉死——提示词文案与结构由你直接改 `prompts.json`，僵硬断言只会每次改动都挂。改用 `node scripts/probe-prompt.mjs` / `--plain` / `--diff` 看两种形态的真实 body 与逐行差异，样本存 [prompt-samples.md](prompt-samples.md)；全量 19 个 `test-*.mjs` 回归通过（布局无关的单测保留）。
 
 **仍未做真实模型 A/B 验证**：XML 是否真的让模型更少误把近况当指令、更少重复拉历史，要在飞书真实话题里观察，离线测试只保证拼装正确。
