@@ -214,7 +214,8 @@ ${created ? '   已为你生成模板，请填入 appId / appSecret。\n' : '   
     onMessage: (msg) => bridge.onMessage(msg),
     onCardAction: (ctx) => bridge.onCardAction(ctx),
     nameOf: (id) => bridge.nameOf(id),
-    // 身份声明按后端给文案：pi 后端的桥接会注入本实例凭证，opencode 不会
+    // 身份声明按后端给文案：两个后端都注入了本实例凭证，只是注入点不同
+    // （pi 起子进程时、opencode 起 serve 时），文案里的例外提示因此不同
     backendType: caps.type,
   })
   bridge.t = ft

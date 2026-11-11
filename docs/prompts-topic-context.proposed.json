@@ -51,7 +51,7 @@
     },
     "identityLine": {
       "pi": "[身份 · 你是 {{who}}{{app}} · 桥接已为本进程注入你的飞书凭证，用 feishu-cli / lark-cli 发言就是以你的身份发出]",
-      "opencode": "[身份 · 你是 {{who}}{{app}} · 本机飞书 CLI 的默认身份以机器配置为准，不一定是你的应用，发言前请核对]"
+      "opencode": "[身份 · 你是 {{who}}{{app}} · 启动 serve 时已注入本实例凭证，用 feishu-cli / lark-cli 发言就是以你的身份发出；若 serve 由别的方式启动，先用 echo $FEISHU_APP_ID 核对]"
     },
     "identityApp": "（飞书应用 {{appId}}）",
     "topicContext": "[话题近况 · 最近 {{n}} 条，按时间序：没 @ 我的轮次是原文（post 已拉平），→ 开头是我已处理过的指针行，行里的 [图片] 等是类型占位；开头若写「更早的 N 条已省略」表示还有更早的历史]"

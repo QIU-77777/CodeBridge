@@ -477,7 +477,7 @@ key = root:<root_id || message_id>
 
 最初 `oc.prompt(sessionId, text)` 只发正文。结果一次「在群里打个招呼」跑了 **9 分 12 秒、48 步**——模型先去 `ls`、读仓库、翻 bridge 源码，才反推出「这条消息来自飞书、我在哪个群」。
 
-这些信息在事件里本来就有，只是没往下传。现在每条 prompt 前面拼四行：
+这些信息在事件里本来就有，只是没往下传。现在每条 prompt 前面拼四行（身份行是 pi 后端示例，opencode 的措辞见 `prompts.json` 的 `always.identityLine`）：
 
 ```
 [飞书 · 群「桥接话题探针」 · 话题内 · 发送者 邱琪光 · ou_f15edffe49c8366b3dbd645d1d5aab62（用户） · 2026/11/9 19:52:09]
