@@ -41,6 +41,7 @@
 | 多会话 | `/sessions` 列出会话并点按钮切换；`/new` 新建；`/cd` 换目录 |
 | 群里并行 | 每 @ 一次开一条话题，一条话题一个会话，多条话题并行执行 |
 | 话题近况 | 群里没 @ 我的讨论我本来收不到；被 @ 唤醒时，桥接把该话题最近 N 条消息原文随任务一起带给模型，省掉模型自己去拉聊天记录的那几步（私聊不需要，每条都进会话）。需求与决策见 [docs/topic-context-spec.md](docs/topic-context-spec.md) |
+| 结构化上下文 | 发给模型的 body 用 `<profile>` / `<context>` / `<task>` 三段 XML 包起来，段内是键值行：身份与长期规则、本次来源与话题近况、要执行的任务各归其位；`<context>` 里别人的发言和 `<task>` 正文中的同名闭合标签会被中和，不会顶开结构。`behavior.promptLayout=plain` 可一字不差回到旧的方括号前缀。调研与决定见 [docs/context-marking-proposal.md](docs/context-marking-proposal.md)，实测样本见 [docs/prompt-samples.md](docs/prompt-samples.md) |
 | 权限审批 | opencode 后端申请读取敏感文件时，飞书弹卡片让人点允许或拒绝 |
 | 模型切换 | `/model`、`/agent` 在线切换，无需重启 |
 | 排队与中止 | 同一会话上一条还在执行时，新消息排进队列；卡片上可引导、取消、`/stop` |
@@ -204,6 +205,8 @@ flowchart TB
 | `src/config.js` | 配置目录解析、默认值、模板铺开、环境变量覆盖 |
 | `src/feishu.js` | 飞书长连接收发、群聊 @ 判定、消息来源标注、话题近况采集、卡片回传 |
 | `src/topic-context.js` | 话题近况：群消息缓冲、text/post 拉平、原文渲染与两级截断 |
+| `src/prompt-layout.js` | XML 版 body 组装：三段包裹、键值填充、不可信文本的闭合标签中和 |
+| `src/template.js` | `{{变量}}` 填充，两套布局共用 |
 | `src/errors.js` | 错误分类与「下一步」提示 |
 | `src/handler.js` | 命令分发、会话绑定、运行编排、排队、卡片回调、看门狗 |
 | `src/backend.js` | 后端工厂与统一能力声明 |
@@ -555,12 +558,15 @@ npm run dry
 | `behavior.topicContext` | 群消息被唤醒时是否带上该话题最近 N 条消息原文（私聊不受影响） | `true` |
 | `behavior.topicContextMessages` | 近况最多带几条，`@` 过我的轮次只算一行指针 | `20` |
 | `behavior.topicContextChars` | 近况总字数上限，超出保尾（最近的优先） | `2500` |
+| `behavior.promptLayout` | 发给模型的 body 结构：`xml` = 三段 XML 键值，`plain` = 旧的方括号线性前缀 | `xml` |
 | `prompt.templates` | 按同路径深合并覆盖 `prompts.json` 里的提示词模板，只写一个键不影响同组其余选项 | `{}` |
 | `prompt.prefixes` | 发给模型的文本前缀数组，条目含 `id`、`mode`（`once` / `always`）、`text` | `[{ "id": "rules", "mode": "once", "text": "" }]` |
 
 ### 提示词模板
 
-发给模型的全部文案放在仓库根的 `prompts.json`。`src/feishu.js` 只做 `{{变量}}` 替换，代码里不保存提示词。打开该文件即可审阅与编辑，改动作用于所有未覆盖该键的实例。模板在进程启动时读取，编辑后重启实例生效。
+发给模型的全部文案放在仓库根的 `prompts.json`。代码只做 `{{变量}}` 替换，不保存提示词。打开该文件即可审阅与编辑，改动作用于所有未覆盖该键的实例。模板在进程启动时读取，编辑后重启实例生效。
+
+文件里有两套互不干扰的文案：`always` + `once` 给 `behavior.promptLayout=plain` 的旧方括号前缀用；`layout.xml` 给默认的 XML 三段结构用（标签名、键值行标题、契约声明都在这里）。`once.rules` 是两版共用的行为准则，措辞保持布局无关。改 XML 结构时只动 `layout.xml`，不必碰 `always` / `once`。
 
 文件按**发送频率**分成两层，同一类的互斥选项收进一个字典，打开就能看出「这组里选一个」：
 
@@ -867,10 +873,11 @@ logs/                      运行日志（不入库）
 | `npm run test:busy` / `test:runfail` / `test:wedge` | 排队、运行失败、看门狗收尾 |
 | `npm run test:errors` | 失败卡片的错误分类与「下一步」提示 |
 | `npm run test:topic-context` | 话题近况：text/post 拉平、双键缓冲、@ 闸门之前采集、私聊不带的三条边界、prompt 拼装与排队快照 |
+| `npm run test:prompt-layout` | XML 三段结构、空键省略、ids 三分支、闭合标签中和、续聊不发 profile、私聊/主聊天流/pi/plain 回退、排队 layout 快照 |
 | `npm run test:pi` / `test:pi-cli-sessions` | pi 后端与终端会话 |
 | `npm run test:admin` / `test:init` / `test:identity` / `test:github` / `test:serve-password` | 后台、初始化、身份注入、serve 密码 |
 | `npm run probe:names [chat_id]` / `probe:msg` | 飞书接口探针，打印权限与字段 |
-| `npm run probe:prompt` | 打印**真正发给模型的 body**（走生产拼装链路，只 stub 网络与后端）。`--proposed` 看提案文案、`--diff` 看两版逐行差异、`--all --out docs/prompt-samples.md` 生成存档 |
+| `npm run probe:prompt` | 打印**真正发给模型的 body**（走生产拼装链路，只 stub 网络与后端）。默认 xml 版；`--plain` 看回退形态、`--diff` 看两者逐行差异、`--all --out docs/prompt-samples.md` 生成存档 |
 
 `scripts/test-cards.mjs`、`scripts/test-prompt-ids.mjs`、`scripts/test-session-seq.mjs`、`scripts/test-up-sh.mjs` 与 `scripts/probe-thread.mjs` 没有对应的 npm 脚本，用 `node <路径>` 运行。
 

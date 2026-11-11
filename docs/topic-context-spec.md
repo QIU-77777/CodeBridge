@@ -156,13 +156,13 @@
 1. **计划审批**（P0 第 2 项）：把 `once / always / reject` 三态从工具级提到计划级，模型先出计划、人点通过再执行。
 2. **跨会话引用**（P0 第 1 项）：新会话首条带上上一张卡片结论摘要，与 `/new` 续命形成闭环。
 3. 若实测发现 2500 字窗口在长话题里不够用，再考虑「只带没 @ 我的轮次」的增量模式，不要在未量之前加复杂度。
-4. ~~上下文性质标记~~（**已否决，2026-11-11**）：用户决定不加 XML 标签，性质区分继续靠现有方括号前缀。调研、判断与替代方向存档在 [context-marking-proposal.md](context-marking-proposal.md)，不再落地。
+4. **上下文性质标记**（**已实现，2026-11-11**）：用户一度决定不加，同日推翻并给出三段 XML + 段内键值的目标形态。`behavior.promptLayout=xml` 现为默认，`plain` 一键回退。调研、中间否决与最终取舍见 [context-marking-proposal.md](context-marking-proposal.md) 第 10 节，实测样本见 [prompt-samples.md](prompt-samples.md)。
 
 ---
 
 ## 附录 A · 提示词修订提案（待用户替换）
 
-**状态：提案，尚未生效。** 完整可替换副本：[prompts-topic-context.proposed.json](prompts-topic-context.proposed.json)。仓库根的 `prompts.json` 未被改动，替换由用户执行。
+**状态：历史存档，已被 XML 结构取代。** 完整副本：[prompts-topic-context.proposed.json](prompts-topic-context.proposed.json)。当时只涉及文案修订，替换权在用户、根 `prompts.json` 未动；后来用户改用三段 XML，结构改造必须同步改代码，根文件已由本仓库直接更新（新增 `layout.xml`，并修掉下面第 4 处身份注入的过期文案）。这份副本不再是待替换目标，下面的分析保留作决策依据。
 
 ### 为什么必须改
 
@@ -231,13 +231,15 @@ cp docs/prompts-topic-context.proposed.json prompts.json   # 由用户执行
 用户要求「实测发给桥接 agent 的上下文拼接」，于是补了可复跑的探针：
 
 ```bash
-npm run probe:prompt                                  # 现行 prompts.json，5 个场景
-node scripts/probe-prompt.mjs --proposed              # 提案副本
-node scripts/probe-prompt.mjs --diff                  # 两版逐行差异
+npm run probe:prompt                                  # 默认 xml 三段布局，5 个场景
+node scripts/probe-prompt.mjs --plain                 # behavior.promptLayout=plain 的回退形态
+node scripts/probe-prompt.mjs --diff                  # xml 与 plain 逐行差异
 node scripts/probe-prompt.mjs --all --out docs/prompt-samples.md
 ```
 
-`scripts/probe-prompt.mjs` 走的是**生产拼装链路**：`FeishuTransport.handleImMessage`（含 @ 闸门与近况采集）→ `onMessage`（命令分流、白名单、去重）→ `runPrompt`（三段前缀拼接）→ `oc.prompt`，在最后一步截下 `body` 原样打印。只 stub 飞书 HTTP 与后端；模板渲染、变量替换、近况快照全是真实代码。不连飞书、不发消息、不碰用户配置目录。样本存档：[prompt-samples.md](prompt-samples.md)。
+> **2026-11-11 更新**：探针在 XML 落地时改过一次——去掉 `--proposed`（提案副本已退成历史存档），新增 `--plain` 对照同一份 `prompts.json` 的两种布局。下面「现行 → 提案」的字数表是**改造前的历史快照**，只作留档；当前数字见 [prompt-samples.md](prompt-samples.md) 与 [context-marking-proposal.md](context-marking-proposal.md) 第 10.4 节。
+
+`scripts/probe-prompt.mjs` 走的是**生产拼装链路**：`FeishuTransport.handleImMessage`（含 @ 闸门与近况采集）→ `onMessage`（命令分流、白名单、去重）→ `runPrompt`（xml 三段包裹 / plain 线性拼装，按 `behavior.promptLayout` 分流）→ `oc.prompt`，在最后一步截下 `body` 原样打印。只 stub 飞书 HTTP 与后端；模板渲染、变量替换、近况快照全是真实代码。不连飞书、不发消息、不碰用户配置目录。样本存档：[prompt-samples.md](prompt-samples.md)。
 
 ### 五个场景与字数结构（现行版 → 提案版，单位：字）
 

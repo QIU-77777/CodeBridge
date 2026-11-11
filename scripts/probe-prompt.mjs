@@ -2,15 +2,15 @@
 /**
  * 提示词实测探针：把「真正发给模型的 body」原样截下来打印。
  *
- *   node scripts/probe-prompt.mjs                     # 现行 prompts.json，5 个场景
- *   node scripts/probe-prompt.mjs --proposed          # 提案副本
- *   node scripts/probe-prompt.mjs --diff              # 两版逐行差异
+ *   node scripts/probe-prompt.mjs                     # 默认 xml 布局，5 个场景
+ *   node scripts/probe-prompt.mjs --plain             # behavior.promptLayout=plain 的回退形态
+ *   node scripts/probe-prompt.mjs --diff              # xml 与 plain 逐行差异
  *   node scripts/probe-prompt.mjs --all --out docs/prompt-samples.md
  *
  * 为什么叫「实测」而不是示意：走的是生产拼装链路——
  *   FeishuTransport.handleImMessage（含 @ 闸门与话题近况采集）
  *     → onMessage（Bridge 命令分流、白名单、去重）
- *     → runPrompt（origin / oncePrefix / topicContext 三段拼接）
+ *     → runPrompt（xml 三段包裹 / plain 线性拼装，由 behavior.promptLayout 切换）
  *     → oc.prompt(sessionId, body)
  * 只 stub 掉飞书 HTTP（client.request）和后端（prompt 捕获 body），
  * 前缀拼接、模板渲染、变量替换、近况快照全是真实代码。不连飞书、不发消息、
@@ -29,7 +29,6 @@ import { Store } from '../src/store.js'
 
 const REPO = fileURLToPath(new URL('..', import.meta.url))
 const CURRENT = join(REPO, 'prompts.json')
-const PROPOSED = join(REPO, 'docs', 'prompts-topic-context.proposed.json')
 
 const argv = process.argv.slice(2)
 const argOf = (flag) => {
@@ -44,7 +43,7 @@ const ME = { key: '@_user_1', id: { open_id: 'ou_self', user_id: 'ou_self' }, na
 const HUMAN = 'ou_human'
 const OTHER_BOT = 'ou_o'
 
-function cfgOf(tpl, backendType) {
+function cfgOf(tpl, backendType, layout) {
   return {
     feishu: {
       appId: 'cli_a1b2c3d4e5f6g7h8',
@@ -60,6 +59,7 @@ function cfgOf(tpl, backendType) {
       topicContext: true,
       topicContextMessages: 20,
       topicContextChars: 2500,
+      promptLayout: layout,
       maxParallel: 0,
       streamIntervalMs: 1800,
       idleTimeoutMs: 0,
@@ -91,8 +91,8 @@ const ocStub = (captured) => ({
   replyPermission: async () => true,
 })
 
-function makeHarness(tpl, backendType, dir) {
-  const cfg = cfgOf(tpl, backendType)
+function makeHarness(tpl, backendType, dir, layout) {
+  const cfg = cfgOf(tpl, backendType, layout)
   const captured = []
   const transport = {
     sendCard: async () => 'om_card_probe',
@@ -167,12 +167,12 @@ async function run(h, events, wake) {
 }
 
 /** 五个场景，覆盖模板的所有分支 */
-async function scenarios(tpl, dir) {
+async function scenarios(tpl, dir, layout) {
   const out = []
 
   // A · 群聊话题内，新会话，opencode（最完整形态）
   {
-    const h = makeHarness(tpl, 'opencode', dir)
+    const h = makeHarness(tpl, 'opencode', dir, layout)
     const { body, msg } = await run(
       h,
       [
@@ -183,21 +183,21 @@ async function scenarios(tpl, dir) {
       ],
       ev({ id: 'om_5', text: '@_user_1 按刚才那个方案继续改', atMe: true }),
     )
-    out.push({ name: 'A · 群聊 / 话题内 / 新会话 / opencode', body, msg, note: '最完整形态：origin 四行 + once 规则 + 话题近况 + 正文。近况里含没 @ 的讨论、其他 agent 发言、图片占位（已 @ 过的指针行见场景 B）。' })
+    out.push({ name: 'A · 群聊 / 话题内 / 新会话 / opencode', body, msg, note: '最完整形态：身份 + 协作规则 + 话题近况 + 正文。xml 下分落 <profile>/<context>/<task> 三段，plain 下是线性前缀。近况里含没 @ 的讨论、其他 agent 发言、图片占位（已 @ 过的指针行见场景 B）。' })
   }
 
   // B · 同一话题续聊（不再带 once 规则，近况继续演进）
   {
-    const h = makeHarness(tpl, 'opencode', dir)
+    const h = makeHarness(tpl, 'opencode', dir, layout)
     await run(h, [ev({ id: 'om_1', text: '先把配置改了', ms: TS_MS - 200_000 })], ev({ id: 'om_2', text: '@_user_1 开个头', atMe: true, ms: TS_MS - 150_000 }))
     h.bridge.runs.get('ses_probe').state.status = 'done'
     const { body, msg } = await run(h, [ev({ id: 'om_3', text: '改完了，下一步看测试', ms: TS_MS - 60_000 })], ev({ id: 'om_4', text: '@_user_1 继续', atMe: true }))
-    out.push({ name: 'B · 群聊 / 话题内 / 续聊 / opencode', body, msg, note: '同会话第二条：once 规则不再重复，近况块仍带（讨论在演进）。' })
+    out.push({ name: 'B · 群聊 / 话题内 / 续聊 / opencode', body, msg, note: '同会话第二条：长期规则不再重复（xml 下整个 <profile> 都不发，plain 下省掉 once 规则），近况仍带。' })
   }
 
   // C · 主聊天流（scope/ids 走 main 分支，近况按 chat 聚）
   {
-    const h = makeHarness(tpl, 'opencode', dir)
+    const h = makeHarness(tpl, 'opencode', dir, layout)
     const { body, msg } = await run(
       h,
       [ev({ id: 'om_1', text: '群里随口聊的一句', root: null, thread: null, ms: TS_MS - 120_000 })],
@@ -208,14 +208,14 @@ async function scenarios(tpl, dir) {
 
   // D · 私聊（无 @ 闸门、无 scope、无 peers、无近况、无 once 规则）
   {
-    const h = makeHarness(tpl, 'opencode', dir)
+    const h = makeHarness(tpl, 'opencode', dir, layout)
     const { body, msg } = await run(h, [], ev({ id: 'om_p1', text: '看下昨天的改动', group: false }))
     out.push({ name: 'D · 私聊 / opencode', body, msg, note: '私聊：每条都进会话，没有 @ 闸门，因此不带话题近况；协作规则只在群里拼。' })
   }
 
   // E · pi 后端（只差身份行，其余与 A 相同）
   {
-    const h = makeHarness(tpl, 'pi', dir)
+    const h = makeHarness(tpl, 'pi', dir, layout)
     const { body, msg } = await run(
       h,
       [ev({ id: 'om_1', text: '方案 A 先上', ms: TS_MS - 180_000 })],
@@ -228,16 +228,38 @@ async function scenarios(tpl, dir) {
 }
 
 /** 段落来源：让人知道每一行是哪段模板拼出来的，改文案时找得到地方 */
-function provenance(msg) {
-  const l = (msg.origin || '').split('\n')
+function provenance(s) {
+  const b = s.body
+  if (s.msg.layout?.mode === 'xml') {
+    // 按整行找标签：契约说明里也有 `<context>` 这种字面串，用 indexOf 会
+    // 切错起点。真正的开闭标签都独占一行。
+    const lines = b.split('\n')
+    const grab = (open, close) => {
+      const i = lines.indexOf(open)
+      if (i < 0) return ''
+      const j = lines.indexOf(close, i)
+      return lines.slice(i, (j < 0 ? lines.length - 1 : j) + 1).join('\n')
+    }
+    const prof = grab('<profile>', '</profile>')
+    const ctx = grab('<context>', '</context>')
+    const task = grab('<task>', '</task>')
+    const iTopic = ctx.indexOf('**话题近况**')
+    return [
+      ['<profile> · 身份 / 同伴 / 行为准则 / 结构说明', prof],
+      ['<context> · 来源 / 发送者 / 时间 / 协作 id', iTopic >= 0 ? ctx.slice(0, iTopic) : ctx],
+      ['<context> · 话题近况（键 + 原文行）', iTopic >= 0 ? ctx.slice(iTopic) : ''],
+      ['<task> · 用户正文', task],
+    ]
+  }
+  const l = (s.msg.origin || '').split('\n')
   return [
     ['always.origin（where + scope + sender + senderType + when）', l[0] || ''],
     ['always.ids（thread / main / private）', l[1] || ''],
     ['always.identityLine（pi / opencode）', l[2] || ''],
     ['always.peers.list', l[3] || ''],
-    ['once.rules（协作规则 + 上下文策略）', msg.oncePrefix || ''],
-    ['always.topicContext（头 + 近况行）', msg.topicContext || ''],
-    ['用户正文', msg.text || ''],
+    ['once.rules（协作规则 + 上下文策略）', s.msg.oncePrefix || ''],
+    ['always.topicContext（头 + 近况行）', s.msg.topicContext || ''],
+    ['用户正文', s.msg.text || ''],
   ]
 }
 
@@ -254,11 +276,15 @@ function renderOne(label, tplPath, list) {
     chunks.push('```\n')
     chunks.push('| 段 | 内容 | 字数 |')
     chunks.push('|---|---|---|')
-    for (const [k, v] of provenance(s.msg)) {
-      const sample = v.length > 70 ? v.slice(0, 70) + '…' : v
-      chunks.push(`| ${k} | ${sample ? `\`${sample.replace(/\|/g, '\\|')}\`` : '—'} | ${v.length} |`)
+    for (const [k, v] of provenance(s)) {
+      // 段落是多行文本，直接塞进表格会撑破表格；反引号也会提前结束 inline code
+      const sample = (v.length > 70 ? v.slice(0, 70) + '…' : v)
+        .replace(/\n/g, ' ⏎ ')
+        .replace(/\|/g, '\\|')
+        .replace(/`/g, "'")
+      chunks.push(`| \`${k}\` | ${sample ? `\`${sample}\`` : '—'} | ${v.length} |`)
     }
-    // once.rules 与 topicContext 的字数按 msg 字段计，不是展示样串
+    // 合计按真正捕获到的 body 计，不是展示样串
     chunks.push(`| **合计** | body 总字数 | **${s.body.length}** |`)
     chunks.push('')
   }
@@ -266,7 +292,7 @@ function renderOne(label, tplPath, list) {
 }
 
 function renderDiff(cur, prop) {
-  const lines = ['## 两版逐行差异\n', '只列出不同的行（按场景与行号对齐）。\n']
+  const lines = ['## xml 与 plain 逐行差异\n', '只列出不同的行（按场景与行号对齐）。\n']
   for (let i = 0; i < cur.length; i++) {
     const a = cur[i].body.split('\n')
     const b = prop[i].body.split('\n')
@@ -285,16 +311,19 @@ function renderDiff(cur, prop) {
 const dir = mkdtempSync(join(tmpdir(), 'ocb-probe-prompt-'))
 try {
   const curTpl = JSON.parse(readFileSync(CURRENT, 'utf8'))
-  const propTpl = JSON.parse(readFileSync(PROPOSED, 'utf8'))
-  const cur = await scenarios(curTpl, dir)
-  const prop = await scenarios(propTpl, dir)
+  const xml = await scenarios(curTpl, dir, 'xml')
+  const plain = await scenarios(curTpl, dir, 'plain')
 
-  const mode = argv.includes('--diff') ? 'diff' : argv.includes('--all') ? 'all' : argv.includes('--proposed') ? 'proposed' : 'current'
+  const mode = argv.includes('--diff') ? 'diff' : argv.includes('--all') ? 'all' : argv.includes('--plain') ? 'plain' : 'xml'
   let out = ''
-  if (mode === 'current' || mode === 'proposed') {
-    out = renderOne(mode === 'proposed' ? '提案版 · 实测样本' : '现行版 · 实测样本', mode === 'proposed' ? PROPOSED : CURRENT, mode === 'proposed' ? prop : cur)
+  if (mode === 'xml' || mode === 'plain') {
+    out = renderOne(
+      mode === 'plain' ? 'plain 回退版 · 实测样本' : 'xml 版 · 实测样本（现行默认）',
+      CURRENT,
+      mode === 'plain' ? plain : xml,
+    )
   } else if (mode === 'diff') {
-    out = renderDiff(cur, prop)
+    out = renderDiff(xml, plain)
   } else {
     out = [
       '# 发给桥接 Agent 的上下文实测样本',
@@ -302,10 +331,11 @@ try {
       '> 由 `node scripts/probe-prompt.mjs --all --out docs/prompt-samples.md` 生成。',
       '> 走生产拼装链路（真实 `handleImMessage` / `runPrompt` / 模板渲染），只 stub 飞书 HTTP 与后端；不连飞书、不发消息。',
       '> 样本里的 id、群名、人名、凭证都是夹具数据；`when` 固定为 2026/11/11 17:30:00 便于对照。',
+      '> 两种形态来自同一份 `prompts.json`：`behavior.promptLayout=xml`（默认，三段 XML 键值）与 `=plain`（旧的方括号线性拼装）。',
       '',
-      renderOne('一、现行版（prompts.json）', CURRENT, cur),
-      renderOne('二、提案版（docs/prompts-topic-context.proposed.json）', PROPOSED, prop),
-      renderDiff(cur, prop),
+      renderOne('一、xml 版（现行默认）', CURRENT, xml),
+      renderOne('二、plain 回退版（behavior.promptLayout=plain）', CURRENT, plain),
+      renderDiff(xml, plain),
     ].join('\n')
   }
 

@@ -1,13 +1,7 @@
 import * as Lark from '@larksuiteoapi/node-sdk'
 import { PROMPT_TEMPLATES, deepMerge } from './config.js'
 import { TopicLog, contextKeyOf, flattenContent, renderTopicContext } from './topic-context.js'
-
-/** 用运行时数据填充 {{变量}}。缺失的变量替换成空串，避免占位符泄漏给模型 */
-function render(template, vars) {
-  return String(template ?? '').replace(/\{\{(\w+)\}\}/g, (_, key) =>
-    vars[key] === undefined || vars[key] === null ? '' : String(vars[key]),
-  )
-}
+import { render } from './template.js'
 
 /**
  * 飞书侧传输层：长连接收事件 + 发/改卡片。
@@ -334,8 +328,25 @@ export class FeishuTransport {
     // 拼，之后靠上下文记住，每轮重复只是白烧 token
     const { always, once } = this.prefixTexts(isGroup)
     const originBlock = this.buildPrefix({ m, self, userId, isBot, chatName, nick, always })
-    // 话题近况：群消息被 @ 唤醒时带上盲区原文（本条自身排除，它就是 prompt）
-    const topicContext = isGroup ? this.buildTopicContext(m) : ''
+    // 话题近况：群消息被 @ 唤醒时带上盲区原文（本条自身排除，它就是 prompt）。
+    // 拆出 header / lines / count：plain 要拼成一块字符串，xml 要单独的原文行
+    const tcp = isGroup ? this.topicContextParts(m) : { header: '', lines: '', count: 0 }
+    const topicContext = tcp.lines ? `${tcp.header}\n${tcp.lines}` : ''
+    // origin / oncePrefix / topicContext 三个字段两种模式都照旧生成：它们是
+    // msg 的稳定契约（排队快照、命令分流、既有测试都靠它们）。xml 只是额外
+    // 带一份结构化 layout，由 runPrompt 决定最终用哪套拼 body。
+    const layout = this.promptLayout() === 'xml'
+      ? {
+          mode: 'xml',
+          xml: this.tpl.layout.xml,
+          parts: this.buildLayoutParts({
+            m, self, userId, isBot, chatName, nick,
+            rules: [always, once].filter(Boolean).join('\n'),
+            topicLines: tcp.lines,
+            topicCount: tcp.count,
+          }),
+        }
+      : null
 
     await this.onMessage({
       chatId: m.chat_id,
@@ -348,6 +359,7 @@ export class FeishuTransport {
       origin: originBlock,
       oncePrefix: once,
       topicContext,
+      layout,
       text,
       // 命令判定用剥掉开头 @ 的版本。@ 占位符全部还原之后，群里
       // 「@Lil_P /help」的 text 不再以 / 开头，handler 的命令分流认不出它，
@@ -377,19 +389,33 @@ export class FeishuTransport {
   }
 
   /**
-   * 拼话题近况块：模板头（prompts.json 的 always.topicContext）+ 原文行。
-   * 没有可带的（缓冲空 / 刚开的话题）返回空串，上层 filter(Boolean) 掉。
+   * body 结构开关：xml = 三段 XML 键值，plain = 旧的方括号线性拼装。
+   * 只认这两个值；写错配置按 xml 处理，不静默退回旧行为。
    */
-  buildTopicContext(m) {
-    if (!this.topicContextOn()) return ''
+  promptLayout() {
+    return this.behaviorCfg.promptLayout === 'plain' ? 'plain' : 'xml'
+  }
+
+  /**
+   * 话题近况拆成 header / lines / count：plain 要「头 + 行」一整块字符串，
+   * xml 要单独的原文行与条数去填「话题近况」键。快照是纯读，一次算完共用。
+   */
+  topicContextParts(m) {
+    const empty = { header: '', lines: '', count: 0 }
+    if (!this.topicContextOn()) return empty
     const limit = Number(this.behaviorCfg.topicContextMessages) || 20
     const maxChars = Number(this.behaviorCfg.topicContextChars) || 2500
     const items = this.topicLog.snapshot(contextKeyOf(m), { excludeId: m.message_id, limit })
-    if (!items.length) return ''
+    if (!items.length) return empty
     const { text, count } = renderTopicContext(items, (id) => this.nameOf?.(id) || '', { maxChars })
-    if (!text) return ''
-    const header = render(this.tpl.always.topicContext, { n: count })
-    return `${header}\n${text}`
+    if (!text) return empty
+    return { header: render(this.tpl.always.topicContext, { n: count }), lines: text, count }
+  }
+
+  /** 兼容旧调用：拼成 plain 模式要的「头 + 行」一块 */
+  buildTopicContext(m) {
+    const { header, lines } = this.topicContextParts(m)
+    return lines ? `${header}\n${lines}` : ''
   }
 
   prefixTexts(isGroup) {
@@ -417,7 +443,9 @@ export class FeishuTransport {
   }
 
   /**
-   * 拼发给模型的前缀：来源标注 + 协作 id + 身份 + 可@的同伴 + 自定义前缀。
+   * 把一条消息的事实算成一组变量：来源标注、协作 id、身份、可@的同伴。
+   * plain 与 xml 两套布局共用同一份事实，避免「方括号版本说在话题内、
+   * XML 版本说在主聊天流」这类分叉。
    *
    * 为什么把 id 全给出来：飞书里 agent 之间的每一次互动都要落到具体的
    * chat / thread / message 上——@ 唤醒别人要 chat_id，拉话题历史要
@@ -425,9 +453,9 @@ export class FeishuTransport {
    * 事件里全都有，以前只往下传了一个 thread，于是每次协作都得先去
    * logs/bridge.log 里翻剩下的（真实事故：回复话题前满仓库找 root 消息 id）。
    *
-   * 纯函数：不碰网络，测试直接喂事件字段（scripts/test-prompt-ids.mjs）。
+   * 纯函数、不碰网络：测试直接喂事件字段（scripts/test-prompt-ids.mjs）。
    */
-  buildPrefix({ m, self, userId = '', isBot = false, chatName = '', nick = '', always = '' }) {
+  prefixVars({ m, self, userId = '', isBot = false, chatName = '', nick = '' }) {
     const a = this.tpl.always
     const isGroup = m.chat_type === 'group'
     const sender = nick
@@ -471,7 +499,12 @@ export class FeishuTransport {
     const inThread = isGroup && Boolean(m.thread_id)
     vars.where = where
     vars.scope = isGroup ? render(inThread ? a.scope.thread : a.scope.main, vars) : ''
+    return { a, isGroup, inThread, peers, vars }
+  }
 
+  /** plain 布局：来源标注 + 协作 id + 身份 + 可@的同伴 + 自定义前缀 */
+  buildPrefix({ m, self, userId = '', isBot = false, chatName = '', nick = '', always = '' }) {
+    const { a, isGroup, inThread, peers, vars } = this.prefixVars({ m, self, userId, isBot, chatName, nick })
     const origin = isGroup ? render(a.origin.group, vars) : render(a.origin.private, vars)
     const ids = isGroup
       ? inThread
@@ -490,16 +523,49 @@ export class FeishuTransport {
   }
 
   /**
-   * 身份声明行：本机器人是谁、飞书应用是哪个、飞书 CLI 的身份从哪来。
-   * 拿不到名字时返回空串（不加行），老行为不变。
+   * xml 布局要填的字段。所有文案仍在 prompts.json：where / scope / sender /
+   * senderType 复用 always 组的模板值，身份句用 layout.xml.identityLine，
+   * 这里只做取值和分隔符转换，不写任何发给模型的句子。
+   *
+   * rules = 配置里的 always + once 前缀，一并放进 <profile>：它们本来就是
+   * 静态说明，首条发过之后靠会话历史记住，与 once 的省 token 契约一致。
+   */
+  buildLayoutParts({ m, self, userId = '', isBot = false, chatName = '', nick = '', rules = '', topicLines = '', topicCount = 0 }) {
+    const { isGroup, inThread, peers, vars } = this.prefixVars({ m, self, userId, isBot, chatName, nick })
+    const { who, app, key } = this.identityParts(self)
+    return {
+      ...vars,
+      isGroup,
+      inThread,
+      peers: isGroup && peers ? peers.split(' · ').join('，') : '',
+      who,
+      app,
+      identityKey: key,
+      rules,
+      topicLines,
+      topicCount,
+    }
+  }
+
+  /** 身份文案的变量：两个后端注入点不同，文案按后端选一句 */
+  identityParts(self) {
+    const a = this.tpl.always
+    return {
+      who: self?.name || this.cfg.botName || '',
+      app: this.cfg.appId ? render(a.identityApp, { appId: this.cfg.appId }) : '',
+      key: this.backendType === 'pi' ? 'pi' : 'opencode',
+    }
+  }
+
+  /**
+   * 身份声明行（plain 用）：本机器人是谁、飞书应用是哪个、飞书 CLI 的身份
+   * 从哪来。拿不到名字时返回空串（不加行），老行为不变。
+   * xml 用的是 layout.xml.identityLine，不带方括号。
    */
   identityLine(self) {
-    const who = self?.name || this.cfg.botName || ''
+    const { who, app, key } = this.identityParts(self)
     if (!who) return ''
-    const a = this.tpl.always
-    const app = this.cfg.appId ? render(a.identityApp, { appId: this.cfg.appId }) : ''
-    const key = this.backendType === 'pi' ? 'pi' : 'opencode'
-    return render(a.identityLine[key], { who, app })
+    return render(this.tpl.always.identityLine[key], { who, app })
   }
 
   async handleCardAction(data) {

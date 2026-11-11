@@ -43,7 +43,8 @@
     "maxParallel": 2,
     "topicContext": true,
     "topicContextMessages": 20,
-    "topicContextChars": 2500
+    "topicContextChars": 2500,
+    "promptLayout": "xml"
   },
   "prompt": {
     "templates": {},

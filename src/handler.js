@@ -14,6 +14,7 @@ import {
   queuedDroppedCard,
 } from './cards.js'
 import { truncate } from './render.js'
+import { renderXmlBody } from './prompt-layout.js'
 
 const MAX_PROMPT_CHARS = 20000
 
@@ -539,6 +540,9 @@ export class Bridge {
         // 入队时的近况快照跟着走：出队重放时 runPrompt 还能拼上。快照是排队
         // 那一刻的视角，比出队时旧一点——正是用户发这条消息时看到的讨论
         topicContext: msg.topicContext,
+        // xml 布局快照也要跟着排队：出队重放时仍按入队那一刻的身份、来源
+        // 和近况拼 body，不能拿后来变化的字段
+        layout: msg.layout,
         isGroup: msg.isGroup,
         chatId: ctx.chatId,
         replyTo: ctx.replyTo,
@@ -592,18 +596,23 @@ export class Bridge {
 
     const raw = msg.text || ''
     const promptText = raw.length > MAX_PROMPT_CHARS ? raw.slice(0, MAX_PROMPT_CHARS) : raw
-    // 前缀分三路，只拼给模型，不参与 /命令 解析，也不计入 MAX_PROMPT_CHARS：
-    //   origin      每条消息都带（来源标注 + 身份声明 + 配置里 always 的前缀）
-    //   oncePrefix  只在该会话的第一条消息带（配置里 once 的前缀，默认是协作
-    //               规则）。规则是静态的，第一条带过之后就在会话历史里，后续
-    //               消息靠上下文记住——每轮重复只是白烧 token
-    //   topicContext  群消息带（话题近况：没 @ 我的轮次的原文，见
-    //               src/topic-context.js）。规则在前、近况在后：规则是指令，
-    //               近况是数据，数据贴着正文读最顺
-    const preamble = [msg.origin, isNewSession ? msg.oncePrefix : '', msg.topicContext]
-      .filter(Boolean)
-      .join('\n')
-    const body = preamble ? `${preamble}\n\n${promptText}` : promptText
+    // 前缀只拼给模型，不参与 /命令 解析，也不计入 MAX_PROMPT_CHARS。
+    // 两套布局：
+    //   xml    msg.layout 带三段模板与字段 —— <profile> 身份/长期规则（只在会话
+    //          第一条）、<context> 本次来源/id/近况（每条）、<task> 正文（每条）；
+    //          由 src/prompt-layout.js 拼，文案全在 prompts.json 的 layout.xml。
+    //   plain  老路径：origin + oncePrefix（仅首条）+ topicContext 线性串起来，
+    //          再空一行接正文。手工构造的 msg（既有测试、内部调用）没有
+    //          layout 字段，自动落到这里，旧行为一字不变。
+    let body
+    if (msg.layout?.mode === 'xml') {
+      body = renderXmlBody(msg.layout, { text: promptText, isNewSession })
+    } else {
+      const preamble = [msg.origin, isNewSession ? msg.oncePrefix : '', msg.topicContext]
+        .filter(Boolean)
+        .join('\n')
+      body = preamble ? `${preamble}\n\n${promptText}` : promptText
+    }
 
     const state = new RunState(session.id)
     const meta = {

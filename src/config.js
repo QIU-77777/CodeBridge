@@ -132,6 +132,9 @@ export const DEFAULTS = {
     topicContextMessages: 20,
     // 近况总字数上限（超了保尾：最近的优先，被裁的条数注明）
     topicContextChars: 2500,
+    // 发给模型的 body 结构：xml = <profile>/<context>/<task> 三段键值；
+    // plain = 旧的方括号线性拼装。改回 plain 可一字不差恢复旧行为。
+    promptLayout: 'xml',
   },
   prompt: {
     // 提示词模板。默认全部来自仓库根的 prompts.json，按 always / once 分组，
