@@ -186,17 +186,17 @@
 
 并给出目标形态：`<profile>`（身份 / 同伴 / 行为准则）、`<context>`（来源 / 发送者 / 时间 / 协作 id / 话题近况）、`<task>`（用户正文）。这比第 8 节那个「只加两个标签」的轻量方案**更完整**：用户要的不是给旧线性文本贴标签，而是把整条 body 重构成有起止、有键值、有层级的容器。理由（结构关系、起止关系）与第 2 节 Anthropic / Spotlighting 的结论一致。
 
-### 10.2 为什么必须改代码
+### 10.2 结构与文案都在 prompts.json 里，代码只填变量
 
-原来的 `runPrompt` 只会把 `origin` → `oncePrefix` → `topicContext` → 正文 线性串起来。而 `<profile>` 要包住「身份 + 同伴 + 规则」三段原本分散的内容，`<task>` 要包住正文——**一个标签跨好几段**。无论怎么改 `prompts.json` 的文案都拼不出来，所以新增：
+原来的 `runPrompt` 只会把 `origin` → `oncePrefix` → `topicContext` → 正文 线性串起来。而 `<profile>` 要包住「身份 + 同伴 + 规则」三段原本分散的内容，`<task>` 要包住正文——**一个标签跨好几段**，所以必须有一层渲染器。重点是这一层**不持有结构**：整份提示词就写在 `layout.xml` 里（见 10.6）。涉及的文件：
 
 | 文件 | 职责 |
 |---|---|
-| `src/prompt-layout.js` | `renderXmlBody()` 拼三段、`neutralizeTags()` 中和不可信文本里的同名标签 |
+| `src/prompt-layout.js` | 只填变量、选段（首条才带 profile）、变量为空时丢整行、中和不可信值；不拼结构、不保存任何文案 |
 | `src/template.js` | `{{变量}}` 填充，从 `feishu.js` 抽出来给两套布局共用 |
 | `src/feishu.js` | `prefixVars()` 统一两套布局的事实来源；`buildLayoutParts()` 产出字段；`topicContextParts()` 拆出 header / lines / count |
 | `src/handler.js` | `runPrompt` 按 `msg.layout.mode` 分流；排队条目带 layout 快照 |
-| `prompts.json` → `layout.xml` | 全部标签名、键值行标题、契约声明、身份句（代码里一句文案都不存） |
+| `prompts.json` → `layout.xml` | **完整提示词本身**：`profile` / `context` / `task` 三个数组逐行写死整份 XML（标签、键值标题、契约说明、行序），只有 `{{变量}}` 待填；`variants` 是几组按场景选的值模板 |
 
 `behavior.promptLayout=plain` 完全绕开上述新路径，旧方括号拼装一字不变。这是一键回退的保险，也让 `test-cards.mjs` / `test-prompt-ids.mjs` 等既有断言不用改。
 
@@ -228,8 +228,39 @@
 
 ### 10.5 验收与回退
 
-- `npm run test:prompt-layout`：73 项，覆盖三段结构、空键省略、ids 三分支、转义、续聊不发 profile、私聊 / 主聊天流 / pi / plain 回退、排队 layout 快照。
+- `npm run test:prompt-layout`：88 项，覆盖「模板即完整提示词」、变量为空则整行消失、三段结构、ids 三分支、转义、续聊不发 profile、私聊 / 主聊天流 / pi / plain 回退、排队 layout 快照。
 - 全量 20 个 `scripts/test-*.mjs` 回归通过；旧断言依赖的方括号拼装由 plain 路径原样保留。
 - `node scripts/probe-prompt.mjs` / `--plain` / `--diff` 看两种形态与逐行差异。
 - 回退：`config.json` 里写 `"behavior": { "promptLayout": "plain" }`，不改任何文案即可恢复旧行为。
 - 仍未做：**真实模型 A/B 验证**。XML 是否真的让模型更少误把近况当指令、更少重复拉历史，需要在飞书真实话题里观察；离线测试只保证拼装正确。
+
+### 10.6 同日再改一次：完整提示词必须落在 prompts.json 里
+
+第一版虽然文案都在文件里，但**结构在代码里**：`layout.xml` 是一堆 `profileOpen` / `profileClose` / `source.group` / `topicLabel` / `contract` 碎片键，`src/prompt-layout.js` 负责 `out.push(标签, ...行, 闭合标签)`，还要为「私聊要不要同伴行」「有没有近况键」写 if。打开文件根本读不出模型会收到什么。用户明确指出：
+
+> 「我就是想完整的提示词都落在 prompt.json 文件中，不要只是放几个变量，而是完整的 xml 格式，然后中间该用实例替换的就用变量，就是在这个文件里就拼接成完整版的提示词」
+
+于是把 `layout.xml` 改成 `profile` / `context` / `task` **三个逐行数组**：每个元素就是最终的一行（或带换行的一小块），从上到下读一遍就是完整提示词：
+
+```json
+"profile": [
+  "<profile>",
+  "**你的身份**：{{identity}}",
+  "**你的同伴**（可@的open_id）：{{peers}}",
+  "**行为准则**：\n{{rules}}",
+  "**结构说明**：整条消息分三段——…",
+  "</profile>"
+]
+```
+
+为什么用数组而不是一整条带换行转义的长字符串：JSON 字符串里的换行必须写成 `\n`，整份提示词会挤成一行，根本没法审阅；逐行数组在编辑器里就是排版好的完整 XML。少数元素（`**行为准则**`、`**话题近况**`）内部用一个 `\n` 把标题和多行内容绑成一块，是为了让它们整体出现或整体消失，不影响整份提示词的可读性。
+
+**可选行怎么表达**（不引入条件语法、不让代码判断某行该不该有）：约定「一个元素引用的任一 `{{变量}}` 取到空值，整行 / 整块自动消失」。于是：
+- 私聊 `peers` 为空 → `**你的同伴**` 整行消失；
+- `rules` 为空 → `**行为准则**` 标题和规则一起消失；
+- `lines` 为空 → `**话题近况**` 键和原文行一起消失；
+- `who` 为空 → `**你的身份**` 整行消失。
+
+`variants` 里只留三组「值模板」（身份句按后端、source 按群聊私聊、ids 按话题内/主聊天流/私聊），它们是填进变量的值，不是结构。代码从 90 行缩到约 70 行，只剩：选段、算值、逐元素填变量并丢空、变量值中和。
+
+**输出零变化**：`probe-prompt --all` 生成的样本与重构前 `cmp` 逐字一致（5 个场景、两种布局共 10 份 body 完全相同）。这次改的只是「结构归谁」：从代码搬到 `prompts.json`。新增 15 条断言专门钉住「模板就是完整提示词、不存在碎片键」，避免以后又漂移回去。

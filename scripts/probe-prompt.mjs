@@ -332,6 +332,7 @@ try {
       '> 走生产拼装链路（真实 `handleImMessage` / `runPrompt` / 模板渲染），只 stub 飞书 HTTP 与后端；不连飞书、不发消息。',
       '> 样本里的 id、群名、人名、凭证都是夹具数据；`when` 固定为 2026/11/11 17:30:00 便于对照。',
       '> 两种形态来自同一份 `prompts.json`：`behavior.promptLayout=xml`（默认，三段 XML 键值）与 `=plain`（旧的方括号线性拼装）。',
+      '> xml 版的完整提示词逐行写在 `prompts.json` 的 `layout.xml.profile` / `context` / `task` 里，打开即可审阅；本文件是它填好实例数据后的样子。',
       '',
       renderOne('一、xml 版（现行默认）', CURRENT, xml),
       renderOne('二、plain 回退版（behavior.promptLayout=plain）', CURRENT, plain),

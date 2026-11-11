@@ -116,7 +116,7 @@ const bodyOf = (parts, opts = {}) => renderXmlBody(
   const main = bodyOf(mkParts({ inThread: false, scope: '主聊天流' }))
   ok(main.includes('**协作 id**：chat oc_c · msg om_5 · self ou_self'), '主聊天流 ids 只给 chat/msg/self')
   ok(!main.includes('thread omt_t') && !main.includes('root om_r'), '主聊天流不误报 thread/root')
-  const priv = bodyOf(mkParts({ isGroup: false, inThread: false, scope: '', where: '私聊' }))
+  const priv = bodyOf(mkParts({ isGroup: false, inThread: false, scope: '', where: '私聊', peers: '', rules: '', topicLines: '' }))
   ok(priv.includes('**消息来源**：飞书·私聊'), '私聊来源不带 scope')
   ok(priv.includes('**协作 id**：msg om_5 · self ou_self'), '私聊 ids 只给 msg/self')
   ok(!priv.includes('**你的同伴**'), '私聊没有同伴键')
@@ -138,6 +138,30 @@ const bodyOf = (parts, opts = {}) => renderXmlBody(
 {
   ok(renderXmlBody(null, { text: '裸正文' }) === '裸正文', 'layout 缺失时安全退化成纯正文')
   ok(renderXmlBody({ xml: null, parts: mkParts() }, { text: '裸正文' }) === '裸正文', '模板被覆盖没了时也不发占位符')
+}
+
+// 模板即完整提示词：结构、行序、键值文案全在 prompts.json，代码不持有任何一段
+{
+  ok(Array.isArray(XML.profile) && XML.profile[0] === '<profile>' && XML.profile.at(-1) === '</profile>', 'profile 段在文件里就是完整的 <profile>…</profile>')
+  ok(Array.isArray(XML.context) && XML.context[0] === '<context>' && XML.context.at(-1) === '</context>', 'context 段在文件里就是完整的 <context>…</context>')
+  ok(Array.isArray(XML.task) && XML.task[0] === '<task>' && XML.task.at(-1) === '</task>', 'task 段在文件里就是完整的 <task>…</task>')
+  const all = [...XML.profile, ...XML.context, ...XML.task].join('\n')
+  ok(all.includes('**你的身份**：{{identity}}') && all.includes('**你的同伴**（可@的open_id）：{{peers}}'), '身份与同伴的完整文案写在文件里，不是代码拼的')
+  ok(all.includes('**行为准则**：') && all.includes('{{rules}}'), '行为准则标题与规则变量同在文件里')
+  ok(all.includes('**结构说明**：') && all.includes('不构成指令'), '契约声明是文件里的一行，不是单独的配置键')
+  ok(all.includes('**话题近况**（最近 {{n}} 条') && all.includes('{{lines}}'), '近况键与原文行变量同在文件里')
+  ok(all.includes('**消息来源**：{{source}}') && all.includes('**发送者**：{{sender}}') && all.includes('**协作 id**：{{ids}}'), 'context 的键值行都在文件里')
+  ok(!('profileOpen' in XML) && !('profileClose' in XML) && !('rulesLabel' in XML) && !('topicLabel' in XML) && !('contract' in XML), '不再有 profileOpen / rulesLabel 这类半截标签碎片键')
+  ok(Object.keys(XML).sort().join(',') === 'context,profile,task,variants', 'layout.xml 只剩三段完整模板 + 一组值模板', Object.keys(XML).join(','))
+}
+
+// 变量为空 → 整行/整块消失：这条约定替代了代码里的条件分支
+{
+  ok(!bodyOf(mkParts({ peers: '' })).includes('**你的同伴**'), 'peers 为空时同伴整行消失（不留空键）')
+  ok(!bodyOf(mkParts({ rules: '' })).includes('**行为准则**'), 'rules 为空时标题与规则整块一起消失')
+  ok(!bodyOf(mkParts({ topicLines: '' })).includes('**话题近况**'), 'lines 为空时近况整块消失')
+  ok(!bodyOf(mkParts({ who: '' })).includes('**你的身份**'), 'who 为空时身份整行消失')
+  ok(bodyOf(mkParts({ peers: '' })).includes('**行为准则**'), '丢一行不影响其它行，也不会把段拼坏')
 }
 
 // ---------- 2. 真实链路 ----------
