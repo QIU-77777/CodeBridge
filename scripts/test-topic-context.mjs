@@ -175,7 +175,7 @@ function ev({ id, text, senderId = 'ou_u1', senderType = 'user', rootId = 'om_r'
       content: content ?? JSON.stringify({ text }),
       root_id: rootId,
       thread_id: rootId ? 'omt_1' : null,
-      create_time: String(Math.floor(new Date('2026-11-11T10:00:00').getTime() / 1000)),
+      create_time: String(new Date('2026-11-11T10:00:00').getTime()),
       mentions,
     },
   }
@@ -194,6 +194,7 @@ const ME = [{ key: '@_user_1', id: { open_id: 'ou_me', user_id: 'ou_me' }, name:
   ok(seen.length === 1, '没 @ 我的消息不触发 onMessage（闸门语义不变）')
   const ctx = seen[0]?.topicContext || ''
   ok(ctx.includes('[话题近况'), '唤醒消息带上话题近况头')
+  ok(ctx.includes('10:00') && !ctx.includes('NaN'), 'create_time 按毫秒口径渲染（不是秒，也不是公元五万年）')
   ok(ctx.includes('方案A更好'), '没 @ 我的轮次原文在近况里')
   ok(ctx.includes('李四（机器人）') && ctx.includes('先改配置'), '其他 agent 的发言在近况里（带机器人标注）')
   ok(!ctx.includes('按刚才的方案继续'), '当前消息自身不在近况里（它就是 prompt）')

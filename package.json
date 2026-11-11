@@ -33,7 +33,8 @@
     "up": "bash scripts/up.sh",
     "down": "bash scripts/down.sh",
     "probe:names": "node scripts/probe-names.mjs",
-    "probe:msg": "node scripts/probe-msg.mjs"
+    "probe:msg": "node scripts/probe-msg.mjs",
+    "probe:prompt": "node scripts/probe-prompt.mjs"
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.76.0"

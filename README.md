@@ -870,6 +870,7 @@ logs/                      运行日志（不入库）
 | `npm run test:pi` / `test:pi-cli-sessions` | pi 后端与终端会话 |
 | `npm run test:admin` / `test:init` / `test:identity` / `test:github` / `test:serve-password` | 后台、初始化、身份注入、serve 密码 |
 | `npm run probe:names [chat_id]` / `probe:msg` | 飞书接口探针，打印权限与字段 |
+| `npm run probe:prompt` | 打印**真正发给模型的 body**（走生产拼装链路，只 stub 网络与后端）。`--proposed` 看提案文案、`--diff` 看两版逐行差异、`--all --out docs/prompt-samples.md` 生成存档 |
 
 `scripts/test-cards.mjs`、`scripts/test-prompt-ids.mjs`、`scripts/test-session-seq.mjs`、`scripts/test-up-sh.mjs` 与 `scripts/probe-thread.mjs` 没有对应的 npm 脚本，用 `node <路径>` 运行。
 

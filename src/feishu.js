@@ -230,7 +230,11 @@ export class FeishuTransport {
             : mentions.length > 0
           this.topicLog.push(contextKeyOf(m), {
             messageId: m.message_id,
-            ts: (Number(m.create_time) || 0) * 1000 || Date.now(),
+            // 飞书 im.message.receive_v1 的 message.create_time 是**毫秒**级
+            // 时间戳字符串（13 位）。buildPrefix 的 when 与 probe-msg 都直接
+            // new Date(Number(...))，这里必须同口径。写成 *1000 会把毫秒再乘
+            // 一千倍，近况行的 [HH:MM] 落到公元五万年——实测探针抓到的
+            ts: Number(m.create_time) || Date.now(),
             senderId,
             senderType: data?.sender?.sender_type || '',
             kind: flat.kind,
@@ -476,10 +480,10 @@ export class FeishuTransport {
       : render(a.ids.private, vars)
     // 私聊里没有群可 @，同伴行是死信息，不拼
     const peersLine = isGroup && peers ? render(a.peers.list, vars) : a.peers.empty || ''
-    // 身份行：告诉模型「你是谁」。多机器人同机时，代理用飞书 CLI 发言读的是
-    // 机器级配置，默认应用可能是别的实例的——真实事故里 Lil_P 的代理发出的
-    // 问候以 Lil_O 的应用到达群里。声明身份之外，pi 后端的桥接还会把本实例
-    // 凭证注入子进程环境（src/pi.js childEnv），两句互相印证
+    // 身份行：告诉模型「你是谁」。两个后端都注入了本实例凭证，只是注入点
+    // 不同（pi 起子进程时、opencode 起 serve 时），文案按后端选一句；
+    // opencode 那句额外提醒「serve 若不是由桥接脚本启动则未注入」。
+    // 修的就是「Lil_P 的代理发出的问候以 Lil_O 的应用到达群里」那次事故
     const identity = this.identityLine(self)
 
     return [origin, ids, identity, peersLine, always].filter(Boolean).join('\n')

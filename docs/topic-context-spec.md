@@ -223,3 +223,43 @@ cp docs/prompts-topic-context.proposed.json prompts.json   # 由用户执行
 
 未做：真实模型环境下的效果验证。替换后建议在群里发一条「前面有人讨论过、没 @ 我」的话题消息，观察模型是否跳过 `feishu-cli` 拉历史。
 
+---
+
+## 附录 B · 上下文实测（prompt-samples.md）
+
+用户要求「实测发给桥接 agent 的上下文拼接」，于是补了可复跑的探针：
+
+```bash
+npm run probe:prompt                                  # 现行 prompts.json，5 个场景
+node scripts/probe-prompt.mjs --proposed              # 提案副本
+node scripts/probe-prompt.mjs --diff                  # 两版逐行差异
+node scripts/probe-prompt.mjs --all --out docs/prompt-samples.md
+```
+
+`scripts/probe-prompt.mjs` 走的是**生产拼装链路**：`FeishuTransport.handleImMessage`（含 @ 闸门与近况采集）→ `onMessage`（命令分流、白名单、去重）→ `runPrompt`（三段前缀拼接）→ `oc.prompt`，在最后一步截下 `body` 原样打印。只 stub 飞书 HTTP 与后端；模板渲染、变量替换、近况快照全是真实代码。不连飞书、不发消息、不碰用户配置目录。样本存档：[prompt-samples.md](prompt-samples.md)。
+
+### 五个场景与字数结构（现行版 → 提案版，单位：字）
+
+| 场景 | 现行 | 提案 | 说明 |
+|---|---|---|---|
+| A 群聊 / 话题内 / 新会话 / opencode | 1577 | 1778 | 最完整：origin 四行 + once 规则 + 近况 + 正文 |
+| B 群聊 / 话题内 / 续聊 | 458 | 543 | 无 once 规则，近况仍带 |
+| C 群聊 / 主聊天流 | 1450 | 1651 | scope/ids 走 main 分支，近况按 chat 聚 |
+| D 私聊 | 181 | 240 | 无 scope / peers / 近况 / 协作规则 |
+| E 群聊 / 话题内 / pi | 1492 | 1634 | 与 A 只差 identityLine 分支 |
+
+**A 场景现行版 1577 字里，`once.rules` 占 1075 字（68%）**，origin 四行合计约 293 字，近况块 185 字，用户正文 17 字。要调成本，动 once 规则比动 header 有效一个数量级。
+
+另一个实测才看得清的事实：**主聊天流每条 @ 都是新会话，因此每条都重新带 1075 字规则**（C 场景 1450 字里同样占 1075）。话题内续聊（B）只有 458 字。如果主聊天流用量大，把协作规则从 `once` 改成「每群每天一次」之类需要另做状态，别在没量之前加。
+
+### 实测挖出的真 bug：`create_time` 单位
+
+探针第一次跑出来前缀时间是 `1970/1/22`，追下去发现 `src/feishu.js` 的近况采集写了 `(Number(m.create_time) || 0) * 1000`——把飞书 **13 位毫秒**时间戳又乘了一千倍，近况行的 `[HH:MM]` 会落到公元五万年。同文件 `buildPrefix` 的 `when`、`scripts/probe-msg.mjs`、`scripts/test-cards.mjs` 的夹具都按毫秒直接 `new Date(Number(...))`，只有新增的采集用了秒的口径。
+
+已修成 `ts: Number(m.create_time) || Date.now()`，夹具同步改成毫秒，并在 `scripts/test-topic-context.mjs` 加一条断言钉住「近况行显示 10:00、无 NaN」。这类「同一字段两处口径不同」的问题，靠读代码不容易发现，跑一遍真实拼装就自己冒出来了——探针值得常留着。
+
+### 探针自身的两个坑（已修，写在脚本注释里）
+
+1. 不能把 `bridge.t` 换成真实 `FeishuTransport`：`runPrompt` 发卡片会走真实 SDK 取 `tenant_access_token`，假凭证直接报 10003。`FeishuTransport` 只负责「事件 → msg」，通过 `onMessage` 回调接入。
+2. 唤醒消息若被排队，静默取 `captured.at(-1)` 会拿到上一次的 body，样本看起来对、其实张冠李戴。现在 `run()` 断言「这次必须产生新 prompt」，否则报错。
+
