@@ -40,7 +40,10 @@
     "showTools": false,
     "maxBodyChars": 6000,
     "idleTimeoutMs": 300000,
-    "maxParallel": 2
+    "maxParallel": 2,
+    "topicContext": true,
+    "topicContextMessages": 20,
+    "topicContextChars": 2500
   },
   "prompt": {
     "templates": {},

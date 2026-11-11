@@ -1,5 +1,6 @@
 import * as Lark from '@larksuiteoapi/node-sdk'
 import { PROMPT_TEMPLATES, deepMerge } from './config.js'
+import { TopicLog, contextKeyOf, flattenContent, renderTopicContext } from './topic-context.js'
 
 /** 用运行时数据填充 {{变量}}。缺失的变量替换成空串，避免占位符泄漏给模型 */
 function render(template, vars) {
@@ -53,6 +54,13 @@ export class FeishuTransport {
     /** 后端类型（opencode / pi）。pi 后端的桥接会把本实例凭证注入子进程，
      *  身份声明据此给不同文案 */
     this.backendType = backendType
+
+    /**
+     * 话题近况：群消息的近况缓冲（见 src/topic-context.js）。采集点在 @ 闸门
+     * 之前——没 @ 我的轮次正是要替模型留着的。behavior.topicContext=false 关闭。
+     */
+    this.behaviorCfg = config.behavior || {}
+    this.topicLog = new TopicLog()
 
     /** 机器人自己的身份，start() 时取一次并缓存 */
     this.self = null
@@ -204,6 +212,36 @@ export class FeishuTransport {
     const mentions = Array.isArray(m.mentions) ? m.mentions : []
 
     /**
+     * 话题近况采集。必须在 @ 闸门**之前**：这里丢掉的没 @ 轮次，正是被 @ 唤醒
+     * 时要替模型带上的盲区。只记群消息；自己发的（卡片 / 回复回流）不记——
+     * 模型知道自己说过什么，记了反而是噪声。
+     *
+     * 主聊天流按 chat:<群> 聚（那里每次 @ 都是新会话，近况是唯一上下文来源），
+     * 话题内按 root:<根> 聚，键语义见 src/topic-context.js。
+     */
+    if (isGroup && this.topicContextOn()) {
+      const senderId = data?.sender?.sender_id?.open_id || data?.sender?.sender_id?.user_id || ''
+      const isOwn = self?.open_id && senderId === self.open_id
+      if (!isOwn) {
+        const flat = flattenContent(m.message_type, m.content, mentions)
+        if (flat) {
+          const atMe = self?.open_id
+            ? mentions.some((x) => x?.id?.open_id === self.open_id)
+            : mentions.length > 0
+          this.topicLog.push(contextKeyOf(m), {
+            messageId: m.message_id,
+            ts: (Number(m.create_time) || 0) * 1000 || Date.now(),
+            senderId,
+            senderType: data?.sender?.sender_type || '',
+            kind: flat.kind,
+            text: flat.text,
+            atMe,
+          })
+        }
+      }
+    }
+
+    /**
      * 只认「@ 我本人」。
      *
      * 一个群里可以同时躺着好几个机器人，飞书会把 im.message.receive_v1 推给
@@ -292,6 +330,8 @@ export class FeishuTransport {
     // 拼，之后靠上下文记住，每轮重复只是白烧 token
     const { always, once } = this.prefixTexts(isGroup)
     const originBlock = this.buildPrefix({ m, self, userId, isBot, chatName, nick, always })
+    // 话题近况：群消息被 @ 唤醒时带上盲区原文（本条自身排除，它就是 prompt）
+    const topicContext = isGroup ? this.buildTopicContext(m) : ''
 
     await this.onMessage({
       chatId: m.chat_id,
@@ -303,6 +343,7 @@ export class FeishuTransport {
       isBot,
       origin: originBlock,
       oncePrefix: once,
+      topicContext,
       text,
       // 命令判定用剥掉开头 @ 的版本。@ 占位符全部还原之后，群里
       // 「@Lil_P /help」的 text 不再以 / 开头，handler 的命令分流认不出它，
@@ -323,6 +364,30 @@ export class FeishuTransport {
    * id 为 rules 的条目：text 留空用 templates.once.rules（prompts.json），
    * 填写则用你的版本。只在群里拼，私聊没有同伴。删掉条目即关闭该前缀。
    */
+  /**
+   * 话题近况的开关与限额。默认开：这是「话题内失忆」的直接补法，关掉的人
+   * 自己知道为什么。条数 / 字数都留了配置口。
+   */
+  topicContextOn() {
+    return this.behaviorCfg.topicContext !== false
+  }
+
+  /**
+   * 拼话题近况块：模板头（prompts.json 的 always.topicContext）+ 原文行。
+   * 没有可带的（缓冲空 / 刚开的话题）返回空串，上层 filter(Boolean) 掉。
+   */
+  buildTopicContext(m) {
+    if (!this.topicContextOn()) return ''
+    const limit = Number(this.behaviorCfg.topicContextMessages) || 20
+    const maxChars = Number(this.behaviorCfg.topicContextChars) || 2500
+    const items = this.topicLog.snapshot(contextKeyOf(m), { excludeId: m.message_id, limit })
+    if (!items.length) return ''
+    const { text, count } = renderTopicContext(items, (id) => this.nameOf?.(id) || '', { maxChars })
+    if (!text) return ''
+    const header = render(this.tpl.always.topicContext, { n: count })
+    return `${header}\n${text}`
+  }
+
   prefixTexts(isGroup) {
     const list = this.promptCfg?.prefixes || []
     let always = ''

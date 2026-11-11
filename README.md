@@ -40,6 +40,7 @@
 | 富文本 | Markdown 表格渲染成飞书原生表格，代码块带语法高亮 |
 | 多会话 | `/sessions` 列出会话并点按钮切换；`/new` 新建；`/cd` 换目录 |
 | 群里并行 | 每 @ 一次开一条话题，一条话题一个会话，多条话题并行执行 |
+| 话题近况 | 群里没 @ 我的讨论我本来收不到；被 @ 唤醒时，桥接把该话题最近 N 条消息原文随任务一起带给模型，省掉模型自己去拉聊天记录的那几步（私聊不需要，每条都进会话） |
 | 权限审批 | opencode 后端申请读取敏感文件时，飞书弹卡片让人点允许或拒绝 |
 | 模型切换 | `/model`、`/agent` 在线切换，无需重启 |
 | 排队与中止 | 同一会话上一条还在执行时，新消息排进队列；卡片上可引导、取消、`/stop` |
@@ -201,7 +202,9 @@ flowchart TB
 |---|---|
 | `src/index.js` | 入口、单实例锁、`--dry` 终端模式、启动健康检查 |
 | `src/config.js` | 配置目录解析、默认值、模板铺开、环境变量覆盖 |
-| `src/feishu.js` | 飞书长连接收发、群聊 @ 判定、消息来源标注、卡片回传 |
+| `src/feishu.js` | 飞书长连接收发、群聊 @ 判定、消息来源标注、话题近况采集、卡片回传 |
+| `src/topic-context.js` | 话题近况：群消息缓冲、text/post 拉平、原文渲染与两级截断 |
+| `src/errors.js` | 错误分类与「下一步」提示 |
 | `src/handler.js` | 命令分发、会话绑定、运行编排、排队、卡片回调、看门狗 |
 | `src/backend.js` | 后端工厂与统一能力声明 |
 | `src/oc.js` | opencode v2 HTTP API 与 SSE 事件流客户端 |
@@ -549,6 +552,9 @@ npm run dry
 | `behavior.maxBodyChars` | 卡片正文字符上限，超出保留尾部 | `6000` |
 | `behavior.idleTimeoutMs` | 仅 opencode 后端：多久没有事件就判定卡死并收尾，`0` 关闭 | `300000` |
 | `behavior.maxParallel` | 整机同时运行的任务数，`0` 表示不限 | `2` |
+| `behavior.topicContext` | 群消息被唤醒时是否带上该话题最近 N 条消息原文（私聊不受影响） | `true` |
+| `behavior.topicContextMessages` | 近况最多带几条，`@` 过我的轮次只算一行指针 | `20` |
+| `behavior.topicContextChars` | 近况总字数上限，超出保尾（最近的优先） | `2500` |
 | `prompt.templates` | 按同路径深合并覆盖 `prompts.json` 里的提示词模板，只写一个键不影响同组其余选项 | `{}` |
 | `prompt.prefixes` | 发给模型的文本前缀数组，条目含 `id`、`mode`（`once` / `always`）、`text` | `[{ "id": "rules", "mode": "once", "text": "" }]` |
 
@@ -670,7 +676,8 @@ prompts.json
 - 群里每 @ 一次开一条话题，并为这条话题建立独立会话。多条话题可以并行，整机上限由 `behavior.maxParallel` 控制。
 - 话题内继续说话仍需 @ 本机器人，消息会接在同一条话题的会话上。
 - @ 判定按 `open_id` 精确比对。`feishu.botOpenId` 显式填写后，多机器人同群时只响应 @ 自己的消息；取不到自身 open_id 时会退化成「@ 任何人都会响应」，启动日志会给出告警。
-- 没有 @ 的消息在进入处理流程前直接丢弃，模型看不到它。被 @ 的是别人时，日志记一行 `[skip]`，带被 @ 者的名字。
+- 没有 @ 的消息不触发执行（不建 run、不进会话），但它的原文会进「话题近况」缓冲，供下一次被 @ 唤醒时带给模型。被 @ 的是别人时，日志记一行 `[skip]`，带被 @ 者的名字。
+- 话题近况：被 @ 唤醒时，把该话题最近 N 条原文（含没 @ 我的轮次、其他 agent 的发言）随任务一起发给模型——text 与 post 富文本按文字拉平，图片/文件/卡片给一行占位符；已 @ 过我的轮次只给指针行（正文已在会话历史里，不重复计费）。话题内按 `root:<话题根>` 聚，主聊天流按 `chat:<群>` 聚，两者互不串扰；自己的卡片不进缓冲；私聊不采集（每条消息本来就进会话）。限额见 `behavior.topicContext*`，总字数超了保尾。缓冲只在内存里，重启后更早的历史仍可用 `feishu-cli` 拉。
 - 占位符处理：@ 本机器人的占位符被删掉，@ 别人的占位符还原成 `@姓名`，模型能看见这句话在跟谁说。
 - 每条消息前拼前缀，依次是来源标注（群名或私聊、主聊天流或话题内、发送者完整 `open_id`、人还是机器人、时间）、协作 id 一行（`chat` / `thread` / `root` / `msg` / `self`）、身份声明、可@的同伴 id。名字来自 `feishu.names` 或群成员接口（`im:chat.members:read`）；两者都没有时只显示 `open_id`。
 
@@ -859,6 +866,7 @@ logs/                      运行日志（不入库）
 | `npm run test:cmd-route` | 群里「@机器人 /命令」的分流，含缺少 `cmdText` 时的回退 |
 | `npm run test:busy` / `test:runfail` / `test:wedge` | 排队、运行失败、看门狗收尾 |
 | `npm run test:errors` | 失败卡片的错误分类与「下一步」提示 |
+| `npm run test:topic-context` | 话题近况：text/post 拉平、双键缓冲、@ 闸门之前采集、私聊不带的三条边界、prompt 拼装与排队快照 |
 | `npm run test:pi` / `test:pi-cli-sessions` | pi 后端与终端会话 |
 | `npm run test:admin` / `test:init` / `test:identity` / `test:github` / `test:serve-password` | 后台、初始化、身份注入、serve 密码 |
 | `npm run probe:names [chat_id]` / `probe:msg` | 飞书接口探针，打印权限与字段 |

@@ -125,6 +125,13 @@ export const DEFAULTS = {
     // 同时最多跑几个任务（群里每个话题是一个独立会话，彼此并行）。
     // 设 0 = 不限。每个会话都在真跑 bash/node，开太多会打满本机，建议 2–3
     maxParallel: 2,
+    // 话题近况：被 @ 唤醒时把话题里最近几条没 @ 我的轮次原文随 prompt 带上
+    // （见 src/topic-context.js）。私聊不受影响——私聊每条都进会话，没有盲区
+    topicContext: true,
+    // 近况最多带几条（按时间取最近 N 条，@ 过我的只算指针行）
+    topicContextMessages: 20,
+    // 近况总字数上限（超了保尾：最近的优先，被裁的条数注明）
+    topicContextChars: 2500,
   },
   prompt: {
     // 提示词模板。默认全部来自仓库根的 prompts.json，按 always / once 分组，

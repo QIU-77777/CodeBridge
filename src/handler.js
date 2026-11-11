@@ -536,6 +536,9 @@ export class Bridge {
         messageId: msg.messageId,
         origin: msg.origin,
         oncePrefix: msg.oncePrefix,
+        // 入队时的近况快照跟着走：出队重放时 runPrompt 还能拼上。快照是排队
+        // 那一刻的视角，比出队时旧一点——正是用户发这条消息时看到的讨论
+        topicContext: msg.topicContext,
         isGroup: msg.isGroup,
         chatId: ctx.chatId,
         replyTo: ctx.replyTo,
@@ -589,12 +592,17 @@ export class Bridge {
 
     const raw = msg.text || ''
     const promptText = raw.length > MAX_PROMPT_CHARS ? raw.slice(0, MAX_PROMPT_CHARS) : raw
-    // 前缀分两路，只拼给模型，不参与 /命令 解析，也不计入 MAX_PROMPT_CHARS：
+    // 前缀分三路，只拼给模型，不参与 /命令 解析，也不计入 MAX_PROMPT_CHARS：
     //   origin      每条消息都带（来源标注 + 身份声明 + 配置里 always 的前缀）
     //   oncePrefix  只在该会话的第一条消息带（配置里 once 的前缀，默认是协作
     //               规则）。规则是静态的，第一条带过之后就在会话历史里，后续
     //               消息靠上下文记住——每轮重复只是白烧 token
-    const preamble = [msg.origin, isNewSession ? msg.oncePrefix : ''].filter(Boolean).join('\n')
+    //   topicContext  群消息带（话题近况：没 @ 我的轮次的原文，见
+    //               src/topic-context.js）。规则在前、近况在后：规则是指令，
+    //               近况是数据，数据贴着正文读最顺
+    const preamble = [msg.origin, isNewSession ? msg.oncePrefix : '', msg.topicContext]
+      .filter(Boolean)
+      .join('\n')
     const body = preamble ? `${preamble}\n\n${promptText}` : promptText
 
     const state = new RunState(session.id)

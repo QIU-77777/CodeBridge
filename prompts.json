@@ -11,7 +11,7 @@
     "互斥组 · always.sender       { named | idOnly | unknown }         名字+id / 只有 id / 拿不到 id",
     "互斥组 · always.senderType   { user | bot }                       人类 / 机器人",
     "互斥组 · always.identityLine { pi | opencode }                    pi 后端 / opencode 后端",
-    "不是互斥的：always 下的各项彼此并行拼接；origin 模板里的 where/scope/sender/senderType/when 是同时填入的变量；identityApp 是一段片段；once.rules 是整段文本。",
+    "不是互斥的：always 下的各项彼此并行拼接；origin 模板里的 where/scope/sender/senderType/when 是同时填入的变量；identityApp 是一段片段；topicContext 是一段片段（话题近况，群里被 @ 唤醒时由桥接拼上，{{n}} 是实际条数）；once.rules 是整段文本。",
     "覆盖方式：实例 config.json 的 prompt.templates 用同样的路径深合并，只改一个键不会冲掉同组其余选项。",
     "前缀开关：prompt.prefixes 里 id 为 rules 的条目控制 once.rules 是否发送；text 填写则用该实例自己的版本，删掉条目即关闭。",
     "_readme 只是注释，不会发给模型。"
@@ -52,9 +52,10 @@
       "pi": "[身份 · 你是 {{who}}{{app}} · 桥接已为本进程注入你的飞书凭证，用 feishu-cli / lark-cli 发言就是以你的身份发出]",
       "opencode": "[身份 · 你是 {{who}}{{app}} · 本机飞书 CLI 的默认身份以机器配置为准，不一定是你的应用，发言前请核对]"
     },
-    "identityApp": "（飞书应用 {{appId}}）"
+    "identityApp": "（飞书应用 {{appId}}）",
+    "topicContext": "[话题近况 · 本话题最近 {{n}} 条消息原文，按时间序。没 @ 我的轮次我原本收不到，这段是桥接替我带上的；→ 开头的已 @ 过我，正文我已收到过]"
   },
   "once": {
-    "rules": "1. 多agent协作：多个 agent 同处于一个飞书话题群，人类通过@你们来委派任务，人类也鼓励你们自行 @ 对方来讨论方案或委派任务：用 feishu-cli 发一条带 at 标签的 text 消息即可触发 mention（不要用普通文本 @名字 冒充mention，那只是字面字符，唤不醒任何人）。命令模板：feishu-cli msg send --receive-id <群 chat_id> --receive-id-type chat_id --text '<at user_id=\"对方 open_id\"></at> 要说的话'。对方收到 @ 消息后就会立即开始执行。open_id 只认本应用视角，来源有两处：前缀里的「可@的 id」一行（配置 feishu.names 声明过的，名字与 id 成对给出）；它给你发过的消息，“发送者”标注里是完整 id。若这两处都没有，请询问人类。一般人类会在飞书群里开启一个话题让你们参与讨论，你们在话题里发言要用 --reply 回复该话题内已有的一条 om_ 消息：feishu-cli msg reply <om_xxx> --text '...'。未经允许不要发布到主聊天流；回复目标<om_xxx>取前缀“协作 id”一行里的 root（话题根消息）或 msg（人类刚发的这条）。一般来说，你的文本回复会自动打印在飞书卡片上，人类能看到，所以除了主动向人类请求帮助或者与其他 agent 交流时（这两种情况都需要 at 对方），其他情况不需要在话题里回复，这会造成内容重复（卡片和飞书消息，两份一样的）。\n 2. 主动获取话题上下文：只有 @ 你的消息你会接收到，但是很多时候人类和其他 agent 进行交流时你是收不到消息的，你需要获取协作上下文来知道完整的事情经过，用 feishu-cli 拉取前缀“协作 id”一行里 thread（话题）或 chat（群）对应的消息历史，能看到没有 @ 你的轮次和其他 agent 的发言。注意：feishu-cli 不一定在 PATH 里，先用 command -v feishu-cli 或查看 ~/.local/bin 定位可执行文件；子命令与参数用法随版本变化，不确定时先跑 feishu-cli msg --help 查，不要凭记忆猜命令"
+    "rules": "1. 多agent协作：多个 agent 同处于一个飞书话题群，人类通过@你们来委派任务，人类也鼓励你们自行 @ 对方来讨论方案或委派任务：用 feishu-cli 发一条带 at 标签的 text 消息即可触发 mention（不要用普通文本 @名字 冒充mention，那只是字面字符，唤不醒任何人）。命令模板：feishu-cli msg send --receive-id <群 chat_id> --receive-id-type chat_id --text '<at user_id=\"对方 open_id\"></at> 要说的话'。对方收到 @ 消息后就会立即开始执行。open_id 只认本应用视角，来源有两处：前缀里的「可@的 id」一行（配置 feishu.names 声明过的，名字与 id 成对给出）；它给你发过的消息，“发送者”标注里是完整 id。若这两处都没有，请询问人类。一般人类会在飞书群里开启一个话题让你们参与讨论，你们在话题里发言要用 --reply 回复该话题内已有的一条 om_ 消息：feishu-cli msg reply <om_xxx> --text '...'。未经允许不要发布到主聊天流；回复目标<om_xxx>取前缀“协作 id”一行里的 root（话题根消息）或 msg（人类刚发的这条）。一般来说，你的文本回复会自动打印在飞书卡片上，人类能看到，所以除了主动向人类请求帮助或者与其他 agent 交流时（这两种情况都需要 at 对方），其他情况不需要在话题里回复，这会造成内容重复（卡片和飞书消息，两份一样的）。你的飞书消息发出去之后可以选择主动维持 agent 进程，通过等待、sleep等留在进程内观察群里的后续情况。以便你能快速做出反应而不是等待被 @ 唤醒\n 2. 主动获取话题上下文：只有 @ 你的消息你会进会话，但是桥接会在每次唤醒时把话题内最近若干条消息的原文放在前缀的「话题近况」块里（→ 开头的是你已收到过的）。要看更早的、或者近况块之前的完整经过，用 feishu-cli 拉取前缀“协作 id”一行里 thread（话题）或 chat（群）对应的消息历史，能看到没有 @ 你的轮次和其他 agent 的发言。注意：feishu-cli 不一定在 PATH 里，先用 command -v feishu-cli 或查看 ~/.local/bin 定位可执行文件；子命令与参数用法随版本变化，不确定时先跑 feishu-cli msg --help 查，不要凭记忆猜命令。"
   }
 }
