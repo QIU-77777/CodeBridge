@@ -243,12 +243,10 @@ function provenance(s) {
     const prof = grab('<profile>', '</profile>')
     const ctx = grab('<context>', '</context>')
     const task = grab('<task>', '</task>')
-    const iTopic = ctx.indexOf('**话题近况**')
     return [
-      ['<profile> · 身份 / 同伴 / 行为准则 / 结构说明', prof],
-      ['<context> · 来源 / 发送者 / 时间 / 协作 id', iTopic >= 0 ? ctx.slice(0, iTopic) : ctx],
-      ['<context> · 话题近况（键 + 原文行）', iTopic >= 0 ? ctx.slice(iTopic) : ''],
-      ['<task> · 用户正文', task],
+      ['<profile> · 身份 / 同伴 / 行为准则', prof],
+      ['<context> · 最近消息（键 + 原文行 / 指针行）', ctx],
+      ['<task> · 消息来源 / 发送者 / 时间 / 协作 id / 消息内容', task],
     ]
   }
   const l = (s.msg.origin || '').split('\n')
