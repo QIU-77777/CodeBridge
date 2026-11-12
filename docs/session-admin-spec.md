@@ -106,7 +106,7 @@
 - `target=binding`：先从 state.json 取该 key 的 `sessionId`，没有则返回 400（页面按钮此时本就是禁用的）；有则按上一条解析。
 - 解析出的路径必须落在三个允许根之内，否则 400。
 
-**删除的前置检查**（两个 DELETE 接口共用）：读一次磁盘上的 state.json，`inflight` 里有目标会话的 sessionId 即返回 400，原因写「会话正在执行中，先在飞书里发 /stop 中止」。opencode 的删除额外要求 serve 可达，不可达返回 400 并说明此时只能解除绑定。
+**删除的前置检查**（两个 DELETE 接口共用）：读一次磁盘上的 state.json，`inflight` 里有目标会话的 sessionId 即返回 400，原因写「会话正在执行中，先在飞书里发 /stop 中止」。opencode 的删除额外要求 serve 可达，不可达返回 400 并说明此时只能解除绑定；等 serve 之前再用最新快照查一次 `inflight`——路由开头那次检查之后、serve 返回之前的几秒里，桥接可能刚起了这个会话的执行。fetch 往返本身的窗口盖不住，那时删除已经生效。
 
 ## 7. 桥接侧改动细节
 
@@ -149,7 +149,7 @@ opencode 后端不需要这一处：会话数据在 serve 里，桥接不缓存�
 | 测试 | 覆盖 |
 |---|---|
 | `scripts/test-admin.mjs`（纯函数） | reveal 路径解析：三个允许根之内、目录穿越拒绝、pi 按 sid 找文件、找不到文件返回错误；`syncExternalDeletes` 单向语义：磁盘删除传播到内存、内存新增保留、磁盘读失败不动内存 |
-| `scripts/test-admin-api.mjs`（接口到落盘） | 解除绑定：`state.json.bak` 生成、chats 少一行、临时文件加重命名；inflight 占用返回 400；删除 opencode 会话（stub serve 的 fetch）：serve 收到 DELETE、指向它的绑定被清；删除 pi 会话：jsonl 文件没了、`index.json` 条目没了、绑定被清；原型链键（`constructor`）删除与解除返回 404、不动文件；删除窗口期桥接落盘（排队消息、sessionSeq）不被打回；reveal（stub spawn）路径与参数正确；serve 不可达时返回 400 |
+| `scripts/test-admin-api.mjs`（接口到落盘） | 解除绑定：`state.json.bak` 生成、chats 少一行、临时文件加重命名；inflight 占用返回 400（pi 与 opencode 两个分支，opencode 断言请求没发到 serve）；删除 opencode 会话（stub serve 的 fetch）：serve 收到 DELETE、指向它的绑定被清；删除 pi 会话：jsonl 文件没了、`index.json` 条目没了、绑定被清；原型链键（`constructor`）删除与解除返回 404、不动文件；删除窗口期桥接落盘（排队消息、sessionSeq）不被打回；reveal（stub spawn）路径与参数正确；serve 不可达时返回 400 |
 | 桥接侧（`scripts/test-admin.mjs` 或新文件） | `syncExternalDeletes` 单元用例；一个集成用例：起 Store 后从外部改写 state.json 删掉一个 key，断言内存同步（监听是异步的，用例里轮询等待）；pi 索引缓存外部改动后失效 |
 
 回归：既有全部 `test-*.mjs` 通过。
@@ -160,17 +160,18 @@ opencode 后端不需要这一处：会话数据在 serve 里，桥接不缓存�
 
 1. **opencode 的会话没有单会话文件。** 「查看」只能打开数据库目录，内容要用数据库工具或 opencode 桌面版 App 看；「删除」走 serve 接口，删的是本地数据库里的行。
 2. **删除不可恢复。** pi 的 jsonl 删了就没了；opencode 经 serve 删除没有导出路径。确认文案必须写清。备份只覆盖 state.json。
-3. **admin 读-改-写 state.json 与桥接 flush 之间有毫秒级并发窗口。** 极端情况下桥接刚写的一个绑定被 admin 基于旧读入的写入覆盖，下一次 @ 会重建该绑定，无害。反方向（admin 的删除被桥接写回）由 FR-8 的 flush 前同步关闭。删除后端会话的路由因此把重读放在落盘前：opencode 分支删完要等 serve 响应（最长 5 秒），不重读就会把这几秒里桥接的落盘（排队消息、sessionSeq）打回旧版，那不再是毫秒级窗口。
+3. **admin 读-改-写 state.json 与桥接 flush 之间有毫秒级并发窗口。** 极端情况下桥接刚写的一个绑定被 admin 基于旧读入的写入覆盖，下一次 @ 会重建该绑定，无害。反方向（admin 的删除被桥接写回）由 FR-8 的 flush 前同步关闭。删除后端会话的路由因此把重读放在落盘前：opencode 分支删完要等 serve 响应（最长 5 秒），不重读就会把这几秒里桥接的落盘（排队消息、sessionSeq）打回旧版，那不再是毫秒级窗口。`inflight` 拒删检查同样查两次（路由开头一次、等 serve 之前一次），fetch 往返本身的窗口盖不住——那时删除已经生效，拒无可拒。
 4. **删除按钮只覆盖页面显示的最近 100 条会话。** 更早的会话在飞书里用 `/del`。
 5. **僵尸 inflight 记录会误挡删除。** 进程崩溃遗留的记录正常在下次启动时被 `reconcileInflight()` 清掉；万一残留，手动编辑 state.json（有 `.bak`）。
 6. **fs.watch 依赖本地文件系统事件。** 本机 APFS 可靠；万一丢事件，flush 前同步与桥接重启两条路兜底。
+7. **inflight 拒删检查盖不住删除窗口期新起的执行。** 检查读的是路由开头的快照；opencode 分支等 serve 的几秒里桥接新起的执行不在那份快照里，删除照常执行。把检查挪到落盘前那份新快照上，只能在 serve 删完之后跑——那时行已经没了（serve 没有撤销删除的接口），返回 400 只是对一次已完成的删除报错，用户没有任何可做的动作，失败模式比现状差。现状的危害有限：执行挂在 serve 订阅上自行收尾，飞书卡片正常走完；就算绑定不清也不会悬空，桥接下次 @ 发现会话不存在会自动重建（`src/handler.js`）。
 
 ## 11. 实现清单
 
 | 文件 | 变更 |
 |---|---|
 | `admin/public/index.html` | 两张表加操作列与绑定数量徽章；删除 confirm；新增操作结果状态行；空态与错误态 colspan 调整 |
-| `admin/server.js` | reveal 与两个 DELETE 接口；`writeStateAtomic()`；删除前置检查（inflight、serve 可达性、原型链键用 hasOwnProperty 判定）；pi 索引条目删除；opencode 分支落盘前重读 state.json |
+| `admin/server.js` | reveal 与两个 DELETE 接口；`writeStateAtomic()`；删除前置检查（inflight、serve 可达性、原型链键用 hasOwnProperty 判定；opencode 分支等 serve 前用最新快照复查 inflight）；pi 索引条目删除；opencode 分支落盘前重读 state.json |
 | `src/store.js` | `syncExternalDeletes()`；构造时起目录监听（unref）；`flush()` 开头同步一次 |
 | `src/pi.js` | `_ensureWatch()` 与索引缓存失效 |
 | `scripts/test-admin.mjs` | 纯函数用例扩充 |

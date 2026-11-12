@@ -464,6 +464,30 @@ try {
       ok(winAfter.chats.oc_win && !winAfter.chats.oc_win.sessionId, '绑定在最新快照上清掉')
       ok(winAfter.chats.oc_other?.sessionId === 'ses_oc_2', '其余绑定在最新快照上不动')
 
+      // opencode 分支等 serve 之前用最新快照再查一次 inflight：执行中的
+      // 会话拒删，请求不该发到 serve
+      writeFileSync(
+        OC_STATE,
+        JSON.stringify({
+          version: 1,
+          chats: { 'oc_other': { key: 'oc_other', chatId: 'oc_other', sessionId: 'ses_oc_2', updatedAt: 2 } },
+          inflight: { 'ses_oc_2': { sessionId: 'ses_oc_2', cardId: 'c9', startedAt: 1 } },
+        }),
+      )
+      const serveCallsBeforeInflight = serveCalls.length
+      r = await del('/api/instances/ocdelete/sessions/ses_oc_2')
+      ok(r.status === 400 && /\/stop/.test(r.json.error || ''), 'opencode 删除执行中的会话拒删', r.json.error)
+      ok(serveCalls.length === serveCallsBeforeInflight, '拒删时请求没发到 serve')
+      ok(JSON.parse(readFileSync(OC_STATE, 'utf8')).chats.oc_other?.sessionId === 'ses_oc_2', '拒删后绑定不动')
+      // 还原成没有 inflight 的状态，供后面的 serve 报错用例使用
+      writeFileSync(
+        OC_STATE,
+        JSON.stringify({
+          version: 1,
+          chats: { 'oc_other': { key: 'oc_other', chatId: 'oc_other', sessionId: 'ses_oc_2', updatedAt: 2 } },
+        }),
+      )
+
       // serve 有响应但报错（如 500）：文案说「返回 500」，不能含糊成「不可达」
       globalThis.fetch = async (url, opts = {}) => {
         const u = String(url)
