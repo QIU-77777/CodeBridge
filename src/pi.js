@@ -262,6 +262,9 @@ export class PiBackend {
     this.pi = cfg.backend?.pi || {}
     this.bin = process.env.OCB_PI_BIN || this.pi.bin || 'pi'
     this.timeoutMs = Number(this.pi.timeoutMs) || 10 * 60_000
+    // 工具在飞时的静默预算。bash 跑构建、测试、大搜索可以数分钟不吐一行，
+    // 和模型挂住不是一回事，单独一档（见 src/config.js 同名字段的注释）
+    this.toolTimeoutMs = Number(this.pi.toolTimeoutMs) || 30 * 60_000
     // 最终消息之后静默多久按已完成收尾；0 或负数 = 关闭（恢复只等进程退出）
     const quiet = Number(this.pi.settleQuietMs)
     this.settleQuietMs = Number.isFinite(quiet) && quiet >= 0 ? quiet : 60_000
@@ -832,6 +835,13 @@ export class PiBackend {
       // 10 分钟里产出 16290 行、12 步，超时前一刻还在查东西，按总时长被杀。
       // 真挂住的运行不再吐任何行，计时器到点照杀。
       //
+      // 预算分两档（2026-11-12 补充）：无在飞工具时用 timeoutMs，管模型静默；
+      // 工具在飞时用 toolTimeoutMs，管 bash 跑构建、测试、大搜索——这类命令
+      // 可以数分钟不吐一行，不是卡死。真实事故：小P 连续两轮被 10 分钟看门狗
+      // 杀掉，第二轮的命令实测只要 1.5 分钟（工具结果不回流），第一轮的全家
+      // grep -rl 实测要跑 6 分钟以上。inFlight 由 trackEvent 维护，
+      // settleQuietMs 已经在用同一信号区分「干完活在装死」和「还在跑」。
+      //
       // 这是 pi 侧唯一的卡死兜底，触发时真杀进程并在卡片上给终态。桥接那层
       // behavior.idleTimeoutMs 看门狗只服务 opencode（pi 的事件从 stdout 逐行
       // 解析，长命令执行期间事件静默而进程健康，按事件判定就是误杀），见
@@ -842,10 +852,10 @@ export class PiBackend {
         if (settled || quietSettled) return
         if (idleTimer) clearTimeout(idleTimer)
         idleTimer = setTimeout(() => {
-          rec.timedOut = true
+          rec.timedOut = inFlight ? 'tool' : 'idle'
           killTree(child, 'SIGTERM')
           rec.killTimer = setTimeout(() => killTree(child, 'SIGKILL'), 2000)
-        }, this.timeoutMs)
+        }, inFlight ? this.toolTimeoutMs : this.timeoutMs)
         idleTimer.unref?.()
       }
       bump()
@@ -876,11 +886,19 @@ export class PiBackend {
         }
 
         if (rec.timedOut) {
-          const mins = Math.round(this.timeoutMs / 60000)
-          const msg =
-            `pi ${mins} 分钟没有任何输出，已强制终止。\n` +
-            '长时间不吐输出的命令（构建、测试、长模型调用）也会触发这条。\n' +
-            '可以调大 backend.pi.timeoutMs，或用 /stop 主动中止。'
+          // 超时不丢产出：流式期间的文本增量已经上过卡，这里照常解析全量
+          // stdout，把已产出的部分以 text.ended 权威覆盖发出，用户看得到
+          // agent 做到了哪一步。失败终态保留——partial 的答案不等于完成
+          const parsed = parsePiJsonl(stdout)
+          if (parsed.text) {
+            const note = rec.timedOut === 'tool'
+              ? `\n\n—— 工具执行超过 ${Math.round(this.toolTimeoutMs / 60000)} 分钟没有输出，已强制终止，以上是部分产出。`
+              : `\n\n—— 超过 ${Math.round(this.timeoutMs / 60000)} 分钟没有任何输出，已强制终止，以上是部分产出。`
+            this._emit(sessionId, 'session.text.ended', { text: parsed.text + note })
+          }
+          const msg = rec.timedOut === 'tool'
+            ? `pi 工具执行 ${Math.round(this.toolTimeoutMs / 60000)} 分钟没有任何输出，已强制终止。\n长时间不吐输出的命令（构建、测试、大搜索）会触发这条。\n可以调大 backend.pi.toolTimeoutMs，或用 /stop 主动中止。`
+            : `pi ${Math.round(this.timeoutMs / 60000)} 分钟没有任何输出，已强制终止。\n长时间不吐输出的命令（构建、测试、长模型调用）也会触发这条。\n可以调大 backend.pi.timeoutMs，或用 /stop 主动中止。`
           this._emit(sessionId, 'session.execution.failed', { error: { message: msg } })
           return resolve({ ok: false, error: msg })
         }
@@ -999,8 +1017,6 @@ export class PiBackend {
           lineBuf = lineBuf.slice(idx + 1)
           if (!line.startsWith('{')) continue
           lineCount++
-          // 每吐一行就重置超时计时器：超时按活跃度算，不按总时长
-          bump()
           let ev
           try {
             ev = JSON.parse(line)
@@ -1008,6 +1024,10 @@ export class PiBackend {
             continue
           }
           trackEvent(ev)
+          // 每吐一行就按当前阶段重置计时器。trackEvent 必须先跑：
+          // tool_execution_start 落地的这一刻计时器就要切到工具档，否则工具
+          // 开跑后的第一段静默仍按模型档算，长命令会在切档前就被杀
+          bump()
           const err = providerErrorOf(ev)
           if (err) {
             providerError = err

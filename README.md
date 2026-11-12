@@ -530,7 +530,8 @@ npm run dry
 | `backend.type` | `opencode` 或 `pi` | `opencode` |
 | `backend.pi.bin` | pi CLI 路径 | `pi` |
 | `backend.pi.model` | 传给 `--model`，留空用 pi 的默认值 | `""` |
-| `backend.pi.timeoutMs` | 子进程静默多久判定超时，每吐一行 stdout 重置 | `600000` |
+| `backend.pi.timeoutMs` | 模型静默多久判定超时（无在飞工具时），每吐一行 stdout 重置 | `600000` |
+| `backend.pi.toolTimeoutMs` | 工具在飞时的静默预算，`tool_execution_start` 切换、`end`/`turn_end` 切回 | `1800000` |
 | `backend.pi.settleQuietMs` | 最终回答后静默多久按已完成收尾，`0` 关闭此机制 | `180000` |
 | `backend.pi.extraArgs` | 额外启动参数，例如 `["--no-extensions"]` | `[]` |
 | `backend.pi.cliSessionRoot` | 终端 `pi -r` 会话根目录 | `~/.pi/agent/sessions` |
@@ -729,7 +730,7 @@ prompts.json
 | 权限审批卡片 | 支持 | 不支持 |
 | `/agent` | 支持 | 不支持 |
 | 会话 | 由 serve 管理，接口查询 | `<配置目录>/pi-sessions/` 的索引与 JSONL；兼容终端 `pi -r` 会话 |
-| 卡死判定 | `behavior.idleTimeoutMs` | `backend.pi.timeoutMs` 与 `backend.pi.settleQuietMs` |
+| 卡死判定 | `behavior.idleTimeoutMs` | `backend.pi.timeoutMs`（模型静默）、`backend.pi.toolTimeoutMs`（工具在飞）与 `backend.pi.settleQuietMs` |
 
 pi 的 `/sessions` 同时列出桥接会话与终端 `pi -r` 会话。切到终端会话后走 `pi --session <文件>` 续聊，两端读写同一个 JSONL。终端会话的改名、删除、切模型由 pi 自己管理，桥接会明确拒绝这三个操作。
 
@@ -805,7 +806,7 @@ npm run admin -- --port 8080 # 换端口
 
 点左侧「配置」，在页面左上角选实例。表单按配置顺序分两列加一段：
 
-- **coding agent**（左列）：后端选择框的选项来自打开页面时对本机的自动扫描——opencode 与 pi 各带「本机版本」或「未安装」标记，下方一行说明复用的本地可执行文件、版本与来源（桌面版自带 CLI、PATH、常见用户 bin 目录）。选哪个后端显示哪组字段：opencode 显示 serve 地址与 serve 密码；pi 显示 pi.bin、pi.model、pi.timeoutMs、pi.extraArgs，pi.bin 预填扫描到的本机路径。默认工作目录与默认模型两个后端共用，留空即用 coding agent 自己的本地默认值（pi 每次执行起在默认工作目录里，opencode 的 `/new` 不带目录时也用这个）。
+- **coding agent**（左列）：后端选择框的选项来自打开页面时对本机的自动扫描——opencode 与 pi 各带「本机版本」或「未安装」标记，下方一行说明复用的本地可执行文件、版本与来源（桌面版自带 CLI、PATH、常见用户 bin 目录）。选哪个后端显示哪组字段：opencode 显示 serve 地址与 serve 密码；pi 显示 pi.bin、pi.model、pi.timeoutMs、pi.toolTimeoutMs、pi.extraArgs，pi.bin 预填扫描到的本机路径。默认工作目录与默认模型两个后端共用，留空即用 coding agent 自己的本地默认值（pi 每次执行起在默认工作目录里，opencode 的 `/new` 不带目录时也用这个）。
 - **飞书应用**（右列）：appId、appSecret、domain、botOpenId，以及群聊是否必须 @ 本机器人才响应。
 - **behavior**：卡片刷新间隔、正文上限、空闲超时、并发上限，思考过程与工具链路是否展示。
 
@@ -843,7 +844,7 @@ npm run admin -- --port 8080 # 换端口
 再要一个机器人身份（例如把 pi 也接进群协作），不用敲命令行：总览页点「新建实例」，按三步填完点「创建并启动」。
 
 1. **实例**：实例名（小写字母、数字、连字符）与配置目录（留空用默认 `~/.config/opencode-feishu-bridge-实例名`）。
-2. **coding agent**：打开弹窗时重新扫描本机，下拉里每个后端带「本机版本」或「未安装」标记，默认选中本机可用的第一个；下方显示复用的本地可执行文件与版本。选 opencode 显示 serve 地址与 serve 密码；选 pi 显示 pi.bin、pi.model、pi.timeoutMs，pi.bin 预填扫描到的本机路径。
+2. **coding agent**：打开弹窗时重新扫描本机，下拉里每个后端带「本机版本」或「未安装」标记，默认选中本机可用的第一个；下方显示复用的本地可执行文件与版本。选 opencode 显示 serve 地址与 serve 密码；选 pi 显示 pi.bin、pi.model、pi.timeoutMs、pi.toolTimeoutMs，pi.bin 预填扫描到的本机路径。
 3. **飞书应用**：appId、appSecret、domain、botOpenId（选填）。飞书应用要先在开放平台建好，权限与事件订阅见「创建飞书应用」一节，admin 只收凭证。
 
 其余默认复用本地配置：默认工作目录与默认模型两个后端共用，留空工作目录用家主目录——pi 实例建完才发现工作目录是家目录，就是留空的后果，建议建实例时直接填；默认模型留空用 coding agent 自己的本地默认模型。opencode 后端的 serve 地址留空即可，admin 自动分配：配置里已被占用的端口、admin 自身的端口、探测发现有东西在跑的端口都会跳过；显式指定的端口被占用会直接拒绝并说明原因。serve 密码留空由 admin 自动生成——新建实例的 serve 用它启动、桥接用它连，两边从同一份配置读同一个值，不存在填错，也不会留空连到别人需要密码的 serve 报 401。

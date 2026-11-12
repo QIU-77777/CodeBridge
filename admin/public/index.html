@@ -330,6 +330,7 @@
                 <label class="fld"><span>pi.bin（留空用 PATH 里的 pi）</span><input type="text" id="c-piBin" placeholder="pi"></label>
                 <label class="fld"><span>pi.model（留空用 pi 本地默认模型）</span><input type="text" id="c-piModel"></label>
                 <label class="fld"><span>pi.timeoutMs（多久没有 stdout 就终止；stdout 一直在刷但产不出事件的命令不算）</span><input type="number" id="c-piTimeout"></label>
+                <label class="fld"><span>pi.toolTimeoutMs（工具在飞时的静默预算，构建/测试/大搜索不吐输出时按这一档算）</span><input type="number" id="c-piToolTimeout"></label>
                 <label class="fld"><span>pi.extraArgs（逗号分隔）</span><input type="text" id="c-piExtra"></label>
               </div>
               <label class="fld"><span>默认工作目录（两个后端都用，留空用家主目录）</span><input type="text" id="c-defaultDirectory"></label>
@@ -489,6 +490,7 @@
           <label class="fld"><span>pi.bin（默认用扫描到的本机 pi）</span><input type="text" id="n-piBin" placeholder="pi"></label>
           <label class="fld"><span>pi.model（留空用 pi 本地默认模型）</span><input type="text" id="n-piModel"></label>
           <label class="fld"><span>pi.timeoutMs（多久没有 stdout 就终止；stdout 一直在刷但产不出事件的命令不算）</span><input type="number" id="n-piTimeout" placeholder="600000"></label>
+          <label class="fld"><span>pi.toolTimeoutMs（工具在飞时的静默预算，留空用默认 1800000）</span><input type="number" id="n-piToolTimeout" placeholder="1800000"></label>
         </div>
       </div>
       <div>
@@ -799,6 +801,7 @@ function formToConfig() {
         bin: $('c-piBin').value.trim(),
         model: $('c-piModel').value.trim(),
         timeoutMs: num('c-piTimeout'),
+        toolTimeoutMs: num('c-piToolTimeout'),
         extraArgs: $('c-piExtra').value.split(',').map((s) => s.trim()).filter(Boolean),
       },
     },
@@ -846,6 +849,7 @@ async function loadConfigTab() {
     $('c-piBin').value = piBin && piBin !== 'pi' ? piBin : scannedPi?.bin || 'pi'
     $('c-piModel').value = c.backend?.pi?.model || ''
     $('c-piTimeout').value = c.backend?.pi?.timeoutMs ?? 600000
+    $('c-piToolTimeout').value = c.backend?.pi?.toolTimeoutMs ?? 1800000
     $('c-piExtra').value = (c.backend?.pi?.extraArgs || []).join(',')
     toggleConfigBackend()
   } catch (err) {
@@ -1445,6 +1449,7 @@ async function submitCreate() {
       bin: $('n-piBin').value.trim(),
       model: $('n-piModel').value.trim(),
       timeoutMs: $('n-piTimeout').value.trim() === '' ? undefined : Number($('n-piTimeout').value),
+      toolTimeoutMs: $('n-piToolTimeout').value.trim() === '' ? undefined : Number($('n-piToolTimeout').value),
     },
   }
   // opencode 后端的 serve 密码留空时由服务端自动生成（serve 与桥接共用同一个值），

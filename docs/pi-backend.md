@@ -104,6 +104,9 @@ cwd: <directory>                                          # 话题绑定的项�
 ### 4.4 超时、中止与静默收尾
 
 - `timeoutMs`（默认 10 分钟）**按活跃度算**：pi 每吐一行 stdout 就把计时器重置，只有连续 10 分钟没有任何输出才到点——先 `SIGTERM`，2 秒后 `SIGKILL`，并合成 `execution.failed`。原实现从进程启动算总时长，会把一直在干活的运行误杀（真实事故：一个运行 10 分钟里产出 16290 行、12 步，超时前一刻还在查东西）。真挂住的运行不再吐任何行，计时器到点照杀；
+  - 这一档管**模型静默**（没有工具在飞时模型挂住多久算卡死）。工具执行期间换另一档预算，见下条；
+  - `toolTimeoutMs`（默认 30 分钟）管**工具在飞时的静默**：bash 跑构建、测试、限定目录的大搜索时可以数分钟不吐一行，那不是卡死。切换信号是 `trackEvent` 已经在维护的 `inFlight`——`tool_execution_start` 落地时计时器切到这一档，`tool_execution_end` 或 `turn_end` 时切回 `timeoutMs`（`settleQuietMs` 早就在用同一信号区分「干完活在装死」和「还在跑」，这里只是把同一信号用在活跃度看门狗上）。真实事故（2026-11-12 凌晨）：小P 连续两轮被 10 分钟看门狗杀掉，第二轮的命令实测只要 1.5 分钟（工具结果不回流），第一轮的全家 `grep -rl` 实测要跑 6 分钟以上；
+  - **超时不丢产出**：到点杀进程时照常 `parsePiJsonl(stdout)`，把已产出的文本以 `text.ended` 权威覆盖发出并附「以上是部分产出」，失败终态保留——用户看得到 agent 做到了哪一步；
   - pi 侧只有两层兜底，方向不同、互不替代：本层看「有没有 stdout 输出」；`settleQuietMs`（下面那条）看「最终答案出来了没有」。
   - **`behavior.idleTimeoutMs` 对 pi 不生效**（`handler.js` 的 `watchdogIdleMs()` 按后端类型分流）。原因是 pi 的事件从子进程 stdout 逐行解析，跑「stdout 在刷但产不出 JSON 事件」的命令（npm install、长 bash）时事件会长时间没有而进程完全健康——按事件静默判定就是误杀；而且看门狗只翻新卡片不杀进程，会留下「卡片显示失败、进程还在跑」的误导状态。该看门狗只服务 opencode（事件来自 SSE 流，流断了才需要它）。
 - `interrupt(id)` 找到在跑的子进程 kill 掉，标记 `aborted`，**不抛出**，避免 `runPrompt` 的 catch 把 `aborted` 覆盖成 `failed`；
@@ -155,6 +158,7 @@ opencode 后端的代理跑在常驻 serve 里，桥接没法向已启动的进�
     "bin": "pi",
     "model": "",
     "timeoutMs": 600000,
+    "toolTimeoutMs": 1800000,
     "settleQuietMs": 180000,
     "extraArgs": []
   }

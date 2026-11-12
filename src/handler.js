@@ -73,7 +73,8 @@ export class Bridge {
     // pi 后端不适用：pi 的事件从子进程 stdout 逐行解析，跑 npm install 这类
     // 「一直刷进度但产不出 JSON 事件」的命令时，stdout 在流动、事件却长时间
     // 没有——按事件静默判定卡死会误杀健康的运行。pi 的卡死由
-    // backend.pi.timeoutMs 按 stdout 静默判定（见 src/pi.js 的 bump），而且
+    // backend.pi.timeoutMs（模型静默档）与 backend.pi.toolTimeoutMs（工具在飞
+    // 档）按 stdout 静默判定（见 src/pi.js 的 bump），而且
     // 它触发时会真的杀进程；看门狗只翻新卡片不碰进程，会留下「卡片显示失败、
     // 进程还在跑」的误导状态。两层对 pi 是重复且有害的，所以这里直接跳过。
     //
