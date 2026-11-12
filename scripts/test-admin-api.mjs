@@ -464,8 +464,9 @@ try {
       ok(winAfter.chats.oc_win && !winAfter.chats.oc_win.sessionId, '绑定在最新快照上清掉')
       ok(winAfter.chats.oc_other?.sessionId === 'ses_oc_2', '其余绑定在最新快照上不动')
 
-      // opencode 分支等 serve 之前用最新快照再查一次 inflight：执行中的
-      // 会话拒删，请求不该发到 serve
+      // opencode 分支的拒删：inflight 在发请求前就写好，路由开头那次检查
+      // 命中——请求不该发到 serve、绑定不动。等 serve 前那次复查盖的是
+      // 两次同步读之间的落盘，同步区间里用例触发不了（spec 已知限制第 7 条）
       writeFileSync(
         OC_STATE,
         JSON.stringify({

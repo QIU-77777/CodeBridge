@@ -841,9 +841,9 @@ async function handleApi(req, res, url) {
     const { data: state } = readStateSafe(found.dir)
     // 进行中的会话拒删：删了后端数据，事件流没有归宿，飞书卡片永远停在
     // 「执行中」；pi 的子进程还会继续往已删除的 jsonl 写。opencode 分支
-    // 等 serve 的几秒里桥接新起的执行这份快照发现不了——路由开头到
-    // ocDelete 之间没有 await，中途重读拿到的还是同样的字节，删除照常
-    // 执行；为什么不再补一次检查见 spec 已知限制第 7 条
+    // 在下面等 serve 之前还会用最新快照再查一次：两次同步读之间桥接的
+    // 落盘，那次重读看得到；ocDelete 的 await 里落盘的那次，重读看不到，
+    // 原因见 spec 已知限制第 7 条
     if (sessionInFlight(state, sid)) {
       return sendError(res, 400, '这个会话正在执行中，先在飞书里发 /stop 中止再删除')
     }
@@ -880,9 +880,10 @@ async function handleApi(req, res, url) {
         }
       }
     } else {
-      // 等 serve 之前用最新快照再查一次 inflight：路由开头那次检查之后、
-      // serve 返回之前的几秒里，桥接可能刚起了这个会话的执行，用旧快照
-      // 查不到。fetch 往返本身的窗口盖不住——那时删除已经生效，拒无可拒
+      // 等 serve 之前用最新快照再查一次 inflight：路由开头那次检查之后
+      // 桥接可能刚起了这个会话的执行，用旧快照查不到。这次重读只盖到
+      // 它读的那一刻——之后到 serve 返回之间仍是窗口，fetch 往返本身
+      // 盖不住，那时删除已经生效，拒无可拒（spec 已知限制第 3 条）
       const { data: preDelete } = readStateSafe(found.dir)
       if (sessionInFlight(preDelete, sid)) {
         return sendError(res, 400, '这个会话正在执行中，先在飞书里发 /stop 中止再删除')
