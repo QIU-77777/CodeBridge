@@ -1145,19 +1145,11 @@ export class Bridge {
                 ),
               )
             }
+            // 翻新排队卡片即结果卡片：queuedSteeredCard 已带「来自 / 内容 / 注入
+            // 说明」并撤掉按钮，与取消分支一样只翻新、不发新卡，避免同一事件
+            // 出现两张内容相同的「已引导」
             this.refreshQueuedCard(item, queuedSteeredCard)
-            return replyNew(
-              { type: 'success', content: '已引导：下一步生效，不中断' },
-              textCard(
-                '🧭 已引导',
-                [
-                  `**注入** ${truncate(item.text, 120)}`,
-                  '',
-                  '这条消息已注入正在执行的任务，agent 会在下一个步骤边界读到它。当前工作不中止，进度看执行卡片。',
-                ].join('\n'),
-                'blue',
-              ),
-            )
+            return { toast: { type: 'success', content: '已引导：下一步生效，不中断' } }
           }
           // 后端不支持 steer，或任务已经结束（点得太慢）：提到队首，任务还在
           // 就中止，等排空时发出去。按 qid 找，找不到说明它已经发出去（或被
