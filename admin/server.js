@@ -814,7 +814,11 @@ async function handleApi(req, res, url) {
     const key = decodeURIComponent(parts[4] || '')
     if (!key) return sendError(res, 400, '缺少绑定键')
     const { data: state, path: statePath } = readStateSafe(found.dir)
-    const binding = state?.chats?.[key]
+    // 原型链键（constructor、toString……）会从 Object.prototype 继承到值，
+    // 下标直取会把不存在的绑定判成存在；与 sessionInFlight 同一写法
+    const chats = state?.chats
+    const binding =
+      chats && typeof chats === 'object' && Object.prototype.hasOwnProperty.call(chats, key) ? chats[key] : undefined
     if (!state || !binding) return sendError(res, 404, `没有键为 ${key} 的绑定`)
     // 正在执行的会话拒解：绑定删掉后这个群再 @ 就是新会话，而飞书上那张
     // 「执行中」的卡片还挂在旧会话上，事件回来时绑定已经不见了
@@ -834,7 +838,7 @@ async function handleApi(req, res, url) {
   if (sub === 'sessions' && req.method === 'DELETE') {
     const sid = decodeURIComponent(parts[4] || '')
     if (!sid) return sendError(res, 400, '缺少会话 id')
-    const { data: state, path: statePath } = readStateSafe(found.dir)
+    const { data: state } = readStateSafe(found.dir)
     // 进行中的会话拒删：删了后端数据，事件流没有归宿，飞书卡片永远停在
     // 「执行中」；pi 的子进程还会继续往已删除的 jsonl 写
     if (sessionInFlight(state, sid)) {
@@ -854,7 +858,9 @@ async function handleApi(req, res, url) {
           return sendError(res, 400, `会话索引读取失败: ${err.message}`)
         }
       }
-      if (!index || !(sid in index)) {
+      // 原型链键（constructor……）会通过 `in` 的存在性检查，把不存在的
+      // 会话判成存在；与 sessionInFlight 同一写法，只认索引自己的键
+      if (!index || !Object.prototype.hasOwnProperty.call(index, sid)) {
         return sendError(res, 404, `会话 ${sid} 不存在`)
       }
       delete index[sid]
@@ -881,17 +887,24 @@ async function handleApi(req, res, url) {
       }
     }
     // 清掉指向该会话的绑定：保留记录与目录，只把 sessionId 清空，
-    // 下一次 @ 在同一目录新建会话（与 /del 的行为一致）
+    // 下一次 @ 在同一目录新建会话（与 /del 的行为一致）。
+    // 落盘前重读一次 state.json：opencode 分支上面的 ocDelete 最长要等
+    // 5 秒（超时），这期间桥接任何一次 flush（入队、setInflight、
+    // sessionSeq）都会被开头那份旧快照的写盘打回磁盘版本。排队消息与
+    // sessionSeq 的磁盘记录丢了有实际损失：进程在窗口内被杀时它们就没
+    // 了，sessionSeq 回退还会让重启后重发已用过的号（nextSessionSeq
+    // 要避免的会话重名）。在最新快照上改，写盘就只清 sessionId 一件事
     let cleared = 0
-    if (state?.chats) {
-      const next = { ...state, chats: { ...state.chats } }
-      for (const [k, c] of Object.entries(state.chats)) {
+    const { data: latest, path: latestPath } = readStateSafe(found.dir)
+    if (latest?.chats) {
+      const next = { ...latest, chats: { ...latest.chats } }
+      for (const [k, c] of Object.entries(latest.chats)) {
         if (c?.sessionId === sid) {
           next.chats[k] = { ...c, sessionId: undefined }
           cleared++
         }
       }
-      if (cleared > 0) writeStateAtomic(statePath, next)
+      if (cleared > 0) writeStateAtomic(latestPath, next)
     }
     return sendJson(res, 200, { ok: true, clearedBindings: cleared })
   }

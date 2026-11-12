@@ -348,6 +348,17 @@ try {
     r = await del(`/api/instances/${NAME}/sessions/pi-nope`)
     ok(r.status === 404, '删除不存在的会话返回 404')
 
+    // 原型链键（constructor 等）会从 Object.prototype 继承到值，存在性判定
+    // 必须走 hasOwnProperty：不存在的会话不能被报成删除成功，索引也不能动
+    const idxBeforeProto = readFileSync(join(piDir, 'index.json'), 'utf8')
+    const stateBeforeProto = readFileSync(STATE_PATH, 'utf8')
+    r = await del(`/api/instances/${NAME}/sessions/constructor`)
+    ok(r.status === 404, '删除 sessions/constructor 返回 404（不走原型链）', JSON.stringify(r.json))
+    ok(readFileSync(join(piDir, 'index.json'), 'utf8') === idxBeforeProto, '原型链键删除不动索引')
+    r = await del(`/api/instances/${NAME}/bindings/constructor`)
+    ok(r.status === 404, '解除 bindings/constructor 返回 404（不走原型链）', JSON.stringify(r.json))
+    ok(readFileSync(STATE_PATH, 'utf8') === stateBeforeProto, '原型链键解除不重写 state.json')
+
     // 会话在执行中：拒删（删了后端数据，飞书卡片永远停在执行中）
     writeChats(readChats().chats, { 'pi-del0002': { sessionId: 'pi-del0002', cardId: 'c2', startedAt: 1 } })
     r = await del(`/api/instances/${NAME}/sessions/pi-del0002`)
@@ -417,6 +428,41 @@ try {
       // serve 404：会话已经没了，照样清绑定（幂等）
       r = await del('/api/instances/ocdelete/sessions/ses_gone')
       ok(r.status === 200, 'serve 返回 404 时按已删除处理', JSON.stringify(r.json))
+
+      // 读-改-写窗口：ocDelete 最长等 5 秒，这期间桥接的 flush（入队、
+      // sessionSeq）不能被 admin 基于旧快照的写盘打回磁盘版本。路由落盘前
+      // 重读 state.json，在最新快照上清 sessionId
+      writeFileSync(
+        OC_STATE,
+        JSON.stringify({
+          version: 1,
+          chats: {
+            'oc_win': { key: 'oc_win', chatId: 'oc_win', sessionId: 'ses_oc_1', directory: '/tmp/oc', updatedAt: 1 },
+            'oc_other': { key: 'oc_other', chatId: 'oc_other', sessionId: 'ses_oc_2', updatedAt: 2 },
+          },
+          sessionSeq: { day: '20261112', n: 3 },
+        }),
+      )
+      globalThis.fetch = async (url, opts = {}) => {
+        const u = String(url)
+        if (!u.includes('127.0.0.1:19876')) return realFetch(url, opts)
+        if (opts?.method === 'DELETE') {
+          // serve 处理期间桥接落了一次盘：排队消息入队、占用一个新会话序号
+          const cur = JSON.parse(readFileSync(OC_STATE, 'utf8'))
+          cur.queue = { oc_win: [{ qid: 'q1', text: '排队中', at: 1 }] }
+          cur.sessionSeq = { day: '20261112', n: 4 }
+          writeFileSync(OC_STATE, JSON.stringify(cur, null, 2))
+          return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } })
+        }
+        return new Response(JSON.stringify({ data: { id: 'x' } }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      r = await del('/api/instances/ocdelete/sessions/ses_oc_1')
+      const winAfter = JSON.parse(readFileSync(OC_STATE, 'utf8'))
+      ok(r.status === 200 && r.json.ok === true, '删除 opencode 会话成功（窗口期桥接有落盘）', JSON.stringify(r.json))
+      ok(winAfter.queue?.['oc_win']?.length === 1, '桥接在窗口期写入的排队消息没被打回旧版')
+      ok(winAfter.sessionSeq?.n === 4, '桥接刚占用的会话序号没被打回旧版')
+      ok(winAfter.chats.oc_win && !winAfter.chats.oc_win.sessionId, '绑定在最新快照上清掉')
+      ok(winAfter.chats.oc_other?.sessionId === 'ses_oc_2', '其余绑定在最新快照上不动')
 
       // serve 有响应但报错（如 500）：文案说「返回 500」，不能含糊成「不可达」
       globalThis.fetch = async (url, opts = {}) => {
