@@ -115,6 +115,35 @@ else if (mode === 'slow-but-alive') {
     }
   }, 200)
 }
+else if (mode === 'tool-silent') {
+  // 复现真实故障（2026-11-12 凌晨，小P 第二轮中断）：助手产出文本、发出
+  // bash 工具调用，tool_execution_start 之后工具结果永远不回流，进程挂住。
+  // 实测那条命令只要 1.5 分钟——不是慢，是挂。修复后工具在飞按
+  // toolTimeoutMs 单独算预算，且超时杀进程时已产出的文本不丢
+  const asst = (id, text, stop) => ({ role: 'assistant', id, content: text ? [{ type: 'text', text }] : [],
+    provider: 'stepfun-platform', model: 'step-5-preview', stopReason: stop, usage })
+  emit({ type: 'turn_start' })
+  emit({ type: 'message_start', message: asst('a1', '', 'pending') })
+  emit({ type: 'message_update', usage, assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'PARTIAL' } })
+  emit({ type: 'message_end', message: asst('a1', 'PARTIAL', 'toolUse') })
+  emit({ type: 'tool_execution_start', toolCallId: 'call_1', toolName: 'bash', args: { command: 'find ~ -name prompts.json' } })
+  setInterval(() => {}, 1000)
+  process.stdout.write('')
+}
+else if (mode === 'tool-then-idle') {
+  // 工具正常结束（tool_execution_end）之后模型挂住：预算要切回模型静默档
+  // timeoutMs，不能还在工具档干等 toolTimeoutMs
+  const asst = (id, text, stop) => ({ role: 'assistant', id, content: text ? [{ type: 'text', text }] : [],
+    provider: 'stepfun-platform', model: 'step-5-preview', stopReason: stop, usage })
+  emit({ type: 'turn_start' })
+  emit({ type: 'message_start', message: asst('a1', '', 'pending') })
+  emit({ type: 'message_end', message: asst('a1', '', 'toolUse') })
+  emit({ type: 'tool_execution_start', toolCallId: 'call_1', toolName: 'bash', args: { command: 'ls' } })
+  emit({ type: 'tool_execution_end', toolCallId: 'call_1', toolName: 'bash', isError: false, durationMs: 5,
+    result: { content: [{ type: 'text', text: 'a.js' }], details: {} } })
+  setInterval(() => {}, 1000)
+  process.stdout.write('')
+}
 else if (mode === 'stream') {
   // 复现真实多轮运行的事件序列（形状见 pi 文档 docs/json.md）：两轮助手
   // 消息，第一轮带 bash 工具调用，文本分片流出，模型名写在消息里。
@@ -469,6 +498,52 @@ const main = async () => {
     )
   }
 
+  section('看门狗分阶段：工具在飞与模型静默')
+  {
+    // 2026-11-12 补充。真实事故：小P 连续两轮被 10 分钟看门狗杀掉。第二轮
+    // 的命令实测只要 1.5 分钟（工具结果不回流，是挂不是慢），第一轮的全家
+    // grep -rl 实测要跑 6 分钟以上（是慢）。两类静默共用一个阈值，慢命令
+    // 和挂住的运行分不开——现在工具在飞按 toolTimeoutMs 单独算预算
+    const bTool = makeBackend({
+      backend: { type: 'pi', pi: { bin: 'pi', model: '', timeoutMs: 600, toolTimeoutMs: 2500, settleQuietMs: 0, extraArgs: [] } },
+    })
+    const sTool = await bTool.createSession({ title: '工具挂住', directory: root })
+    currentMode = 'tool-silent'
+    let events = []
+    bTool.subscribe((ev) => events.push(ev), () => {})
+    const tTool0 = Date.now()
+    const pendingTool = bTool.prompt(sTool.id, '工具调用后没有结果')
+    // 过了模型静默档（600ms）但没过工具档（2500ms）：不许杀
+    await new Promise((r) => setTimeout(r, 1200))
+    const midStatus = collect(events, sTool.id).status
+    ok(midStatus !== 'failed' && midStatus !== 'done', `工具在飞、静默未过 toolTimeoutMs 时不杀（1200ms 时状态 ${midStatus}）`)
+    const toolRes = await pendingTool
+    const toolElapsed = Date.now() - tTool0
+    ok(toolRes.ok === false, '工具结果不回流最终判失败')
+    ok(toolElapsed >= 2400, `到点才杀，且杀在工具档不是模型档（实际 ${toolElapsed}ms；模型档 600ms、工具档 2500ms）`)
+    ok(events.some((e) => e.type === 'session.text.ended'), '超时路径发出 text.ended')
+    ok(String(collect(events, sTool.id).text).includes('PARTIAL'), '超时不丢产出：已产出的文本上卡')
+    ok(String(collect(events, sTool.id).text).includes('以上是部分产出'), '部分产出附中止说明')
+    ok(String(events.at(-1).data.error.message).includes('工具执行'), '失败文案区分工具档')
+    ok(collect(events, sTool.id).status === 'failed', '工具档超时 → failed')
+
+    // 工具正常结束之后模型挂住：预算切回模型静默档，按 timeoutMs 杀，
+    // 不能还在工具档干等 toolTimeoutMs
+    const bBack = makeBackend({
+      backend: { type: 'pi', pi: { bin: 'pi', model: '', timeoutMs: 600, toolTimeoutMs: 8000, settleQuietMs: 0, extraArgs: [] } },
+    })
+    const sBack = await bBack.createSession({ title: '工具结束又挂住', directory: root })
+    currentMode = 'tool-then-idle'
+    events = []
+    bBack.subscribe((ev) => events.push(ev), () => {})
+    const tBack0 = Date.now()
+    const backRes = await bBack.prompt(sBack.id, '工具跑完又挂住')
+    const backElapsed = Date.now() - tBack0
+    ok(backRes.ok === false, '工具结束后模型挂住仍判失败')
+    ok(backElapsed < 3000, `切回模型档后按 timeoutMs 杀，不等工具档（实际 ${backElapsed}ms；模型档 600ms、工具档 8000ms）`)
+    ok(String(events.at(-1).data.error.message).includes('没有任何输出'), '失败文案是模型静默档')
+  }
+
   section('孤儿进程不再拖住收尾')
   {
     // 评审实测复现：pi 的 bash 工具留下长驻子进程，持有继承来的 stdout/stderr。
@@ -663,6 +738,7 @@ const main = async () => {
     const c = loadConfig()
     ok(c.backend?.type === 'opencode' || c.backend?.type === 'pi', 'loadConfig 补出了 backend 段（老配置不会 undefined）')
     ok(c.backend?.pi?.timeoutMs > 0, 'pi 默认超时存在')
+    ok(c.backend?.pi?.toolTimeoutMs > 0, 'pi 默认工具档超时存在')
     const { execFileSync } = await import('node:child_process')
     const script = `. '${process.cwd()}/scripts/lib/config-dir.sh'; ocb_label app; echo; OCB_INSTANCE=pi; ocb_label app; echo; ocb_label serve`
     const out = execFileSync('bash', ['-c', script], { encoding: 'utf8' }).trim().split('\n')
