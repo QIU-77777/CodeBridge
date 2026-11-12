@@ -1074,15 +1074,22 @@ export class PiBackend {
 
 /**
  * 后端能力表。help / status / 卡片回调据此决定哪些功能可用。
+ *
+ * steer = 能不能把一条用户消息注入「正在跑的那一轮」：服务端在下一个步骤
+ * 边界把它交给 agent，在飞工作不中止、已处理的痕迹不清除。opencode serve
+ * 的 session.prompt 带 delivery=steer 原生支持（schema Session.Inbox.Delivery，
+ * 枚举 steer/queue）；pi 每条消息起一次性子进程，没有注入通道，只有排队和
+ * 中止两种。两种后端的默认行为都是 follow-up 排队，steer 只是多给一个选项。
+ *
  * opencode 是全功能，pi 是一次性执行，没有交互式权限与 agent 概念。
  */
 export function capabilitiesFor(cfg) {
   const type = cfg.backend?.type || 'opencode'
   if (type === 'opencode') {
-    return { type, label: 'opencode', streaming: true, agents: true, permissions: true, oneShot: false }
+    return { type, label: 'opencode', streaming: true, agents: true, permissions: true, oneShot: false, steer: true }
   }
   if (type === 'pi') {
-    return { type, label: 'pi', streaming: false, agents: false, permissions: false, oneShot: true }
+    return { type, label: 'pi', streaming: false, agents: false, permissions: false, oneShot: true, steer: false }
   }
-  return { type, label: type, streaming: false, agents: false, permissions: false, oneShot: true }
+  return { type, label: type, streaming: false, agents: false, permissions: false, oneShot: true, steer: false }
 }

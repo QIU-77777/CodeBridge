@@ -11,6 +11,7 @@ import {
   textCard,
   queuedCard,
   queuedSentCard,
+  queuedSteeredCard,
   queuedDroppedCard,
 } from './cards.js'
 import { truncate } from './render.js'
@@ -530,8 +531,9 @@ export class Bridge {
     const busy = binding?.sessionId ? this.runs.get(binding.sessionId) : null
     if (busy?.state?.status === 'running') {
       // 加塞的消息默认按 follow-up 处理：直接排进队列，不用用户点任何按钮。
-      // 回一张卡片告诉用户排在第几位，附两个改主意的按钮——中止当前改发这条
-      // （提到队首并中止）、取消（从队列摘掉）。队列在任务收尾后自动排空
+      // 回一张卡片告诉用户排在第几位，附改主意的按钮——取消每个后端都有；
+      // 引导（steer）只有支持注入的后端才给（caps.steer，目前 opencode），
+      // pi 是一次性子进程注不进去，只保留排队。队列在任务收尾后自动排空
       const item = {
         text: msg.text,
         userId: msg.userId,
@@ -548,7 +550,7 @@ export class Bridge {
         chatId: ctx.chatId,
         replyTo: ctx.replyTo,
       }
-      // qid 是这条排队消息的身份证：卡片上的两个按钮只对得上同一条
+      // qid 是这条排队消息的身份证：卡片上的按钮只对得上同一条
       const qid = this.store.qidOf(item)
       const position = this.store.enqueue(ctx.key, { ...item, qid })
       const cardId = await this.t.sendCard(
@@ -560,10 +562,11 @@ export class Bridge {
           position,
           k: ctx.key,
           rt: ctx.replyTo,
+          steer: this.caps.steer === true,
         }),
         { replyTo: ctx.replyTo },
       )
-      // 记住这张卡的 ID：消息出队或取消时要翻新它，不然它会一直挂着
+      // 记住这张卡的 ID：消息出队、取消或引导时要翻新它，不然它会一直挂着
       // 「已加入队列」和两个点不动的按钮，而消息早就处理完了
       this.store.setQueuedCard(ctx.key, qid, cardId)
       return cardId
@@ -1109,13 +1112,61 @@ export class Bridge {
           return replyNew({ type: 'success', content: label }, textCard('🔐 授权已处理', label, a.d === 'reject' ? 'red' : 'green'))
         }
         case 'steer': {
-          // 加塞的消息默认已排队，这里是改主意：把它提到队首并中止当前任务。
-          // 按 qid 找，找不到说明它已经发出去（或被取消了），按钮点不动
+          // 引导。分两种后端：
+          // 支持注入的（caps.steer，目前 opencode）：纯 steer——消息出队，以
+          // delivery=steer 发进正在跑的会话，serve 在下一个步骤边界交给 agent。
+          // 不中止、不清除已有工作，这正是行业里 steer 的定义（Claude Code 的
+          // Enter、Codex 的 Enter、Cline 的 Enter 都是这个）。默认行为仍是
+          // follow-up 排队，这里是用户主动改主意
+          const binding = this.store.get(key)
+          const run = binding?.sessionId ? this.runs.get(binding.sessionId) : null
+          if (this.caps.steer === true && run?.state?.status === 'running') {
+            const item = this.store.removeQueued(key, a.q)
+            if (!item) return { toast: { type: 'error', content: '这条消息不在队列里（可能已经发出或被取消）' } }
+            try {
+              await this.oc.prompt(binding.sessionId, item.text, { delivery: 'steer' })
+            } catch (err) {
+              // 注入失败（老版本 serve 不认识 delivery 等）：消息不能丢，放回
+              // 队首，按老路数中止当前改发
+              this.log.warn?.(`steer 注入失败，退回中断改发: ${err.message}`)
+              this.store.enqueue(key, item, true)
+              const stopped = await this.oc.interrupt(binding.sessionId)
+              this.scheduleDrainIfIdle(key)
+              return replyNew(
+                { type: 'success', content: stopped ? '注入失败，已中止当前任务改发' : '注入失败，当前任务已结束' },
+                textCard(
+                  '🛑 中止当前任务',
+                  [
+                    `**改发** ${truncate(item.text, 120)}`,
+                    '',
+                    stopped ? '当前任务已中止，这条消息接着发送。' : '当前任务已结束，这条消息接着发送。',
+                  ].join('\n'),
+                  'red',
+                ),
+              )
+            }
+            this.refreshQueuedCard(item, queuedSteeredCard)
+            return replyNew(
+              { type: 'success', content: '已引导：下一步生效，不中断' },
+              textCard(
+                '🧭 已引导',
+                [
+                  `**注入** ${truncate(item.text, 120)}`,
+                  '',
+                  '这条消息已注入正在执行的任务，agent 会在下一个步骤边界读到它。当前工作不中止，进度看执行卡片。',
+                ].join('\n'),
+                'blue',
+              ),
+            )
+          }
+          // 后端不支持 steer，或任务已经结束（点得太慢）：提到队首，任务还在
+          // 就中止，等排空时发出去。按 qid 找，找不到说明它已经发出去（或被
+          // 取消了），按钮点不动
           const p = this.store.promoteQueued(key, a.q)
           if (!p) return { toast: { type: 'error', content: '这条消息不在队列里（可能已经发出或被取消）' } }
           // 插到队首并中止当前任务：abort 事件收尾时 drainQueue 会把它发出去
-          const binding = this.store.get(key)
-          const stopped = binding?.sessionId ? await this.oc.interrupt(binding.sessionId) : false
+          const binding2 = this.store.get(key)
+          const stopped = binding2?.sessionId ? await this.oc.interrupt(binding2.sessionId) : false
           // 当前任务已经不在了（刚点过 /stop、或已结束）：没有 abort 事件会来，
           // 补一次排空
           this.scheduleDrainIfIdle(key)
