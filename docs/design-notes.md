@@ -375,7 +375,7 @@ sqlite3 ~/.local/share/opencode/opencode.db "
 
 ```
 src/config.js    配置加载（文件 + 环境变量）
-src/store.js     chat→session 绑定持久化（防抖 + 原子写）
+src/store.js     chat→session 绑定持久化（防抖 + 原子写 + 外部删除单向同步，见第十六节）
 src/oc.js        opencode v2 HttpApi 客户端 + SSE 订阅（指数退避重连）
 src/render.js    事件 → 运行态聚合（文本、工具、状态机）
 src/errors.js    错误文本 → 分类 + 下一步提示（卡片渲染层单点调用）
@@ -391,6 +391,7 @@ src/which-opencode.js  选哪个 opencode 二进制（桌面版 CLI 优先）
 
 scripts/selftest.mjs    集成自测（23 项）
 scripts/test-cards.mjs  卡片、markdown、看门狗、错误提示、话题绑定、@ 判定、来源标注测试与 prompt 前缀模式（173 项；--live 多 3 项）
+scripts/test-state-sync.mjs  管理后台删除与桥接的状态同步：单向同步语义、pi 索引缓存失效、reveal 路径解析（36 项）
 scripts/test-prompt-ids.mjs  前缀协作 id 的离线测试（39 项）
 scripts/test-up-sh.mjs  起停脚本的源码断言与失败路径验证（22 项）
 scripts/doctor.mjs      环境体检（含版本一致性检查）
@@ -621,3 +622,52 @@ key = root:<root_id || message_id>
 XML 三段布局的拼装正确性（标签闭合顺序、变量为空则整行消失、ids 三分支、续聊不带 profile、私聊 / 主聊天流 / pi / plain 回退）不再用单测钉死——提示词文案与结构由你直接改 `prompts.json`，僵硬断言只会每次改动都挂。改用 `node scripts/probe-prompt.mjs` / `--plain` / `--diff` 看两种形态的真实 body 与逐行差异，样本存 [prompt-samples.md](prompt-samples.md)；全量 19 个 `test-*.mjs` 回归通过（布局无关的单测保留）。
 
 **仍未做真实模型 A/B 验证**：XML 是否真的让模型更少误把近况当指令、更少重复拉历史，要在飞书真实话题里观察，离线测试只保证拼装正确。
+
+---
+
+## 十六、管理后台的会话查看与删除
+
+需求来自用户两句话：「有显示绑定很多会话，但是没有提供查看和删除按钮」「查看的话，我是希望打开访达查看就好了，删除的话就是删除本地文件」。规格见 [session-admin-spec.md](session-admin-spec.md)，这里只记「为什么这么做」。
+
+### 两个后端的会话不是同一种东西
+
+| 后端 | 会话数据 | 访达里能看到什么 | 删除的正确方式 |
+|---|---|---|---|
+| pi | `pi-sessions/index.json` 加每条一个 jsonl 文件 | 每条会话一个文件 | 删文件加删索引条目 |
+| opencode | serve 的 SQLite 数据库 `~/.local/share/opencode/opencode.db` | 只有数据库文件，没有单会话文件 | serve 的 `DELETE /api/session/:id` |
+
+「打开访达查看」对 pi 是选中那个 jsonl，对 opencode 只能打开数据库所在目录——它的会话是数据库里的行。实测 serve 的 `/api/location` 只返回 `directory` 与 `project`，问不出数据库路径，只能按已知路径取。「删除本地文件」对 opencode 同样不成立：删除走 serve 接口，删的是本地数据库里的行，效果等同于删本地数据。
+
+### 为什么删除绑定不走「后台改文件、重启生效」
+
+`config.json` 能走那条路，因为桥接只读配置。`state.json` 相反：**桥接进程是这个文件的唯一写者**，`Store` 全量持有内存数据，任何 `scheduleSave()` 都会在 300ms 防抖后把整份内存写回文件。后台直接在文件里删掉一个绑定，桥接任何一次后续落盘都会把它写回来——用户看到「删了但没删掉」。
+
+所以同步规则是**磁盘真相加单向传播**：
+
+1. 桥接监听配置目录，`state.json` 发生外部改动时执行 `syncExternalDeletes()`：把「磁盘上已不存在的绑定」从内存删掉。反向不传播，桥接自己的新增与 `queue` / `inflight` / `sessionSeq` 一个字节都不受影响。
+2. 区分「被外部删了」与「自己还没落盘」用 `knownKeys`（上次落盘时磁盘上有的键集合）。只看「磁盘上没有」会把桥接刚建、还没落盘的绑定误删一批——这个坑在写测试时真实踩到过。
+3. `flush()` 落盘前也先同步一次：后台的删除正好落在 300ms 防抖窗口里时，这次全量写回先把删除吸收进内存，用户的删除才不会被覆写。
+
+为什么不用命令队列（admin 写命令文件、桥接轮询执行）：删除意图用磁盘状态就能完整表达，再修一条消息协议只是把简单事情变复杂。单向同步约 30 行，命令队列要协议、轮询、结果回写、审计四套东西。桥接不在跑时同一套代码照常工作——没有监听也没有覆写者，后台改完即生效，下次启动读到的就是改过的文件。
+
+pi 侧同理但更简单：`PiBackend._index` 是 `index.json` 的纯内存缓存，监听会话目录，任何外部改动直接置空，下一次 `_load()` 从磁盘读。桥接自己 `_save()` 触发的事件也只表现为一次重读，内容一致，不需要区分事件来源。opencode 后端没有这一处：会话数据在 serve 里，桥接不缓存会话列表。
+
+### 两个必须挡在前面的后果
+
+1. **进行中的会话拒删。** `state.json` 的 `inflight` 里有这个 sessionId 就返回 400，提示先发 `/stop`。删掉后端数据后事件流没有归宿，飞书卡片会永远停在「执行中」；pi 的子进程还会继续往已删除的 jsonl 写。后台发送前查一次，桥接执行前再查一次。
+2. **删除后端会话要清绑定。** 不清的话绑定悬空，下一次 @ 会打到不存在的会话上。清的方式是只把 `sessionId` 置空、保留记录（目录等信息还在），与 `/del` 的既有行为一致。
+
+### 顺带修掉的一个真问题
+
+`requestGuards()` 的 `WRITE_METHODS` 原本只有 POST / PUT / PATCH，**DELETE 不在内**——新的解除绑定与删除会话两个接口不带 `X-OCB-Admin` 头也能打过去，跨站表单挡得住另外半边、挡不住这一半边。测试里「缺头返回 403」的用例第一次跑就暴露了它（删除真的执行了），已把 DELETE 纳入防护。
+
+### 文件
+
+```
+admin/server.js    三个接口（reveal / DELETE bindings / DELETE sessions）、writeStateAtomic、
+                   resolveRevealTarget（纯函数，测试不弹访达）、删除前置检查
+admin/public/index.html   两张表加操作列与绑定数量徽章、删除确认、结果状态行
+src/store.js       syncExternalDeletes()、knownKeys、目录监听、flush 前同步
+src/pi.js          _ensureWatch() 与索引缓存失效
+scripts/test-state-sync.mjs  单向同步、缓存失效、reveal 路径解析（36 项）
+```

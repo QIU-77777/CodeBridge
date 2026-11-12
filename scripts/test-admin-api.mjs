@@ -262,6 +262,185 @@ try {
     ok(r.status === 200 && !r.json.notice, '掩码密码不触发重启提示')
     ok(readCfg().opencode.password === 'new-secret-value', '掩码值时原密码不被冲掉')
   }
+
+  // ---------- 会话查看与删除（pi 后端实例） ----------
+  // 造一份干净的 pi 会话索引与 state.json（上一节把索引写坏过）
+  {
+    const piDir = join(INSTANCE_DIR, 'pi-sessions')
+    mkdirSync(piDir, { recursive: true })
+    writeFileSync(join(piDir, '2026-11-12T00-00-00_pi-del0001.jsonl'), '{"type":"session"}\n')
+    writeFileSync(
+      join(piDir, 'index.json'),
+      JSON.stringify({
+        'pi-del0001': { id: 'pi-del0001', title: '要删的', location: { directory: '/tmp/del' }, model: null, time: { created: 1, updated: 2 } },
+        'pi-del0002': { id: 'pi-del0002', title: '要留的', location: { directory: '/tmp/keep' }, model: null, time: { created: 3, updated: 4 } },
+      }),
+    )
+    const STATE_PATH = join(INSTANCE_DIR, 'state.json')
+    const writeChats = (chats, inflight = {}) =>
+      writeFileSync(STATE_PATH, JSON.stringify({ version: 1, chats, inflight }, null, 2))
+    const readChats = () => JSON.parse(readFileSync(STATE_PATH, 'utf8'))
+    writeChats({
+      'oc_keep': { key: 'oc_keep', chatId: 'oc_keep', sessionId: 'pi-del0002', directory: '/tmp/keep', updatedAt: 1 },
+      'oc_gone': { key: 'oc_gone', chatId: 'oc_gone', sessionId: 'pi-del0001', directory: '/tmp/del', updatedAt: 2 },
+      'root:om_thread': { key: 'root:om_thread', chatId: 'oc_group', replyTo: 'om_thread', sessionId: 'pi-del0002', updatedAt: 3 },
+      'oc_nosession': { key: 'oc_nosession', chatId: 'oc_nosession', updatedAt: 4 },
+    })
+
+    const del = async (path) => {
+      const res = await fetch(BASE + path, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json', 'X-OCB-Admin': '1' },
+      })
+      return { status: res.status, json: await res.json().catch(() => ({})) }
+    }
+    const post = async (path, body) => {
+      const res = await fetch(BASE + path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-OCB-Admin': '1' },
+        body: JSON.stringify(body ?? {}),
+      })
+      return { status: res.status, json: await res.json().catch(() => ({})) }
+    }
+
+    // 解除绑定：先备份，再原子写；root: 这种带冒号的键要能编码穿过 URL
+    let r = await del(`/api/instances/${NAME}/bindings/${encodeURIComponent('root:om_thread')}`)
+    ok(r.status === 200 && r.json.ok === true, '解除绑定成功', JSON.stringify(r.json))
+    ok(existsSync(STATE_PATH + '.bak'), '解除绑定前备份 state.json.bak')
+    ok(!('root:om_thread' in readChats().chats), 'state.json 里该绑定已移除')
+    ok('oc_keep' in readChats().chats && 'oc_gone' in readChats().chats, '其余绑定不受影响')
+    ok(!existsSync(STATE_PATH + '.tmp'), '临时文件已重命名，没有残留')
+
+    // 不存在的键返回 404，不动文件
+    const chatsBefore = readFileSync(STATE_PATH, 'utf8')
+    r = await del(`/api/instances/${NAME}/bindings/${encodeURIComponent('oc_nope')}`)
+    ok(r.status === 404, '解除不存在的绑定返回 404')
+    ok(readFileSync(STATE_PATH, 'utf8') === chatsBefore, '404 时 state.json 不动')
+
+    // 缺写操作防护头：403 且不落盘
+    const noHeader = await fetch(`${BASE}/api/instances/${NAME}/bindings/oc_keep`, { method: 'DELETE' })
+    ok(noHeader.status === 403, '解除绑定缺 X-OCB-Admin 头返回 403')
+    ok(readFileSync(STATE_PATH, 'utf8') === chatsBefore, '403 时 state.json 不动')
+
+    // 会话正在执行中（inflight 里有）：拒解，提示先 /stop
+    writeChats(readChats().chats, { 'pi-del0002': { sessionId: 'pi-del0002', cardId: 'c1', startedAt: 1 } })
+    r = await del(`/api/instances/${NAME}/bindings/oc_keep`)
+    ok(r.status === 400 && /\/stop/.test(r.json.error || ''), '绑定指向的会话在执行中时拒解', r.json.error)
+    ok('oc_keep' in readChats().chats, '拒解后绑定还在')
+    writeChats(readChats().chats)
+
+    // 删除后端会话（pi）：删 jsonl 与索引条目，清掉指向它的绑定的 sessionId
+    r = await del(`/api/instances/${NAME}/sessions/pi-del0001`)
+    ok(r.status === 200 && r.json.ok === true && r.json.clearedBindings === 1, '删除 pi 会话并报告清掉的绑定数', JSON.stringify(r.json))
+    ok(!existsSync(join(piDir, '2026-11-12T00-00-00_pi-del0001.jsonl')), '会话 jsonl 文件已删除')
+    const idxAfter = JSON.parse(readFileSync(join(piDir, 'index.json'), 'utf8'))
+    ok(!('pi-del0001' in idxAfter) && 'pi-del0002' in idxAfter, '索引条目删除，其余保留')
+    const chatsAfter = readChats().chats
+    ok(chatsAfter.oc_gone && !chatsAfter.oc_gone.sessionId, '绑定只清 sessionId，记录与目录保留')
+    ok(chatsAfter.oc_gone.directory === '/tmp/del', '被清绑定的目录信息还在')
+    ok('oc_keep' in chatsAfter && chatsAfter.oc_keep.sessionId === 'pi-del0002', '未指向被删会话的绑定不动')
+
+    // 会话列表接口同步反映删除
+    const sessionsAfter = await fetch(`${BASE}/api/instances/${NAME}/sessions`, { headers: { Accept: 'application/json' } }).then((x) => x.json())
+    ok(sessionsAfter.sessions?.length === 1 && sessionsAfter.sessions[0].id === 'pi-del0002', '删除后会话列表只剩一条')
+
+    // 删不存在的会话：404
+    r = await del(`/api/instances/${NAME}/sessions/pi-nope`)
+    ok(r.status === 404, '删除不存在的会话返回 404')
+
+    // 会话在执行中：拒删（删了后端数据，飞书卡片永远停在执行中）
+    writeChats(readChats().chats, { 'pi-del0002': { sessionId: 'pi-del0002', cardId: 'c2', startedAt: 1 } })
+    r = await del(`/api/instances/${NAME}/sessions/pi-del0002`)
+    ok(r.status === 400 && /\/stop/.test(r.json.error || ''), '执行中的会话拒删', r.json.error)
+    ok('pi-del0002' in JSON.parse(readFileSync(join(piDir, 'index.json'), 'utf8')), '拒删后会话还在')
+    writeChats(readChats().chats)
+
+    // reveal 的错误路径。成功路径会 spawn open 弹访达，不在测试里执行；
+    // 路径解析的纯函数覆盖见 scripts/test-state-sync.mjs
+    r = await post(`/api/instances/${NAME}/reveal`, { target: 'session', sid: 'pi-nope' })
+    ok(r.status === 400 && /找不到会话/.test(r.json.error || ''), 'reveal 找不到会话文件时返回 400')
+    r = await post(`/api/instances/${NAME}/reveal`, { target: 'binding', key: 'oc_nosession' })
+    ok(r.status === 400 && /还没有会话/.test(r.json.error || ''), 'reveal 没有绑定会话时返回 400')
+    r = await post(`/api/instances/${NAME}/reveal`, { target: 'session', sid: '' })
+    ok(r.status === 400 && /缺少会话 id/.test(r.json.error || ''), 'reveal 缺会话 id 时返回 400')
+  }
+
+  // opencode 后端的删除走 serve 接口。这里起一个假 serve（stub fetch）：
+  // 打真实的 19876 会删掉真机会话，这条用例不能用真连接
+  {
+    const OC_DIR = join(FAKE_HOME, '.config', 'opencode-feishu-bridge-ocdelete')
+    mkdirSync(OC_DIR, { recursive: true })
+    writeFileSync(
+      join(OC_DIR, 'config.json'),
+      JSON.stringify({ backend: { type: 'opencode' }, opencode: { url: 'http://127.0.0.1:19876', password: '' } }),
+    )
+    const OC_STATE = join(OC_DIR, 'state.json')
+    writeFileSync(OC_STATE, JSON.stringify({
+      version: 1,
+      chats: {
+        'oc_bound': { key: 'oc_bound', chatId: 'oc_bound', sessionId: 'ses_oc_1', directory: '/tmp/oc', updatedAt: 1 },
+        'oc_other': { key: 'oc_other', chatId: 'oc_other', sessionId: 'ses_oc_2', updatedAt: 2 },
+      },
+    }))
+
+    // 假 serve：只认 19876；打 admin 自己的请求走真 fetch
+    const realFetch = globalThis.fetch
+    const serveCalls = []
+    globalThis.fetch = async (url, opts = {}) => {
+      const u = String(url)
+      if (!u.includes('127.0.0.1:19876')) return realFetch(url, opts)
+      if (opts?.method === 'DELETE') {
+        serveCalls.push(u)
+        if (u.includes('ses_gone')) return new Response('{}', { status: 404 })
+        return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      // GET /api/session/:id（reveal 的存在性确认）
+      if (u.includes('ses_gone')) return new Response('{}', { status: 404 })
+      return new Response(JSON.stringify({ data: { id: 'x' } }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+    try {
+      const del = async (path) => {
+        const res = await fetch(`${BASE}${path}`, {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json', 'X-OCB-Admin': '1' },
+        })
+        return { status: res.status, json: await res.json().catch(() => ({})) }
+      }
+
+      let r = await del('/api/instances/ocdelete/sessions/ses_oc_1')
+      ok(r.status === 200 && r.json.ok === true && r.json.clearedBindings === 1, '删除 opencode 会话成功', JSON.stringify(r.json))
+      ok(serveCalls.some((u) => u.endsWith('/api/session/ses_oc_1')), '删除请求打到 serve 的 /api/session/:id', serveCalls.join(','))
+      const ocChats = JSON.parse(readFileSync(OC_STATE, 'utf8')).chats
+      ok(ocChats.oc_bound && !ocChats.oc_bound.sessionId, '指向被删会话的绑定清掉 sessionId')
+      ok(ocChats.oc_other?.sessionId === 'ses_oc_2', '其余绑定不动')
+
+      // serve 404：会话已经没了，照样清绑定（幂等）
+      r = await del('/api/instances/ocdelete/sessions/ses_gone')
+      ok(r.status === 200, 'serve 返回 404 时按已删除处理', JSON.stringify(r.json))
+
+      // serve 有响应但报错（如 500）：文案说「返回 500」，不能含糊成「不可达」
+      globalThis.fetch = async (url, opts = {}) => {
+        const u = String(url)
+        if (!u.includes('127.0.0.1:19876')) return realFetch(url, opts)
+        return new Response('boom', { status: 500 })
+      }
+      r = await del('/api/instances/ocdelete/sessions/ses_oc_2')
+      ok(r.status === 400 && /serve 返回 500/.test(r.json.error || '') && !/不可达/.test(r.json.error || ''), 'serve 报错时如实说状态码', r.json.error)
+      ok(JSON.parse(readFileSync(OC_STATE, 'utf8')).chats.oc_other?.sessionId === 'ses_oc_2', 'serve 报错时绑定不被清')
+
+      // serve 连不上：明确说删不了，此时只能解除绑定
+      globalThis.fetch = async (url, opts = {}) => {
+        const u = String(url)
+        if (!u.includes('127.0.0.1:19876')) return realFetch(url, opts)
+        throw new Error('connect ECONNREFUSED 127.0.0.1:19876')
+      }
+      r = await del('/api/instances/ocdelete/sessions/ses_oc_2')
+      ok(r.status === 400 && /只能先解除绑定/.test(r.json.error || ''), 'serve 不可达时说明删不了', r.json.error)
+      ok(JSON.parse(readFileSync(OC_STATE, 'utf8')).chats.oc_other?.sessionId === 'ses_oc_2', '删除失败时绑定不被清')
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  }
 } catch (err) {
   fail++
   console.log(`❌ 测试本身出错: ${err.stack || err.message}`)

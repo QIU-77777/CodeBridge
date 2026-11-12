@@ -655,6 +655,75 @@ try {
     '新建实例弹窗：默认工作目录不在 opencode 专属组里，pi 后端也能填',
   )
   ok(indexHtml.includes('默认工作目录（两个后端都用'), '配置页标注默认工作目录两个后端都用')
+
+  // 9. 会话查看与删除：两张表加操作列，列数必须与表头一致（4b 同款断言，
+  // 曾经表头 9 列行里 8 个单元格导致整表左移一格）
+  {
+    const chatsTable = indexHtml.slice(indexHtml.indexOf('<table id="ss-chats">'))
+    const chatsHead = chatsTable.slice(0, chatsTable.indexOf('</thead>'))
+    const chatsTh = (chatsHead.match(/<th>/g) || []).length
+    const chatsRowStart = indexHtml.indexOf("chatsTbody.innerHTML = chats.map")
+    const chatsRow = indexHtml.slice(chatsRowStart, indexHtml.indexOf(".join('')", chatsRowStart))
+    const chatsTd = (chatsRow.match(/<td[\s>]/g) || []).length
+    ok(chatsTh === 7 && chatsTd === chatsTh, `飞书绑定表每行单元格数与表头一致（${chatsTh} 列）`, `th=${chatsTh} td=${chatsTd}`)
+    ok((indexHtml.match(/colspan="7"/g) || []).length === 2, '飞书绑定表的空态与错误态用 colspan=7')
+
+    const ssTable = indexHtml.slice(indexHtml.indexOf('<table id="ss-sessions">'))
+    const ssHead = ssTable.slice(0, ssTable.indexOf('</thead>'))
+    const ssTh = (ssHead.match(/<th>/g) || []).length
+    const ssRowStart = indexHtml.indexOf('stbody.innerHTML = (sessions.sessions')
+    const ssRow = indexHtml.slice(ssRowStart, indexHtml.indexOf(".join('')", ssRowStart))
+    const ssTd = (ssRow.match(/<td[\s>]/g) || []).length
+    ok(ssTh === 6 && ssTd === ssTh, `后端会话表每行单元格数与表头一致（${ssTh} 列）`, `th=${ssTh} td=${ssTd}`)
+
+    // 三个操作函数与状态行必须真的在页面上
+    ok(/async function revealSession\(/.test(indexHtml), '会话页有 revealSession（在访达打开）')
+    ok(/async function removeBinding\(/.test(indexHtml), '会话页有 removeBinding（解除绑定）')
+    ok(/async function deleteSession\(/.test(indexHtml), '会话页有 deleteSession（删除会话）')
+    ok(/function setSsMsg\(/.test(indexHtml), '会话页写操作有归一状态行')
+    ok(indexHtml.includes('id="ss-msg"'), '会话页有操作结果状态行容器')
+    ok(/revealSession\(\\'binding\\'/.test(chatsRow), '绑定行的查看按绑定键解析')
+    ok(/removeBinding\(\\'/.test(chatsRow), '绑定行有解除绑定按钮')
+    ok(/deleteSession\(\\'/.test(ssRow), '会话行有删除按钮')
+    ok(/被 ' \+ n \+ ' 个绑定/.test(ssRow), '会话标题列显示绑定数量徽章')
+    ok(/disabled title="这个绑定还没有会话"/.test(chatsRow), '没有绑定会话时查看禁用并说明原因')
+
+    // 删除确认文案：后果必须写清（不可恢复、影响哪些绑定）
+    ok(/不可恢复/.test(indexHtml), '删除确认说明历史不可恢复')
+    ok(/这些绑定的会话关联会被清掉/.test(indexHtml), '删除确认说明对绑定的影响')
+    ok(/解除后，这个群或话题下一次 @ 机器人会新建一个会话/.test(indexHtml), '解除绑定确认写清后果')
+    ok(/opencode 的会话在 opencode\.db 里，没有单会话文件/.test(indexHtml), 'opencode 的查看结果说明数据在数据库里')
+
+    // 服务端：三个接口、备份、防绕过
+    const serverSrc = await import('node:fs').then((fs) =>
+      fs.readFileSync(join(REPO, 'admin', 'server.js'), 'utf8'),
+    )
+    ok(/sub === 'reveal' && req\.method === 'POST'/.test(serverSrc), 'reveal 接口存在')
+    ok(/sub === 'bindings' && req\.method === 'DELETE'/.test(serverSrc), '解除绑定接口存在')
+    ok(/sub === 'sessions' && req\.method === 'DELETE'/.test(serverSrc), '删除会话接口存在')
+    ok(/function writeStateAtomic\(/.test(serverSrc), 'state.json 用备份加临时文件加重命名落盘')
+    ok(/statePath \+ '\.bak'/.test(serverSrc), '改 state.json 前备份成 .bak')
+    ok(/export async function resolveRevealTarget\(/.test(serverSrc), 'reveal 路径解析是纯函数（可离线测）')
+    ok(/sessionInFlight/.test(serverSrc), '删除前置检查会话是否在执行中')
+    // DELETE 也必须过写操作防护：曾经 WRITE_METHODS 只有 POST/PUT/PATCH，
+    // 解除绑定不带自定义头也能打过去，等于跨站表单挡不住这半边
+    ok(/new Set\(\['POST', 'PUT', 'PATCH', 'DELETE'\]\)/.test(serverSrc), 'DELETE 纳入写操作防护（自定义头与 JSON 检查）')
+
+    // 桥接侧：外部删除同步与 pi 索引缓存失效
+    const storeSrc = await import('node:fs').then((fs) =>
+      fs.readFileSync(join(REPO, 'src', 'store.js'), 'utf8'),
+    )
+    ok(/syncExternalDeletes\(\)/.test(storeSrc), 'Store 有外部删除同步')
+    ok(/watchExternalDeletes\(\)/.test(storeSrc), 'Store 起目录监听')
+    ok(/this\.knownKeys/.test(storeSrc), '同步用 knownKeys 区分外部删除与未落盘新增')
+    ok(/flush\(\)[\s\S]*?syncExternalDeletes\(\)/.test(storeSrc), 'flush 落盘前先同步外部删除')
+    ok(/unref/.test(storeSrc), '监听器 unref，不拖住进程退出')
+    const piSrc = await import('node:fs').then((fs) =>
+      fs.readFileSync(join(REPO, 'src', 'pi.js'), 'utf8'),
+    )
+    ok(/_ensureWatch\(\)/.test(piSrc), 'PiBackend 有索引缓存失效监听')
+    ok(/this\._index = null/.test(piSrc), '目录外部改动时索引缓存置空')
+  }
 } catch (err) {
   fail++
   console.log(`❌ 测试本身出错: ${err.stack || err.message}`)
