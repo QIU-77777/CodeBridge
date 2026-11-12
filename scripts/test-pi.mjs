@@ -244,7 +244,9 @@ const main = async () => {
     const a = capabilitiesFor(cfg)
     const b = capabilitiesFor({ backend: { type: 'opencode' } })
     ok(a.oneShot && !a.streaming && !a.agents && !a.permissions, 'pi 能力表：一次性、无流式/agent/权限')
+    ok(a.steer === false, 'pi 能力表：不支持 steer（一次性子进程注不进去）')
     ok(!b.oneShot && b.streaming && b.agents && b.permissions, 'opencode 能力表：全功能')
+    ok(b.steer === true, 'opencode 能力表：支持 steer（serve 的 delivery=steer）')
     ok(capabilitiesFor({}).type === 'opencode', '空配置默认 opencode')
   }
 

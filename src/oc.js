@@ -126,9 +126,13 @@ export class OpencodeClient {
   }
 
   // ---- 消息 ----
-  async prompt(id, text, { files } = {}) {
+  async prompt(id, text, { files, delivery } = {}) {
     const body = { text }
     if (files?.length) body.files = files
+    // delivery=steer：会话正在跑时，这条消息在下一个步骤边界注入当前回合，
+    // 不中止、不清除已有工作（serve 的 Session.Inbox.Delivery 枚举）。
+    // 缺省时不带这个字段，行为与以前一致
+    if (delivery) body.delivery = delivery
     const r = await this.request(`/api/session/${encodeURIComponent(id)}/prompt`, {
       method: 'POST',
       body,

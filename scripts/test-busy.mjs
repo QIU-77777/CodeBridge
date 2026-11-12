@@ -43,7 +43,7 @@ function busyRun(h, key, sessionId = 'ses_run') {
   return key
 }
 
-function makeHarness({ interruptOk = true } = {}) {
+function makeHarness({ interruptOk = true, caps = { type: 'opencode', label: 'opencode', steer: true } } = {}) {
   const store = new Store(join(root, `state-${Math.random().toString(36).slice(2)}.json`))
   const sent = []
   const patched = []
@@ -68,8 +68,8 @@ function makeHarness({ interruptOk = true } = {}) {
     subscribe: () => (() => {}),
     getSession: async (id) => ({ id, location: { directory: '/tmp' }, model: null, title: 't' }),
     createSession: async () => ({ id: 'ses_new', location: { directory: '/tmp' }, model: null }),
-    prompt: async (id, text) => {
-      prompts.push({ id, text })
+    prompt: async (id, text, opts = {}) => {
+      prompts.push({ id, text, delivery: opts.delivery })
       return {}
     },
     interrupt: async (id) => {
@@ -90,7 +90,7 @@ function makeHarness({ interruptOk = true } = {}) {
     opencode: { defaultDirectory: '/tmp', defaultModel: '' },
     behavior: { streamIntervalMs: 1800, maxParallel: 0, idleTimeoutMs: 0, maxBodyChars: 6000 },
   }
-  const bridge = new Bridge({ oc, store, config: cfg, transport, capabilities: { type: 'opencode', label: 'opencode' } })
+  const bridge = new Bridge({ oc, store, config: cfg, transport, capabilities: caps })
   return { store, transport, oc, bridge, prompts, sent, patched }
 }
 
@@ -140,18 +140,62 @@ try {
     ok(body2.includes('第 2 位'), '第二张卡片告诉用户排在第 2 位')
   }
 
-  // 3. 中止当前改发这条：按 qid 提到队首 + interrupt
+  // 2b. 不支持 steer 的后端（pi）：排队卡片只有取消，没有引导
+  {
+    const h = makeHarness({ caps: { type: 'pi', label: 'pi', steer: false } })
+    const key = busyRun(h, 'chat-nosteer')
+    await h.bridge.onMessage({ chatId: key, userId: 'ou_x', text: '帮我跑个测试', messageId: 'm-ns', chatType: 'p2p' })
+    const last = h.sent[h.sent.length - 1]
+    ok(last?.kind === 'card', 'pi 忙等时回的也是卡片')
+    const btnLabels = []
+    const walk = (o) => {
+      if (Array.isArray(o)) o.forEach(walk)
+      else if (o && typeof o === 'object') {
+        if (o.tag === 'button') btnLabels.push(o.text?.content || '')
+        Object.values(o).forEach(walk)
+      }
+    }
+    walk(last?.card)
+    ok(btnLabels.length === 1 && btnLabels[0].includes('取消'), 'pi 的排队卡片只有取消一个按钮', JSON.stringify(btnLabels))
+    ok(!btnLabels.some((l) => l.includes('引导')), 'pi 的排队卡片没有「引导」按钮')
+    ok(JSON.stringify(last?.card).includes('不支持中途引导'), 'pi 的排队卡片说明为什么不给引导')
+    ok(h.store.queueLength(key) === 1, 'pi 的消息同样默认进队列')
+  }
+
+  // 3. 引导（支持 steer 的后端）：消息出队，以 delivery=steer 注入正在跑的
+  // 会话，不中止、不清除已有工作——这是行业里 steer 的定义
   {
     const h = makeHarness()
     const key = busyRun(h, 'chat-s')
     h.store.enqueue(key, { text: '排队已久的', userId: 'ou_x', messageId: 'm0', chatId: key })
     h.store.enqueue(key, { text: '插队消息', userId: 'ou_x', messageId: 'm3', chatId: key })
+    h.store.setQueuedCard(key, h.store.data.queue[key][1].qid, 'card-steer')
     const qid = h.store.data.queue[key][1].qid
     const r = await h.bridge.onCardAction({ chatId: key, userId: 'ou_x', action: { a: 'steer', k: key, q: qid }, messageId: 'c1' })
-    ok(r?.toast?.content?.includes('已中止当前任务'), '改发时先中止当前任务')
-    ok(h.prompts.some((p) => p.interrupt === 'ses_run'), 'interrupt 打到了当前会话上')
-    ok(h.store.queueLength(key) === 2, '改发不增加队列长度（提到队首，不是复制）')
-    ok(h.store.dequeue(key)?.text === '插队消息', '被点的那条提到队首（先于排队已久的）')
+    ok(r?.toast?.content?.includes('已引导'), 'steer 的提示说已引导')
+    ok(h.prompts.some((p) => p.text === '插队消息' && p.delivery === 'steer'), '消息以 delivery=steer 注入当前会话')
+    ok(!h.prompts.some((p) => p.interrupt === 'ses_run'), 'steer 不中止当前任务')
+    ok(h.store.queueLength(key) === 1, '被引导的消息出队（不留在队列里重复发送）')
+    ok(h.store.dequeue(key)?.text === '排队已久的', '队列里剩下的那条没被动')
+    const patch = h.patched.find((p) => p.messageId === 'card-steer')
+    ok(Boolean(patch), '引导后翻新排队卡片')
+    ok(patch?.card?.header?.title?.content?.includes('已引导'), '翻新后的标题说明已引导', patch?.card?.header?.title?.content)
+    ok(!JSON.stringify(patch?.card).includes('取消'), '翻新后撤掉按钮')
+  }
+
+  // 3b. steer 注入失败：消息不丢，放回队首并按老路数中止改发
+  {
+    const h = makeHarness()
+    const key = busyRun(h, 'chat-s-fail')
+    h.store.enqueue(key, { text: '注入会失败', userId: 'ou_x', messageId: 'm-f', chatId: key })
+    h.store.setQueuedCard(key, h.store.data.queue[key][0].qid, 'card-steer-fail')
+    h.oc.prompt = async () => { throw new Error('serve 不认识 delivery') }
+    const qid = h.store.data.queue[key][0].qid
+    const r = await h.bridge.onCardAction({ chatId: key, userId: 'ou_x', action: { a: 'steer', k: key, q: qid }, messageId: 'c1' })
+    ok(r?.toast?.content?.includes('注入失败'), '注入失败有明确提示')
+    ok(h.store.queueLength(key) === 1, '注入失败的消息放回队列，不丢')
+    ok(h.store.dequeue(key)?.text === '注入会失败', '放回的是同一条')
+    ok(h.prompts.some((p) => p.interrupt === 'ses_run'), '注入失败后退回中断改发')
   }
 
   // 4. 取消：按 qid 从队列里摘掉

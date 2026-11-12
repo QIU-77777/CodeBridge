@@ -297,30 +297,56 @@ export function permissionCard({ request, sessionTitle, k = '', rt = '' }) {
 
 /**
  * 加塞消息的卡片：消息已经排进队列（follow-up 是默认动作，不用用户点），
- * 告诉用户排在第几位，给两个改主意的按钮——中止当前改发这条、取消。
+ * 告诉用户排在第几位，给改主意的按钮。取消每个后端都有；引导（steer）只有
+ * 支持注入的后端才给——opencode 的 serve 能把消息注入正在跑的回合，pi 是
+ * 每条消息起一次性子进程，注不进去，只保留排队。
  * 消息正文存在服务端（store 的 queue），卡片只带绑定键与 qid，所以再长的
  * 消息也不会把卡片撑爆；qid 保证按钮只对得上同一条排队消息。
  */
-export function queuedCard({ preview, from, qid, position = 1, k = '', rt = '' }) {
+export function queuedCard({ preview, from, qid, position = 1, k = '', rt = '', steer = false }) {
   const nav = navOf({ k, rt })
   const val = { ...nav, q: qid }
   const where =
     position <= 1 ? '下一个就发它' : `排在队列第 ${position} 位，前面的发完才到它`
+  const hint = steer
+    ? '想改主意：引导 = 立即注入正在跑的任务（下一个步骤边界生效，不中止、不清除已有工作）；取消 = 从队列摘掉。'
+    : '想改主意：取消 = 从队列摘掉。当前后端不支持中途引导，这条消息会等任务结束后自动发出。'
   return card('⏳ 已加入队列', 'yellow', [
     div(
       [
         from ? `**来自** ${from}` : '',
         `**内容** ${truncate(preview, 240) || '(空)'}`,
         '',
-        `当前话题的上一条任务还在跑，这条消息没有丢弃，${where}。想改主意：`,
+        `当前话题的上一条任务还在跑，这条消息没有丢弃，${where}。${hint}`,
       ]
         .filter(Boolean)
         .join('\n'),
     ),
     buttonRow([
-      button('引导', { a: 'steer', ...val }, 'default'),
+      ...(steer ? [button('引导', { a: 'steer', ...val }, 'default')] : []),
       button('取消', { a: 'drop', ...val }, 'default'),
     ]),
+  ])
+}
+
+/**
+ * 排队消息已被引导（steer）进正在跑的任务。
+ *
+ * 按钮全部撤掉：消息已经出队注入，不再是排队项，留着按钮会让人以为还能点。
+ * 进度看当前任务的执行卡片。
+ */
+export function queuedSteeredCard({ preview, from }) {
+  return card('🧭 已引导', 'blue', [
+    div(
+      [
+        from ? `**来自** ${from}` : '',
+        `**内容** ${truncate(preview, 240) || '(空)'}`,
+        '',
+        '这条消息已注入正在执行的任务，agent 会在下一个步骤边界读到它。当前工作不中止，进度看执行卡片。',
+      ]
+        .filter(Boolean)
+        .join('\n'),
+    ),
   ])
 }
 
