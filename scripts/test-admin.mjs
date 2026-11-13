@@ -668,6 +668,15 @@ try {
     ok(chatsTh === 7 && chatsTd === chatsTh, `飞书绑定表每行单元格数与表头一致（${chatsTh} 列）`, `th=${chatsTh} td=${chatsTd}`)
     ok((indexHtml.match(/colspan="7"/g) || []).length === 2, '飞书绑定表的空态与错误态用 colspan=7')
 
+    // 绑定键必须取 chats 的对象键，不取值里的 key 字段：值里的 key 是老数据
+    // 留下的（11 月前建的两条绑定没有这个字段），按它渲染会把查看与解除绑定
+    // 带上空键——服务端按对象键查找，于是报「这个绑定还没有会话」
+    // （真实事故 2026-11-13，用户点本群的绑定查看触发）
+    ok(
+      /Object\.entries\(detail\.state\?\.chats \|\| \{\}\)\.map\(\(\[key/.test(indexHtml),
+      '绑定表按对象键渲染，不依赖值里的 key 字段',
+    )
+
     const ssTable = indexHtml.slice(indexHtml.indexOf('<table id="ss-sessions">'))
     const ssHead = ssTable.slice(0, ssTable.indexOf('</thead>'))
     const ssTh = (ssHead.match(/<th>/g) || []).length

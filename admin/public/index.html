@@ -1225,7 +1225,11 @@ async function loadSessionsTab() {
         '<tr><td colspan="7" class="err">状态文件读取失败：' + esc(detail.stateError) +
         '。无法列出飞书绑定。</td></tr>'
     } else {
-      const chats = Object.values(detail.state?.chats || {})
+      // 绑定键取 chats 的对象键，不取值里的 key 字段：键才是权威的绑定键，
+      // 值里的 key 是老数据留下的（2026 年 11 月前建的两条绑定没有这个字段），
+      // 按它渲染会把查看与解除绑定带上空键——服务端按对象键查找，于是报
+      // 「这个绑定还没有会话」
+      const chats = Object.entries(detail.state?.chats || {}).map(([key, c]) => ({ ...c, key }))
       // 模型列取绑定会话的当前模型：会话列表这一轮已经拉过，按 sessionId 查表即可，
       // 不再给每个绑定单独发一次请求。绑定没指向会话、或会话不在列表里，显示 —
       const modelOfSession = new Map((sessions.sessions || []).map((s) => [s.id, s.model || '']))
