@@ -560,6 +560,9 @@ export class Bridge {
         // xml 布局快照也要跟着排队：出队重放时仍按入队那一刻的身份、来源
         // 和近况拼 body，不能拿后来变化的字段
         layout: msg.layout,
+        // isBot 也要跟着排队：出队重放时若又撞上忙等，bot 消息仍该走 steer
+        // 自动注入那条路，不能因为快照里没带就被当成人类消息重新排队
+        isBot: msg.isBot,
         isGroup: msg.isGroup,
         chatId: ctx.chatId,
         replyTo: ctx.replyTo,

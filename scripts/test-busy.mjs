@@ -233,7 +233,11 @@ try {
     await h.bridge.onMessage({ chatId: key, userId: 'ou_bot_p', text: '注不进去的那条', messageId: 'm-bot-2', chatType: 'p2p', isBot: true })
     ok(h.prompts.length === 0, '注入失败没有把消息发给后端')
     ok(h.store.queueLength(key) === 1, '注入失败退回排队，消息不丢')
-    ok(h.store.dequeue(key)?.text === '注不进去的那条', '排队的是同一条')
+    // 排队项要带 isBot：出队重放时若又撞上忙等，bot 消息仍该走 steer 自动
+    // 注入那条路，不能因为快照里没带就被当成人类消息重新排队
+    const backInQueue = h.store.dequeue(key)
+    ok(backInQueue?.text === '注不进去的那条', '排队的是同一条')
+    ok(backInQueue?.isBot === true, '排队项带 isBot（重放再撞忙等时仍走 steer）')
     const last = h.sent[h.sent.length - 1]
     ok(last?.kind === 'card' && JSON.stringify(last.card).includes('已加入队列'), '退回排队时补一张排队卡片')
   }

@@ -744,6 +744,24 @@ if (process.argv.includes('--live')) {
 
   const cached = await t.resolveChatName('oc_g')
   ok(cached === '桥接话题探针' && t.chatNames.size === 1, '群名只取一次，后续走缓存')
+
+  // WS 事件里 bot 发送者的 sender_type 是 "bot"（消息读取 API 才报 "app"）。
+  // 2026-11-13 灰度实测：只认 "app" 时 isBot 恒为假，bot 之间的 @ 被当成
+  // 人类消息排队，steer 自动注入整条路成了死代码——两种值都必须认
+  await t.handleImMessage({
+    message: {
+      message_type: 'text',
+      chat_type: 'group',
+      chat_id: 'oc_g',
+      message_id: 'om_o1b',
+      create_time: '1793879885000',
+      content: JSON.stringify({ text: '@_user_1 灰度验证' }),
+      mentions: me,
+    },
+    sender: { sender_id: { open_id: 'ou_lild' }, sender_type: 'bot' },
+  })
+  ok(/ou_lild（机器人）/.test(got[6]?.origin || ''), '事件里 sender_type=bot 也判为机器人发送者', got[6]?.origin)
+  ok(got[6]?.isBot === true, 'sender_type=bot 的消息带 isBot=true（忙等 steer 分支的判据）')
 }
 
 // ---------- 6.5 来源标注确实拼进了 prompt ----------

@@ -19,6 +19,17 @@ import { render } from './template.js'
  */
 /** 调用时读取，测试可以调小 */
 const sdkTimeoutMs = () => Number(process.env.OCB_SDK_TIMEOUT_MS) || 20_000
+
+/**
+ * 发送者类型归一。飞书两处口径不一致：im.message.receive_v1 的 WS 事件报
+ * "bot"，消息读取 API 报 "app"（2026-11-13 灰度实测两种都抓到）。两种都认，
+ * 归一成 "app"，下游（isBot、话题近况的「（机器人）」标注）只判一种值。
+ * 判错的后果：bot 之间的 @ 被当成人类消息，忙时不走 steer 自动注入而是
+ * 排队——灰度第二轮就是这么暴露的（事件里是 "bot"，代码只认 "app"）。
+ */
+function normSenderType(t) {
+  return t === 'bot' || t === 'app' ? 'app' : t || ''
+}
 function withTimeout(promise, label) {
   return Promise.race([
     promise,
@@ -230,7 +241,7 @@ export class FeishuTransport {
             // 一千倍，近况行的 [HH:MM] 落到公元五万年——实测探针抓到的
             ts: Number(m.create_time) || Date.now(),
             senderId,
-            senderType: data?.sender?.sender_type || '',
+            senderType: normSenderType(data?.sender?.sender_type),
             kind: flat.kind,
             text: flat.text,
             atMe,
@@ -308,7 +319,7 @@ export class FeishuTransport {
     }
 
     const userId = data?.sender?.sender_id?.open_id || data?.sender?.sender_id?.user_id || ''
-    const isBot = data?.sender?.sender_type === 'app'
+    const isBot = normSenderType(data?.sender?.sender_type) === 'app'
 
     /**
      * 给模型拼前缀。
