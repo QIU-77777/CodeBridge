@@ -61,7 +61,7 @@ writeFileSync(
   ),
 )
 
-const { startAdmin } = await import('../admin/server.js')
+const { startAdmin, resetCliScanCache } = await import('../admin/server.js')
 const server = startAdmin({ host: '127.0.0.1', port: 0 })
 // listen 是异步的，等监听事件回来再取端口，否则 address() 还是 null
 await new Promise((res, rej) => {
@@ -379,7 +379,9 @@ try {
     ok(r.status === 400 && /缺少会话 id/.test(r.json.error || ''), 'reveal 缺会话 id 时返回 400')
 
     // 终端 pi 的会话：合并进列表（带头部解析），带 cli 标记；删除拒删并指路。
-    // cliSessionRoot 在初始配置里就指向 CLI_ROOT，之前一直是空目录
+    // cliSessionRoot 在初始配置里就指向 CLI_ROOT，之前一直是空目录。扫描有
+    // 10 秒缓存（与桥接同一节奏），前面的用例可能已经缓存过空结果，先清掉
+    resetCliScanCache()
     mkdirSync(join(CLI_ROOT, '--tmp-work--'), { recursive: true })
     const cliSid = '01a1b4ac-19da-74ad-8840-96a0a9203dc6'
     writeFileSync(

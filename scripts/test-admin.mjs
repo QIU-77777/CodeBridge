@@ -728,9 +728,10 @@ try {
     ok(/sessionInFlight/.test(serverSrc), '删除前置检查会话是否在执行中')
     // 终端 pi 会话：reveal 回退 cliSessionRoot、列表合并、删除拒删
     ok(/cliSessionFilePath\(cliRoot, sid\)/.test(serverSrc), 'reveal 的 pi 分支回退查找 cliSessionRoot')
-    ok(/scanCliSessions\(cliRoot\)/.test(serverSrc), 'pi 会话列表合并终端会话')
+    ok(/scanCliSessionsCached\(cliRoot\)/.test(serverSrc), 'pi 会话列表合并终端会话')
     ok(/终端 pi 的会话，不在桥接目录里/.test(serverSrc), '终端会话删除拒删并指路')
     ok(/pi-cli-sessions\.js/.test(serverSrc), '终端会话读取走共享模块（与桥接同一份实现）')
+    ok(/CLI_SCAN_TTL_MS/.test(serverSrc), '终端会话扫描带 10 秒缓存（与桥接同一节奏，重度用户不拖慢页面）')
     // DELETE 也必须过写操作防护：曾经 WRITE_METHODS 只有 POST/PUT/PATCH，
     // 解除绑定不带自定义头也能打过去，等于跨站表单挡不住这半边
     ok(/new Set\(\['POST', 'PUT', 'PATCH', 'DELETE'\]\)/.test(serverSrc), 'DELETE 纳入写操作防护（自定义头与 JSON 检查）')

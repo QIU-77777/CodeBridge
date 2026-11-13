@@ -170,6 +170,30 @@ function sessionInFlight(state, sid) {
   return Boolean(state?.inflight && Object.prototype.hasOwnProperty.call(state.inflight, sid))
 }
 
+/**
+ * 终端会话扫描的进程内缓存，节奏与桥接一致（10 秒）。
+ *
+ * 管理后台每打开一次会话页就全量扫一遍终端目录（每个 jsonl 读头部拿 cwd 与
+ * 标题），重度用户几千个终端会话时页面要等好几秒。10 秒内的重复请求复用上次
+ * 结果；代价是终端里刚删的会话最多 10 秒后还在列表里——那只影响绑定行的置灰
+ * 预判，「查看」本身每次现找文件，不受缓存影响。
+ */
+const CLI_SCAN_TTL_MS = 10_000
+const cliScanCache = new Map()
+function scanCliSessionsCached(root) {
+  const now = Date.now()
+  const hit = cliScanCache.get(root)
+  if (hit && now - hit.at < CLI_SCAN_TTL_MS) return hit.map
+  const map = scanCliSessions(root)
+  cliScanCache.set(root, { at: now, map })
+  return map
+}
+
+/** 测试用：清掉扫描缓存，避免用例之间互相看到旧结果 */
+export function resetCliScanCache() {
+  cliScanCache.clear()
+}
+
 // ---------- 后端数据操作 ----------
 
 /** 向 opencode serve 发 DELETE。404 视为已删除（幂等）；其余状态码带 err.status 抛出，
@@ -768,7 +792,7 @@ async function handleApi(req, res, url) {
       // 误判成「会话已删除」而置灰，会话表也少一半会话。桥接自建的优先
       // （id 命名空间不同，实际不会撞）
       const cliRoot = cfg.backend?.pi?.cliSessionRoot || CLI_SESSION_ROOT
-      for (const [id, s] of scanCliSessions(cliRoot)) if (!merged.has(id)) merged.set(id, s)
+      for (const [id, s] of scanCliSessionsCached(cliRoot)) if (!merged.has(id)) merged.set(id, s)
       const sessions = [...merged.values()]
         .sort((a, b) => (b.time?.updated || 0) - (a.time?.updated || 0))
         .map((s) => ({

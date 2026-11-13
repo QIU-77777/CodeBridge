@@ -106,7 +106,7 @@
 - `target=binding`：先从 state.json 取该 key 的 `sessionId`，没有则返回 400（页面按钮此时本就是禁用的）；有则按上一条解析。
 - 解析出的路径必须落在四个允许根之内，否则 400：实例配置目录、`pi-sessions` 目录、`~/.local/share/opencode`、`backend.pi.cliSessionRoot`。
 
-**pi 的会话列表**（`GET /api/instances/:name/sessions`）：`pi-sessions/index.json` 与 `cliSessionRoot` 全量合并，桥接自建的优先（id 命名空间不同，实际不会撞）。终端会话带 `cli: true` 标记：页面据此把「删除」置灰（终端会话不在桥接索引里，删不了），「查看」保留（reveal 会去 cliSessionRoot 找文件）。合并展示与桥接的 `/sessions` 同一口径，两边共用 `src/pi-cli-sessions.js` 的扫描与头部解析。
+**pi 的会话列表**（`GET /api/instances/:name/sessions`）：`pi-sessions/index.json` 与 `cliSessionRoot` 全量合并，桥接自建的优先（id 命名空间不同，实际不会撞）。终端会话带 `cli: true` 标记：页面据此把「删除」置灰（终端会话不在桥接索引里，删不了），「查看」保留（reveal 会去 cliSessionRoot 找文件）。合并展示与桥接的 `/sessions` 同一口径，两边共用 `src/pi-cli-sessions.js` 的扫描与头部解析。终端扫描带 10 秒进程内缓存（与桥接同一节奏）：重度用户几千个终端会话时不拖慢页面，代价是终端里刚删的会话最多 10 秒后还在列表里——那只影响绑定行的置灰预判，「查看」每次现找文件，不受缓存影响。
 
 **删除的前置检查**（两个 DELETE 接口共用）：读一次磁盘上的 state.json，`inflight` 里有目标会话的 sessionId 即返回 400，原因写「会话正在执行中，先在飞书里发 /stop 中止」。opencode 的删除额外要求 serve 可达，不可达返回 400 并说明此时只能解除绑定；等 serve 之前再用最新快照查一次 `inflight`——路由开头那次检查之后，桥接可能刚起了这个会话的执行，旧快照查不到。查两次也盖不住 fetch 往返本身的窗口，那时删除已经生效（见已知限制第 3 条）。
 
