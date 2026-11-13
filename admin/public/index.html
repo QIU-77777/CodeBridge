@@ -1234,21 +1234,37 @@ async function loadSessionsTab() {
       // 不再给每个绑定单独发一次请求。绑定没指向会话、或会话不在列表里，显示 —
       const modelOfSession = new Map((sessions.sessions || []).map((s) => [s.id, s.model || '']))
       const clip = (v, n) => '<span class="clip" title="' + esc(v || '') + '">' + esc(short(v, n)) + '</span>'
-      chatsTbody.innerHTML = chats.map((c) => '<tr>' +
-          '<td class="mono">' + clip(c.key, 24) + '</td>' +
-          '<td class="mono">' + clip(c.chatId, 22) + '</td>' +
-          '<td class="mono">' + clip(c.sessionId, 20) + '</td>' +
-          '<td class="mono">' + clip(c.directory, 28) + '</td>' +
-          '<td class="mono">' + esc(modelOfSession.get(c.sessionId) || '—') + '</td>' +
-          '<td class="mono dim">' + fmtTime(c.updatedAt) + '</td>' +
-          '<td class="row">' +
-            // 查看在访达里打开它绑定的会话；没有绑定会话时禁用并说明原因
-            (c.sessionId
-              ? '<button class="btn" onclick="revealSession(\'binding\', \'' + esc(c.key) + '\')">查看</button>'
-              : '<button class="btn" disabled title="这个绑定还没有会话">查看</button>') +
-            '<button class="btn danger" onclick="removeBinding(\'' + esc(c.key) + '\')">解除绑定</button>' +
-          '</td>' +
-        '</tr>').join('')
+      // 查看按钮的置灰判定：三类「可预测的失败」直接置灰并说明原因，不让用户
+      // 点完才报错——没有绑定会话；绑定的会话不在后端列表里（可能已删除）；
+      // opencode 的 serve 无响应（整页都开不了）。会话列表拉不到时不能跟着置灰：
+      // 那时列表为空不是会话不存在，是列表没拿到，按钮放回可点，让服务端的
+      // 如实文案说话（pi 的索引在、jsonl 文件没了这类同样判不了，也不置灰）
+      const sessionsKnown = !sessions.failed && !sessions.error && sessions.applicable !== false
+      const serveDown = detail.backend !== 'pi' && detail.serve?.applicable === true && detail.serve.ok === false
+      const revealBlocked = (c) => {
+        if (!c.sessionId) return '这个绑定还没有会话'
+        if (serveDown) return 'serve 无响应，确认不了会话，打开不了'
+        if (sessionsKnown && !modelOfSession.has(c.sessionId)) return '绑定的会话不在后端列表里，可能已删除，打开不了'
+        return null
+      }
+      chatsTbody.innerHTML = chats.map((c) => {
+        const blocked = revealBlocked(c)
+        const viewBtn = blocked
+          ? '<button class="btn" disabled title="' + esc(blocked) + '">查看</button>'
+          : '<button class="btn" onclick="revealSession(\'binding\', \'' + esc(c.key) + '\')">查看</button>'
+        return '<tr>' +
+            '<td class="mono">' + clip(c.key, 24) + '</td>' +
+            '<td class="mono">' + clip(c.chatId, 22) + '</td>' +
+            '<td class="mono">' + clip(c.sessionId, 20) + '</td>' +
+            '<td class="mono">' + clip(c.directory, 28) + '</td>' +
+            '<td class="mono">' + esc(modelOfSession.get(c.sessionId) || '—') + '</td>' +
+            '<td class="mono dim">' + fmtTime(c.updatedAt) + '</td>' +
+            '<td class="row">' +
+              viewBtn +
+              '<button class="btn danger" onclick="removeBinding(\'' + esc(c.key) + '\')">解除绑定</button>' +
+            '</td>' +
+          '</tr>'
+      }).join('')
         || '<tr><td colspan="7" class="dim">还没有任何飞书聊天绑定到会话。</td></tr>'
     }
 

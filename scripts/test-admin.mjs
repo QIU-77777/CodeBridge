@@ -662,7 +662,8 @@ try {
     const chatsTable = indexHtml.slice(indexHtml.indexOf('<table id="ss-chats">'))
     const chatsHead = chatsTable.slice(0, chatsTable.indexOf('</thead>'))
     const chatsTh = (chatsHead.match(/<th>/g) || []).length
-    const chatsRowStart = indexHtml.indexOf("chatsTbody.innerHTML = chats.map")
+    // 绑定行的渲染从置灰判定算起：三类可预测失败的文案都在 revealBlocked 里
+    const chatsRowStart = indexHtml.indexOf('const sessionsKnown =')
     const chatsRow = indexHtml.slice(chatsRowStart, indexHtml.indexOf(".join('')", chatsRowStart))
     const chatsTd = (chatsRow.match(/<td[\s>]/g) || []).length
     ok(chatsTh === 7 && chatsTd === chatsTh, `飞书绑定表每行单元格数与表头一致（${chatsTh} 列）`, `th=${chatsTh} td=${chatsTd}`)
@@ -695,7 +696,14 @@ try {
     ok(/removeBinding\(\\'/.test(chatsRow), '绑定行有解除绑定按钮')
     ok(/deleteSession\(\\'/.test(ssRow), '会话行有删除按钮')
     ok(/被 ' \+ n \+ ' 个绑定/.test(ssRow), '会话标题列显示绑定数量徽章')
-    ok(/disabled title="这个绑定还没有会话"/.test(chatsRow), '没有绑定会话时查看禁用并说明原因')
+    ok(/disabled title="' \+ esc\(blocked\)/.test(chatsRow), '置灰的查看按钮带原因浮泡')
+    ok(/return '这个绑定还没有会话'/.test(chatsRow), '没有绑定会话时查看禁用并说明原因')
+    // 可预测的失败一律置灰：会话不在后端列表里、serve 无响应，两类都不该
+    // 让用户点完才报错（人类 2026-11-13 的要求）。会话列表拉不到时不置灰——
+    // 那时列表为空不是会话不存在，按钮放回可点，让服务端的如实文案说话
+    ok(/绑定的会话不在后端列表里/.test(chatsRow), '绑定的会话不在后端列表时查看禁用并说明原因')
+    ok(/serve 无响应，确认不了会话/.test(chatsRow), 'serve 无响应时查看禁用并说明原因')
+    ok(/const sessionsKnown = !sessions\.failed/.test(chatsRow), '会话列表拉不到时不把查看误置灰')
 
     // 删除确认文案：后果必须写清（不可恢复、影响哪些绑定）
     ok(/不可恢复/.test(indexHtml), '删除确认说明历史不可恢复')
