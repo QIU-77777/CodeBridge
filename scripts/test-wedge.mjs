@@ -143,6 +143,33 @@ try {
     ok(run.state.status === 'running', '母回合状态仍是 running')
   }
 
+  // 4b. 子会话事件持续到达：查找只发生在启动爆发，之后每条都刷新母回合
+  {
+    const h = makeBridge()
+    let lookups = 0
+    h.bridge.oc.getSession = async (id) => {
+      lookups++
+      await new Promise((r) => setTimeout(r, 5))
+      return id === 'ses_child' ? { id, parentID: 'ses_parent' } : { id }
+    }
+    const run = h.startRun('ses_parent', 'k1')
+    run.state.updatedAt = Date.now() - 3 * 60_000
+    // 启动爆发：实测子会话创建时同一毫秒正好发五条（created / enqueued /
+    // started / instructions.updated / delivered）
+    for (let i = 0; i < 5; i++) {
+      h.bridge.onEvent({ type: 'session.inbox.enqueued', data: { sessionID: 'ses_child' } })
+    }
+    await new Promise((r) => setTimeout(r, 60))
+    ok(lookups === 5, '爆发期间每条各查一次父会话（并发，未去重）', String(lookups))
+    ok(run.state.updatedAt > Date.now() - 10_000, '爆发过后母回合计时器已刷新')
+    const before = run.state.updatedAt
+    await new Promise((r) => setTimeout(r, 5))
+    // 后续事件走缓存：不再查父会话，但继续刷新
+    h.bridge.onEvent({ type: 'session.tool.progress', data: { sessionID: 'ses_child' } })
+    ok(lookups === 5, '缓存命中不再查父会话', String(lookups))
+    ok(run.state.updatedAt > before, '缓存命中后子会话事件继续刷新母回合')
+  }
+
   // 5. 链式：孙子会话的活动也接得到母回合（子代理再派生子代理）
   {
     const h = makeBridge()
@@ -167,6 +194,32 @@ try {
     h.bridge.checkIdle(60_000)
     ok(!h.bridge.runs.get('ses_parent'), '没有父会话可计入时看门狗照常判定')
     ok(run.state.status === 'failed', '真静默的回合照旧判失败')
+  }
+  // 7. 工具在飞：静默是预期行为，不按模型档误杀
+  {
+    // 复现误杀现场：母会话派生子代理后自己一条事件都不发（实测探针确认），
+    // subagent 工具在飞期间按 idleTimeoutMs 判定就是把干活的运行杀掉的误杀
+    const h = makeBridge()
+    h.bridge.cfg.behavior.toolIdleTimeoutMs = 120_000
+    const run = h.startRun('ses_parent', 'k1')
+    run.state.apply({ type: 'session.tool.input.started', data: { sessionID: 'ses_parent', id: 't1', name: 'subagent' } })
+    ok(run.state.tools.some((t) => t.status === 'running'), '工具在飞状态就位')
+    run.state.updatedAt = Date.now() - 90_000 // 超模型档（60s），未到工具档（120s）
+    h.bridge.checkIdle(60_000)
+    ok(h.bridge.runs.get('ses_parent') != null, '工具在飞期间不按模型档误杀')
+    ok(run.state.status === 'running', '回合状态不变')
+  }
+
+  // 8. 工具在飞但超过工具档：真挂死仍然兜得住
+  {
+    const h = makeBridge()
+    h.bridge.cfg.behavior.toolIdleTimeoutMs = 120_000
+    const run = h.startRun('ses_parent', 'k1')
+    run.state.apply({ type: 'session.tool.input.started', data: { sessionID: 'ses_parent', id: 't1', name: 'subagent' } })
+    run.state.updatedAt = Date.now() - 150_000 // 超工具档
+    h.bridge.checkIdle(60_000)
+    ok(!h.bridge.runs.get('ses_parent'), '超过工具档仍然判卡死（兜底）')
+    ok(run.state.status === 'failed', '终态是 failed')
   }
 } catch (err) {
   fail++

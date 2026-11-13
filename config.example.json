@@ -42,6 +42,7 @@
     "showTools": false,
     "maxBodyChars": 6000,
     "idleTimeoutMs": 300000,
+    "toolIdleTimeoutMs": 1800000,
     "maxParallel": 2,
     "topicContext": true,
     "topicContextMessages": 20,

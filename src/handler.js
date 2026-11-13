@@ -151,6 +151,16 @@ export class Bridge {
   }
 
   /**
+   * 工具在飞时的静默阈值（毫秒）。母会话派生子代理（subagent 工具）或跑长
+   * bash 时，自己一条事件都不发，静默是预期行为，按模型档（idleTimeoutMs）
+   * 判定就是误杀——2026-11-13 实测连杀五轮，卡片还写着「模型长时间无响应」，
+   * 而模型与 serve 都正常。工具档给到一个大的值，真挂住的工具仍然兜得住。
+   */
+  watchdogToolIdleMs() {
+    return Number(this.cfg.behavior.toolIdleTimeoutMs) || 30 * 60_000
+  }
+
+  /**
    * 看门狗的扫描体，两个独立职责：
    *   1. 事件静默判定卡死——只对 opencode 生效（idleMs > 0 时）。pi 跳过，
    *      理由见 start() 里那段注释：它会把「stdout 在刷但没事件」的健康运行
@@ -162,14 +172,19 @@ export class Bridge {
     if (idleMs > 0) {
       for (const [sid, run] of this.runs) {
         if (run.state.status !== 'running') continue
+        // 工具在飞时静默是预期的：母会话在 subagent 工具或长 bash 执行期间
+        // 自己一条事件都不发（实测探针确认），按模型档判定会把正在干活的
+        // 运行误杀。切到工具档阈值，真挂死的工具仍然兜得住
+        const toolFlying = run.state.tools.some((t) => t.status === 'running')
+        const limit = toolFlying ? Math.max(idleMs, this.watchdogToolIdleMs()) : idleMs
         const idle = now - (run.state.updatedAt || run.state.startedAt)
-        if (idle < idleMs) continue
-        const mins = Math.round(idleMs / 60000)
+        if (idle < limit) continue
+        const mins = Math.round(limit / 60000)
         run.state.status = 'failed'
         run.state.error = {
           message: `超过 ${mins} 分钟没有收到任何事件，判定为卡死。\n常见原因：模型长时间无响应、opencode serve 挂了、或事件流断开。\n发 /stop 中止后重试，或检查 serve 日志。`,
         }
-        this.log.warn(`会话 ${sid} 空闲 ${Math.round(idle / 1000)}s，判定卡死并收尾`)
+        this.log.warn(`会话 ${sid} 空闲 ${Math.round(idle / 1000)}s（工具在飞=${toolFlying}），判定卡死并收尾`)
         this.flushRun(sid)
       }
     }
