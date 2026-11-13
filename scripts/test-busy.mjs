@@ -140,13 +140,14 @@ try {
     ok(body2.includes('第 2 位'), '第二张卡片告诉用户排在第 2 位')
   }
 
-  // 2b. 不支持 steer 的后端（pi）：排队卡片只有取消，没有引导
+  // 2b. 不支持 steer 的后端（桩后端，caps.steer=false；真实 pi 现在也有 steer）：
+  // 排队卡片只有取消，没有引导
   {
     const h = makeHarness({ caps: { type: 'pi', label: 'pi', steer: false } })
     const key = busyRun(h, 'chat-nosteer')
     await h.bridge.onMessage({ chatId: key, userId: 'ou_x', text: '帮我跑个测试', messageId: 'm-ns', chatType: 'p2p' })
     const last = h.sent[h.sent.length - 1]
-    ok(last?.kind === 'card', 'pi 忙等时回的也是卡片')
+    ok(last?.kind === 'card', '不支持 steer 时回的也是卡片')
     const btnLabels = []
     const walk = (o) => {
       if (Array.isArray(o)) o.forEach(walk)
@@ -156,10 +157,10 @@ try {
       }
     }
     walk(last?.card)
-    ok(btnLabels.length === 1 && btnLabels[0].includes('取消'), 'pi 的排队卡片只有取消一个按钮', JSON.stringify(btnLabels))
-    ok(!btnLabels.some((l) => l.includes('引导')), 'pi 的排队卡片没有「引导」按钮')
-    ok(JSON.stringify(last?.card).includes('不支持中途引导'), 'pi 的排队卡片说明为什么不给引导')
-    ok(h.store.queueLength(key) === 1, 'pi 的消息同样默认进队列')
+    ok(btnLabels.length === 1 && btnLabels[0].includes('取消'), '不支持 steer 的排队卡片只有取消一个按钮', JSON.stringify(btnLabels))
+    ok(!btnLabels.some((l) => l.includes('引导')), '不支持 steer 的排队卡片没有「引导」按钮')
+    ok(JSON.stringify(last?.card).includes('不支持中途引导'), '不支持 steer 的排队卡片说明为什么不给引导')
+    ok(h.store.queueLength(key) === 1, '不支持 steer 时消息同样默认进队列')
   }
 
   // 3. 引导（支持 steer 的后端）：消息出队，以 delivery=steer 注入正在跑的
@@ -196,6 +197,74 @@ try {
     ok(h.store.queueLength(key) === 1, '注入失败的消息放回队列，不丢')
     ok(h.store.dequeue(key)?.text === '注入会失败', '放回的是同一条')
     ok(h.prompts.some((p) => p.interrupt === 'ses_run'), '注入失败后退回中断改发')
+  }
+
+  // 3c. bot 之间的 @ 忙时直接 steer：不入队、不中断、群里看得到反馈。
+  // 群消息的 key 由 rootId 推出（与生产一致：feishu.js 的 root: 前缀）
+  {
+    const h = makeHarness()
+    const key = busyRun(h, 'root:om_bot_root')
+    await h.bridge.onMessage({
+      chatId: 'oc_group',
+      rootId: 'om_bot_root',
+      userId: 'ou_bot_p',
+      text: 'Lil_O 顺便看下这个',
+      messageId: 'm-bot-1',
+      chatType: 'group',
+      isBot: true,
+    })
+    ok(
+      h.prompts.some((p) => p.id === 'ses_run' && p.text === 'Lil_O 顺便看下这个' && p.delivery === 'steer'),
+      'bot 的 @ 以 delivery=steer 注入当前会话',
+    )
+    ok(!h.prompts.some((p) => p.interrupt === 'ses_run'), 'steer 不中止当前任务')
+    ok(h.store.queueLength(key) === 0, 'bot 的 @ 不进队列——没有二次唤醒')
+    ok(h.sent.filter((s) => s.kind === 'card').length === 0, '不弹排队卡片')
+    const last = h.sent[h.sent.length - 1]
+    ok(last?.kind === 'text' && /已引导/.test(last.text), '群里收到一条注入反馈', last?.text)
+    ok(last?.opts?.replyTo === 'om_bot_root', '反馈发在话题里')
+  }
+
+  // 3d. bot @ 的 steer 注入失败：消息不丢，退回排队（人类的默认路）
+  {
+    const h = makeHarness()
+    const key = busyRun(h, 'chat-bot-fail')
+    h.oc.prompt = async () => { throw new Error('serve 返回 400') }
+    await h.bridge.onMessage({ chatId: key, userId: 'ou_bot_p', text: '注不进去的那条', messageId: 'm-bot-2', chatType: 'p2p', isBot: true })
+    ok(h.prompts.length === 0, '注入失败没有把消息发给后端')
+    ok(h.store.queueLength(key) === 1, '注入失败退回排队，消息不丢')
+    ok(h.store.dequeue(key)?.text === '注不进去的那条', '排队的是同一条')
+    const last = h.sent[h.sent.length - 1]
+    ok(last?.kind === 'card' && JSON.stringify(last.card).includes('已加入队列'), '退回排队时补一张排队卡片')
+  }
+
+  // 3e. 人类的 @ 忙时仍然排队：steer 只分给 bot，不改变人的默认行为
+  {
+    const h = makeHarness()
+    const key = busyRun(h, 'chat-human')
+    await h.bridge.onMessage({ chatId: key, userId: 'ou_x', text: '人的消息', messageId: 'm-human', chatType: 'p2p' })
+    ok(!h.prompts.some((p) => p.delivery === 'steer'), '人类的 @ 不被 steer 分流')
+    ok(h.store.queueLength(key) === 1, '人类的 @ 照旧进队列')
+    ok(h.sent[h.sent.length - 1]?.kind === 'card', '人类的 @ 照旧回排队卡片')
+  }
+
+  // 3f. 不支持 steer 的后端（桩后端，caps.steer=false）：bot 的 @ 也按排队处理
+  {
+    const h = makeHarness({ caps: { type: 'pi', label: 'pi', steer: false } })
+    const key = busyRun(h, 'chat-bot-pi')
+    await h.bridge.onMessage({ chatId: key, userId: 'ou_bot_p', text: 'pi 侧的 @', messageId: 'm-bot-3', chatType: 'p2p', isBot: true })
+    ok(h.prompts.length === 0, '没有注入通道时不假装 steer')
+    ok(h.store.queueLength(key) === 1, '没有注入通道时 bot 的 @ 照旧排队')
+  }
+
+  // 3g. 不忙时 bot 的 @ 走正常 prompt，不带 delivery
+  {
+    const h = makeHarness()
+    const key = 'chat-bot-idle'
+    h.store.set(key, { sessionId: 'ses_run', chatId: key, directory: '/tmp' })
+    await h.bridge.onMessage({ chatId: key, userId: 'ou_bot_p', text: '不忙时的 @', messageId: 'm-bot-4', chatType: 'p2p', isBot: true })
+    ok(h.prompts.length === 1 && h.prompts[0].delivery === undefined, '不忙时按普通消息发给后端', JSON.stringify(h.prompts))
+    ok(h.store.queueLength(key) === 0, '不忙时不入队')
   }
 
   // 4. 取消：按 qid 从队列里摘掉

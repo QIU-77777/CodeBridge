@@ -530,10 +530,24 @@ export class Bridge {
     // 一个会话同时只跑一个任务。否则新 run 会覆盖旧的，旧卡片永远停在「执行中」
     const busy = binding?.sessionId ? this.runs.get(binding.sessionId) : null
     if (busy?.state?.status === 'running') {
+      // bot 之间的 @：不等当前回合结束，直接以 delivery=steer 注入正在跑的
+      // 会话，下一步边界生效，不中止、不清除已有工作。人的 @ 不走这条——人
+      // 改主意要看得见摸得着（排队卡片加取消与引导两个按钮），bot 之间的协作
+      // 要的是实时；注入失败退回下面的排队路，消息不丢
+      if (msg.isBot && this.caps.steer === true) {
+        try {
+          await this.oc.prompt(binding.sessionId, msg.text, { delivery: 'steer' })
+          await this.t.sendText(ctx.chatId, '已引导：消息已注入当前回合，下一步生效，不中断。', { replyTo: ctx.replyTo })
+          return null
+        } catch (err) {
+          this.log.warn?.(`bot @ 注入当前回合失败，退回排队: ${err.message}`)
+        }
+      }
       // 加塞的消息默认按 follow-up 处理：直接排进队列，不用用户点任何按钮。
-      // 回一张卡片告诉用户排在第几位，附改主意的按钮——取消每个后端都有；
-      // 引导（steer）只有支持注入的后端才给（caps.steer，目前 opencode），
-      // pi 是一次性子进程注不进去，只保留排队。队列在任务收尾后自动排空
+      // 回一张卡片告诉用户排在第几位，附改主意的按钮——取消每个后端都有，
+      // 引导（steer）两个后端都支持（caps.steer：opencode 走 serve 的
+      // delivery=steer，pi 走长驻 RPC 进程的 steer 命令）。队列在任务收尾后
+      // 自动排空
       const item = {
         text: msg.text,
         userId: msg.userId,
@@ -1112,12 +1126,12 @@ export class Bridge {
           return replyNew({ type: 'success', content: label }, textCard('🔐 授权已处理', label, a.d === 'reject' ? 'red' : 'green'))
         }
         case 'steer': {
-          // 引导。分两种后端：
-          // 支持注入的（caps.steer，目前 opencode）：纯 steer——消息出队，以
-          // delivery=steer 发进正在跑的会话，serve 在下一个步骤边界交给 agent。
-          // 不中止、不清除已有工作，这正是行业里 steer 的定义（Claude Code 的
-          // Enter、Codex 的 Enter、Cline 的 Enter 都是这个）。默认行为仍是
-          // follow-up 排队，这里是用户主动改主意
+          // 引导。两个后端都支持注入（caps.steer）：opencode 以 delivery=steer
+          // 发进正在跑的会话，serve 在下一个步骤边界交给 agent；pi 走长驻 RPC
+          // 进程的 steer 命令，同样在下一个步骤边界生效。消息出队，不中止、
+          // 不清除已有工作——这正是行业里 steer 的定义（Claude Code 的 Enter、
+          // Codex 的 Enter、Cline 的 Enter 都是这个）。默认行为仍是 follow-up
+          // 排队，这里是用户主动改主意
           const binding = this.store.get(key)
           const run = binding?.sessionId ? this.runs.get(binding.sessionId) : null
           if (this.caps.steer === true && run?.state?.status === 'running') {

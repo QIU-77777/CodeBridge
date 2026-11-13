@@ -7,6 +7,7 @@
       "timeoutMs": 600000,
       "toolTimeoutMs": 1800000,
       "settleQuietMs": 180000,
+      "idleMs": 600000,
       "extraArgs": []
     }
   },

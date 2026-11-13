@@ -2,9 +2,15 @@
 /**
  * pi 后端离线测试。
  *
- * 不连飞书、不跑真模型：用一个 node 子进程冒充 pi，输出与 pi --mode json
- * 同形状的 JSONL。这样能真实验证子进程生命周期（退出码、SIGTERM、超时、
- * 孤儿进程与进程组清理），又不会消耗额度或依赖本机装没装 pi。
+ * 不连飞书、不跑真模型：用一个 node 子进程冒充 pi。它有两种行为：
+ *   - 一次性路径（--version 与 parsePiJsonl 的离线取样）：输出与
+ *     `pi -p --mode json` 同形状的 JSONL
+ *   - RPC 路径（--mode rpc）：长驻服务循环，stdin 收一行一条 JSON 命令
+ *     （prompt / steer / follow_up / abort），stdout 出同 id 的 response
+ *     回执与会话事件，事件形状与 --mode json 同构
+ *
+ * 这样能真实验证子进程生命周期（退出码、SIGTERM、超时、崩溃与进程组清理）、
+ * RPC 命令的收发与 steer 注入，又不会消耗额度或依赖本机装没装 pi。
  *
  * 用法: npm run test:pi
  */
@@ -16,7 +22,7 @@ import { parsePiJsonl, providerErrorOf, PiBackend, capabilitiesFor } from '../sr
 import { createBackend } from '../src/backend.js'
 import { RunState } from '../src/render.js'
 import { Bridge } from '../src/handler.js'
-import { runCard, helpCard, statusCard } from '../src/cards.js'
+import { runCard, helpCard, statusCard, queuedCard } from '../src/cards.js'
 import { loadConfig } from '../src/config.js'
 
 let pass = 0
@@ -33,14 +39,121 @@ function section(name) {
   console.log(`\n[${name}]`)
 }
 
-/** 冒充 pi 的脚本：按环境变量决定输出正常结果 / 失败 / 挂住 / 留孤儿进程 */
+/** 冒充 pi 的脚本：一次性路径按环境变量决定输出；RPC 路径是长驻服务循环 */
 const FAKE_PI = `
+const fs = require('node:fs')
 const mode = process.env.OCB_TEST_PI_MODE || 'normal'
+const piArgs = JSON.parse(process.env.OCB_TEST_PI_ARGS || '[]')
+const isRpc = piArgs[0] === '--mode' && piArgs[1] === 'rpc'
 if (mode === 'version') { console.log('pi 1.2.3'); process.exit(0) }
-if (mode === 'fail') { console.error('boom: provider unavailable'); process.exit(2) }
-if (mode === 'dump-env') {
+const usage = { input: 17, output: 3, cacheRead: 4608, cacheWrite: 0, totalTokens: 4628,
+  cost: { input: 0.00002244, output: 0.00001188, cacheRead: 0.000202752, cacheWrite: 0, total: 0.000237072 } }
+const emit = (o) => console.log(JSON.stringify(o))
+const asst = (id, text, stop) => ({ role: 'assistant', id, content: text ? [{ type: 'text', text }] : [],
+  provider: 'stepfun-platform', model: 'step-5-preview', stopReason: stop, usage })
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+const slowPieces = ['我先', '读了桥接状态', '，确认进程在跑', '，又核了对', '一遍版本', '与注入', '，全部正常', '。']
+
+// 每种模式按「回合」分批的事件：一个数组是一个回合里的事件，回合与回合之间
+// 是 steer 的交付点（真实 pi 在下一步模型调用前交付）。数组里的数字元素是
+// 停顿毫秒数，给运行中到达的 steer 留出窗口
+const scripts = {
+  normal: [[
+    { type: 'message_update', usage, assistantMessageEvent: { type: 'text_start', contentIndex: 0 } },
+    { type: 'message_update', usage, assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'HEL' } },
+    { type: 'message_update', usage, assistantMessageEvent: { type: 'text_end', contentIndex: 0, content: 'HELLO' } },
+    { type: 'message_end', message: { role: 'assistant',
+      content: [{ type: 'text', text: 'HELLO' }], provider: 'deepseek', model: 'deepseek-v4-pro', usage } },
+    { type: 'turn_end', message: { role: 'assistant', content: [{ type: 'text', text: 'HELLO' }], usage } },
+    { type: 'agent_end', messages: [] },
+  ]],
+  stream: [
+    [
+      { type: 'turn_start' },
+      { type: 'message_start', message: asst('a1', '', 'pending') },
+      { type: 'message_update', usage, assistantMessageEvent: { type: 'text_start', contentIndex: 0 } },
+      { type: 'message_update', usage, assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: '我先' } },
+      { type: 'message_update', usage, assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: '看一下。' } },
+      { type: 'message_update', usage, assistantMessageEvent: { type: 'text_end', contentIndex: 0, content: '我先看一下。' } },
+      { type: 'message_update', usage, assistantMessageEvent: { type: 'toolcall_start', contentIndex: 1, id: 'call_1', toolName: 'bash' } },
+      { type: 'message_update', usage, assistantMessageEvent: { type: 'toolcall_end', contentIndex: 1, toolCall: { id: 'call_1', name: 'bash', args: { command: 'ls' } } } },
+      { type: 'message_end', message: asst('a1', '我先看一下。', 'toolUse') },
+      { type: 'tool_execution_start', toolCallId: 'call_1', toolName: 'bash', args: { command: 'ls' } },
+      600,
+      { type: 'tool_execution_end', toolCallId: 'call_1', toolName: 'bash', isError: false, durationMs: 12,
+        result: { content: [{ type: 'text', text: 'a.js 与 b.js' }], details: {} } },
+      { type: 'turn_end', message: asst('a1', '我先看一下。', 'toolUse'), toolResults: [] },
+    ],
+    [
+      { type: 'turn_start' },
+      { type: 'message_start', message: asst('a2', '', 'pending') },
+      { type: 'message_update', usage, assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: '目录里有' } },
+      { type: 'message_update', usage, assistantMessageEvent: { type: 'text_end', contentIndex: 0, content: '目录里有 a.js 和 b.js。' } },
+      { type: 'message_end', message: asst('a2', '目录里有 a.js 和 b.js。', 'stop') },
+      { type: 'turn_end', message: asst('a2', '目录里有 a.js 和 b.js。', 'stop'), toolResults: [] },
+      { type: 'agent_end', messages: [] },
+    ],
+  ],
+  'provider-error': [[
+    // 复现真实故障：模型调用被 provider 拒（429 限流、provider 未配置）。
+    // pi 打一条 stopReason=error、errorMessage 带原文的助手消息后不退出——
+    // 修复前只能等满 backend.pi.timeoutMs 才终态，用户白等
+    { type: 'message', id: 'err1', message: { role: 'assistant', content: [],
+      provider: 'stepfun-platform', model: 'step-5-preview', usage,
+      stopReason: 'error',
+      errorMessage: 'stepfun-platform API error (429): request limited TPM reached, current: 565751, limit: 500000' } },
+  ]],
+  'quiet-final': [[
+    // 复现真实故障：最终回答产出了，agent_settled 永远不来，进程也不退。
+    // 实测一次卡片在「执行中」停了 6 分 58 秒——桥接只能等进程退出
+    { type: 'message_end', message: { role: 'assistant',
+      content: [{ type: 'text', text: 'QUIETDONE' }], provider: 'stepfun-platform',
+      model: 'step-5-preview', usage } },
+    { type: 'turn_end', message: { role: 'assistant',
+      content: [{ type: 'text', text: 'QUIETDONE' }], usage } },
+  ]],
+  'quiet-empty': [[
+    // 最终轮次没有正文：不能按已完成收尾，那可能只是还没产出回答的慢运行，
+    // 切掉会把真正的答案丢掉。继续等进程退出 / 超时
+    { type: 'message_end', message: { role: 'assistant', content: [],
+      provider: 'stepfun-platform', model: 'step-5-preview', usage } },
+    { type: 'turn_end', message: { role: 'assistant', content: [], usage } },
+  ]],
+  'tool-silent': [[
+    // 复现真实故障（2026-11-12 凌晨，小P 第二轮中断）：助手产出文本、发出
+    // bash 工具调用，tool_execution_start 之后工具结果永远不回流，进程挂住。
+    // 实测那条命令只要 1.5 分钟——不是慢，是挂。修复后工具在飞按
+    // toolTimeoutMs 单独算预算，且超时杀进程时已产出的文本不丢
+    { type: 'turn_start' },
+    { type: 'message_start', message: asst('a1', '', 'pending') },
+    { type: 'message_update', usage, assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'PARTIAL' } },
+    { type: 'message_end', message: asst('a1', 'PARTIAL', 'toolUse') },
+    { type: 'tool_execution_start', toolCallId: 'call_1', toolName: 'bash', args: { command: 'find ~ -name prompts.json' } },
+  ]],
+  'tool-then-idle': [[
+    // 工具正常结束（tool_execution_end）之后模型挂住：预算要切回模型静默档
+    // timeoutMs，不能还在工具档干等 toolTimeoutMs
+    { type: 'turn_start' },
+    { type: 'message_start', message: asst('a1', '', 'pending') },
+    { type: 'message_end', message: asst('a1', '', 'toolUse') },
+    { type: 'tool_execution_start', toolCallId: 'call_1', toolName: 'bash', args: { command: 'ls' } },
+    { type: 'tool_execution_end', toolCallId: 'call_1', toolName: 'bash', isError: false, durationMs: 5,
+      result: { content: [{ type: 'text', text: 'a.js' }], details: {} } },
+  ]],
+  hang: [[]],
+}
+// 发完脚本就挂住不再回应的模式：等桥接的看门狗或静默兜底收尾
+const hangsAfter = { 'provider-error': true, 'quiet-final': true, 'quiet-empty': true,
+  'tool-silent': true, 'tool-then-idle': true, hang: true }
+
+const rpcLog = process.env.OCB_TEST_RPC_LOG || ''
+const logRpc = (kind, text) => {
+  if (!rpcLog) return
+  try { fs.appendFileSync(rpcLog, JSON.stringify({ t: Date.now(), kind, text }) + '\\n') } catch {}
+}
+const dumpEnv = () => {
   // 把桥接注入的环境变量落盘，供测试断言身份注入（飞书 + GitHub）
-  require('node:fs').writeFileSync(process.env.OCB_TEST_ENV_DUMP, JSON.stringify({
+  fs.writeFileSync(process.env.OCB_TEST_ENV_DUMP, JSON.stringify({
     FEISHU_APP_ID: process.env.FEISHU_APP_ID ?? null,
     FEISHU_APP_SECRET: process.env.FEISHU_APP_SECRET ?? null,
     FEISHU_DOMAIN: process.env.FEISHU_DOMAIN ?? null,
@@ -57,143 +170,191 @@ if (mode === 'dump-env') {
     GIT_CONFIG_VALUE_1: process.env.GIT_CONFIG_VALUE_1 ?? null,
     OCB_CONFIG_DIR: process.env.OCB_CONFIG_DIR ?? null,
   }))
-  process.exit(0)
 }
-const usage = { input: 17, output: 3, cacheRead: 4608, cacheWrite: 0, totalTokens: 4628,
-  cost: { input: 0.00002244, output: 0.00001188, cacheRead: 0.000202752, cacheWrite: 0, total: 0.000237072 } }
-const emit = (o) => console.log(JSON.stringify(o))
-emit({ type: 'session', id: 'fake', cwd: process.cwd() })
-emit({ type: 'agent_start' })
-if (mode === 'provider-error') {
-  // 复现真实故障：模型调用被 provider 拒（429 限流、provider 未配置）。
-  // pi 打一条 stopReason=error、errorMessage 带原文的助手消息后不退出——
-  // 修复前只能等满 backend.pi.timeoutMs 才终态，用户白等
-  emit({ type: 'message', id: 'err1', message: { role: 'assistant', content: [],
-    provider: 'stepfun-platform', model: 'step-5-preview', usage,
-    stopReason: 'error',
-    errorMessage: 'stepfun-platform API error (429): request limited TPM reached, current: 565751, limit: 500000' } })
-  setInterval(() => {}, 1000)
-  process.stdout.write('')
-}
-else if (mode === 'quiet-final') {
-  // 复现真实故障：最终回答产出了，agent_settled 永远不来，进程也不退。
-  // 实测一次卡片在「执行中」停了 6 分 58 秒——桥接只能等进程退出
-  emit({ type: 'message_end', message: { role: 'assistant',
-    content: [{ type: 'text', text: 'QUIETDONE' }], provider: 'stepfun-platform',
-    model: 'step-5-preview', usage } })
-  emit({ type: 'turn_end', message: { role: 'assistant',
-    content: [{ type: 'text', text: 'QUIETDONE' }], usage } })
-  setInterval(() => {}, 1000)
-  process.stdout.write('')
-}
-else if (mode === 'quiet-empty') {
-  // 最终轮次没有正文：不能按已完成收尾，那可能只是还没产出回答的慢运行，
-  // 切掉会把真正的答案丢掉。继续等进程退出 / 超时
-  emit({ type: 'message_end', message: { role: 'assistant', content: [],
-    provider: 'stepfun-platform', model: 'step-5-preview', usage } })
-  emit({ type: 'turn_end', message: { role: 'assistant', content: [], usage } })
-  setInterval(() => {}, 1000)
-  process.stdout.write('')
-}
-else if (mode === 'slow-but-alive') {
-  // 复现真实事故（2026-11-08 11:41）：一个运行 10 分钟里产出 16290 行、12 步，
-  // 一直在干活，被「按总时长算的超时」杀掉。修复后超时按活跃度算：每隔 200ms
-  // 吐一片同一段答案的文本增量，8 片之后给出这段的权威全文并正常退出——
-  // 总时长远超 timeoutMs 也不该被杀
-  const pieces = ['我先', '读了桥接状态', '，确认进程在跑', '，又核了对', '一遍版本', '与注入', '，全部正常', '。']
-  let n = 0
-  const timer = setInterval(() => {
-    emit({ type: 'message_update', usage, assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: pieces[n] } })
-    n++
-    if (n >= pieces.length) {
-      clearInterval(timer)
-      emit({ type: 'message_end', message: { role: 'assistant',
-        content: [{ type: 'text', text: pieces.join('') }],
-        provider: 'stepfun-platform', model: 'step-5-preview', usage } })
-      emit({ type: 'agent_settled', aborted: false })
-      process.exit(0)
+
+if (isRpc) {
+  // ---------- RPC 长驻循环 ----------
+  let running = false
+  let runToken = 0
+  let uid = 0
+  const steerQueue = []
+  const followQueue = []
+  let buf = ''
+  const dead = (token) => token !== runToken
+  const respond = (cmd, obj) => emit({ id: cmd.id, type: 'response', command: cmd.type, ...obj })
+  const emitUser = async (token, text) => {
+    logRpc('user delivered', text)
+    const id = 'u' + ++uid
+    emit({ type: 'message_start', message: { role: 'user', id, content: text } })
+    await sleep(20)
+    if (dead(token)) return
+    emit({ type: 'message_end', message: { role: 'user', id, content: text } })
+    await sleep(20)
+  }
+  const runSegments = async (token, segments) => {
+    for (const seg of segments) {
+      if (dead(token)) return
+      for (const rec of seg) {
+        if (typeof rec === 'number') { await sleep(rec); continue }
+        if (dead(token)) return
+        emit(rec)
+        await sleep(15)
+      }
+      // 回合边界：真实 pi 在这时把排队的 steer 当 user 消息交给 agent
+      while (steerQueue.length && !dead(token)) {
+        const t = steerQueue.shift()
+        logRpc('steer delivered', t)
+        await emitUser(token, t)
+      }
     }
-  }, 200)
-}
-else if (mode === 'tool-silent') {
-  // 复现真实故障（2026-11-12 凌晨，小P 第二轮中断）：助手产出文本、发出
-  // bash 工具调用，tool_execution_start 之后工具结果永远不回流，进程挂住。
-  // 实测那条命令只要 1.5 分钟——不是慢，是挂。修复后工具在飞按
-  // toolTimeoutMs 单独算预算，且超时杀进程时已产出的文本不丢
-  const asst = (id, text, stop) => ({ role: 'assistant', id, content: text ? [{ type: 'text', text }] : [],
-    provider: 'stepfun-platform', model: 'step-5-preview', stopReason: stop, usage })
-  emit({ type: 'turn_start' })
-  emit({ type: 'message_start', message: asst('a1', '', 'pending') })
-  emit({ type: 'message_update', usage, assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'PARTIAL' } })
-  emit({ type: 'message_end', message: asst('a1', 'PARTIAL', 'toolUse') })
-  emit({ type: 'tool_execution_start', toolCallId: 'call_1', toolName: 'bash', args: { command: 'find ~ -name prompts.json' } })
-  setInterval(() => {}, 1000)
-  process.stdout.write('')
-}
-else if (mode === 'tool-then-idle') {
-  // 工具正常结束（tool_execution_end）之后模型挂住：预算要切回模型静默档
-  // timeoutMs，不能还在工具档干等 toolTimeoutMs
-  const asst = (id, text, stop) => ({ role: 'assistant', id, content: text ? [{ type: 'text', text }] : [],
-    provider: 'stepfun-platform', model: 'step-5-preview', stopReason: stop, usage })
-  emit({ type: 'turn_start' })
-  emit({ type: 'message_start', message: asst('a1', '', 'pending') })
-  emit({ type: 'message_end', message: asst('a1', '', 'toolUse') })
-  emit({ type: 'tool_execution_start', toolCallId: 'call_1', toolName: 'bash', args: { command: 'ls' } })
-  emit({ type: 'tool_execution_end', toolCallId: 'call_1', toolName: 'bash', isError: false, durationMs: 5,
-    result: { content: [{ type: 'text', text: 'a.js' }], details: {} } })
-  setInterval(() => {}, 1000)
-  process.stdout.write('')
-}
-else if (mode === 'stream') {
-  // 复现真实多轮运行的事件序列（形状见 pi 文档 docs/json.md）：两轮助手
-  // 消息，第一轮带 bash 工具调用，文本分片流出，模型名写在消息里。
-  // 修复前这些行只进缓冲区，卡片在运行中一次都不刷新
-  const asst = (id, text, stop) => ({ role: 'assistant', id, content: text ? [{ type: 'text', text }] : [],
-    provider: 'stepfun-platform', model: 'step-5-preview', stopReason: stop, usage })
-  emit({ type: 'turn_start' })
-  emit({ type: 'message_start', message: { role: 'user', id: 'u1', content: '读一下' } })
-  emit({ type: 'message_end', message: { role: 'user', id: 'u1', content: '读一下' } })
-  emit({ type: 'message_start', message: asst('a1', '', 'pending') })
-  emit({ type: 'message_update', usage, assistantMessageEvent: { type: 'text_start', contentIndex: 0 } })
-  emit({ type: 'message_update', usage, assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: '我先' } })
-  emit({ type: 'message_update', usage, assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: '看一下。' } })
-  emit({ type: 'message_update', usage, assistantMessageEvent: { type: 'text_end', contentIndex: 0, content: '我先看一下。' } })
-  emit({ type: 'message_update', usage, assistantMessageEvent: { type: 'toolcall_start', contentIndex: 1, id: 'call_1', toolName: 'bash' } })
-  emit({ type: 'message_update', usage, assistantMessageEvent: { type: 'toolcall_end', contentIndex: 1, toolCall: { id: 'call_1', name: 'bash', args: { command: 'ls' } } } })
-  emit({ type: 'message_end', message: asst('a1', '我先看一下。', 'toolUse') })
-  emit({ type: 'tool_execution_start', toolCallId: 'call_1', toolName: 'bash', args: { command: 'ls' } })
-  emit({ type: 'tool_execution_end', toolCallId: 'call_1', toolName: 'bash', isError: false, durationMs: 12,
-    result: { content: [{ type: 'text', text: 'a.js 与 b.js' }], details: {} } })
-  emit({ type: 'turn_end', message: asst('a1', '我先看一下。', 'toolUse'), toolResults: [] })
-  emit({ type: 'turn_start' })
-  emit({ type: 'message_start', message: asst('a2', '', 'pending') })
-  emit({ type: 'message_update', usage, assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: '目录里有' } })
-  emit({ type: 'message_update', usage, assistantMessageEvent: { type: 'text_end', contentIndex: 0, content: '目录里有 a.js 和 b.js。' } })
-  emit({ type: 'message_end', message: asst('a2', '目录里有 a.js 和 b.js。', 'stop') })
-  emit({ type: 'turn_end', message: asst('a2', '目录里有 a.js 和 b.js。', 'stop'), toolResults: [] })
-  emit({ type: 'agent_end', messages: [] })
-  emit({ type: 'agent_settled', aborted: false })
-}
-else if (mode === 'hang') { setInterval(() => {}, 1000); process.stdout.write('') }
-else if (mode === 'orphan') {
-  // 模拟 pi 的 bash 工具留下的长驻子进程：继承 stdout/stderr，不随父进程退出，
-  // 存活 OCB_TEST_ORPHAN_LIFE_MS 毫秒后写一个标记文件，用来验证它到底有没有被杀掉
-  const { spawn } = require('node:child_process')
-  const life = Number(process.env.OCB_TEST_ORPHAN_LIFE_MS) || 3000
-  spawn(process.execPath, ['-e', 'setTimeout(() => require("node:fs").writeFileSync(process.env.OCB_TEST_ORPHAN_MARKER, "survived"), ' + life + ')'],
-    { stdio: ['ignore', 'inherit', 'inherit'] })
-  setInterval(() => {}, 1000)
-  process.stdout.write('')
-}
-else {
-  emit({ type: 'message_update', usage, assistantMessageEvent: { type: 'text_start', contentIndex: 0 } })
-  emit({ type: 'message_update', usage, assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'HEL' } })
-  emit({ type: 'message_update', usage, assistantMessageEvent: { type: 'text_end', contentIndex: 0, content: 'HELLO' } })
-  emit({ type: 'message_end', message: { role: 'assistant',
-    content: [{ type: 'text', text: 'HELLO' }], provider: 'deepseek', model: 'deepseek-v4-pro', usage } })
-  emit({ type: 'turn_end', message: { role: 'assistant', content: [{ type: 'text', text: 'HELLO' }], usage } })
-  emit({ type: 'agent_end', messages: [] })
-  emit({ type: 'agent_settled', aborted: false })
+  }
+  const startRun = async (text) => {
+    const token = ++runToken
+    running = true
+    logRpc('run start', text)
+    if (process.env.OCB_TEST_PI_UI_DIALOG) {
+      // 对话类（confirm，没带 timeout——不回应 agent 会一直等）与即发即忘类
+      // （setStatus）各来一条，考桥接的分流处理
+      emit({ type: 'extension_ui_request', id: 'ui-dialog-1', method: 'confirm', title: '允许这个命令吗？', message: '测试对话' })
+      emit({ type: 'extension_ui_request', id: 'ui-status-1', method: 'setStatus', statusKey: 'mcp' })
+    }
+    await emitUser(token, text)
+    if (dead(token)) { logRpc('run aborted'); return }
+    if (mode === 'fail') {
+      process.stderr.write('boom: provider unavailable\\n')
+      process.exit(2)
+    }
+    if (mode === 'crash') {
+      emit({ type: 'message_start', message: asst('a1', '', 'pending') })
+      await sleep(20)
+      emit({ type: 'message_update', usage, assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'PARTIAL' } })
+      await sleep(20)
+      process.stderr.write('crash: fake pi 半路死了\\n')
+      process.exit(1)
+    }
+    if (mode === 'dump-env') dumpEnv()
+    while (true) {
+      if (dead(token)) { logRpc('run aborted'); return }
+      if (mode === 'slow-but-alive') {
+        // 复现真实事故（2026-11-08 11:41）：一个运行 10 分钟里产出 16290 行、
+        // 12 步，一直在干活，被「按总时长算的超时」杀掉。修复后超时按活跃度
+        // 算：每 200ms 吐一片文本增量，总时长远超 timeoutMs 也不该被杀
+        for (const piece of slowPieces) {
+          if (dead(token)) { logRpc('run aborted'); return }
+          emit({ type: 'message_update', usage, assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: piece } })
+          await sleep(200)
+        }
+        emit({ type: 'message_end', message: { role: 'assistant',
+          content: [{ type: 'text', text: slowPieces.join('') }],
+          provider: 'stepfun-platform', model: 'step-5-preview', usage } })
+      } else {
+        await runSegments(token, scripts[mode] || scripts.normal)
+      }
+      if (dead(token)) { logRpc('run aborted'); return }
+      if (!followQueue.length) break
+      // 排队的 follow_up 依次跑；agent_settled 要等队列排空才发（它覆盖整条 drain）
+      const next = followQueue.shift()
+      logRpc('follow_up delivered', next)
+      await emitUser(token, next)
+    }
+    if (hangsAfter[mode]) { logRpc('hang: 不再回应，等桥接收尾'); return }
+    running = false
+    logRpc('settled')
+    emit({ type: 'agent_settled', aborted: false })
+  }
+  const onCommand = (cmd) => {
+    logRpc('cmd', cmd.type + ' ' + (cmd.message || ''))
+    if (cmd.type === 'prompt') {
+      if (cmd.streamingBehavior === 'steer') {
+        steerQueue.push(cmd.message)
+        respond(cmd, { success: true, data: { disposition: 'queued' } })
+        return
+      }
+      if (cmd.streamingBehavior === 'followUp') {
+        // 空闲时收到的 followUp：真实 pi 会让它静静躺在队列里永不交付（这就是
+        // 坑）。桥接只在「pi 说已经在处理」之后才发它，这里直接当新的一轮跑起来
+        respond(cmd, { success: true, data: { disposition: 'queued' } })
+        if (running) followQueue.push(cmd.message)
+        else {
+          logRpc('follow_up delivered', cmd.message)
+          startRun(cmd.message)
+        }
+        return
+      }
+      // 运行中发普通 prompt 会被直接拒绝（陷阱二）。OCB_TEST_PI_REJECT_FIRST
+      // 模拟竞态：pi 侧有在飞的工作，而桥接侧的 run 刚建起来
+      if (running || process.env.OCB_TEST_PI_REJECT_FIRST) {
+        respond(cmd, { success: false,
+          error: "Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message." })
+        return
+      }
+      respond(cmd, { success: true, data: { disposition: 'started' } })
+      startRun(cmd.message)
+      return
+    }
+    if (cmd.type === 'steer' || cmd.type === 'follow_up') {
+      // 空闲时也回 queued：真实 pi 就是这个行为，消息随后永不交付
+      if (!process.env.OCB_TEST_PI_STEER_DROP) {
+        if (cmd.type === 'steer') steerQueue.push(cmd.message)
+        else followQueue.push(cmd.message)
+      }
+      respond(cmd, { success: true, data: { disposition: 'queued' } })
+      return
+    }
+    if (cmd.type === 'abort') {
+      logRpc('abort: 先发 agent_settled(aborted) 再回执')
+      running = false
+      runToken++
+      emit({ type: 'agent_settled', aborted: true })
+      respond(cmd, { success: true })
+      return
+    }
+    respond(cmd, { success: false, error: 'unknown command: ' + cmd.type })
+  }
+  process.stdin.on('data', (d) => {
+    buf += d.toString()
+    let i
+    while ((i = buf.indexOf('\\n')) >= 0) {
+      const line = buf.slice(0, i).trim()
+      buf = buf.slice(i + 1)
+      if (!line) continue
+      let cmd
+      try { cmd = JSON.parse(line) } catch { continue }
+      onCommand(cmd)
+    }
+  })
+  process.stdin.on('end', () => process.exit(0))
+} else {
+  // ---------- 一次性路径：只剩 --version 与 parsePiJsonl 的离线取样用 ----------
+  emit({ type: 'session', id: 'fake', cwd: process.cwd() })
+  emit({ type: 'agent_start' })
+  if (mode === 'fail') { console.error('boom: provider unavailable'); process.exit(2) }
+  if (mode === 'dump-env') { dumpEnv(); process.exit(0) }
+  if (mode === 'slow-but-alive') {
+    let n = 0
+    const timer = setInterval(() => {
+      emit({ type: 'message_update', usage, assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: slowPieces[n] } })
+      n++
+      if (n >= slowPieces.length) {
+        clearInterval(timer)
+        emit({ type: 'message_end', message: { role: 'assistant',
+          content: [{ type: 'text', text: slowPieces.join('') }],
+          provider: 'stepfun-platform', model: 'step-5-preview', usage } })
+        emit({ type: 'agent_settled', aborted: false })
+        process.exit(0)
+      }
+    }, 200)
+  } else {
+    for (const seg of scripts[mode] || scripts.normal) {
+      for (const rec of seg) if (typeof rec !== 'number') emit(rec)
+    }
+    if (hangsAfter[mode]) {
+      setInterval(() => {}, 1000)
+      process.stdout.write('')
+    } else {
+      emit({ type: 'agent_settled', aborted: false })
+    }
+  }
 }
 `
 
@@ -205,9 +366,24 @@ function fakeSpawn(bin, args, opts = {}) {
   const mode = forceMode || (args.includes('--version') ? 'version' : currentMode)
   const child = spawn(process.execPath, ['-e', FAKE_PI], {
     ...opts,
-    env: { ...(opts.env || process.env), OCB_TEST_PI_MODE: mode },
+    env: {
+      ...(opts.env || process.env),
+      OCB_TEST_PI_MODE: mode,
+      // pi 的命令行参数不直接传给假进程，用环境变量带过去：RPC 分支要靠
+      // 它认 --mode rpc
+      OCB_TEST_PI_ARGS: JSON.stringify(args),
+    },
   })
-  calls.push({ bin, args, opts, child })
+  // 记录写进 stdin 的 RPC 命令：消息正文与 delivery 走这条路，不在 argv 里
+  const stdin = []
+  if (child.stdin) {
+    const origWrite = child.stdin.write.bind(child.stdin)
+    child.stdin.write = (chunk, ...rest) => {
+      stdin.push(String(chunk))
+      return origWrite(chunk, ...rest)
+    }
+  }
+  calls.push({ bin, args, opts, child, stdin })
   return child
 }
 
@@ -223,15 +399,19 @@ const cfg = {
   behavior: {},
 }
 
+const warns = []
+const backends = []
 function makeBackend(patch = {}) {
-  const { configDir, ...rest } = patch
-  return new PiBackend({
+  const { configDir, logger, ...rest } = patch
+  const b = new PiBackend({
     cfg: { ...cfg, ...rest },
     sessionDir,
     configDir,
     spawnImpl: fakeSpawn,
-    logger: { warn() {}, info() {} },
+    logger: logger || { warn(m) { warns.push(String(m)) }, info() {} },
   })
+  backends.push(b)
+  return b
 }
 
 /** 把合成事件喂给 RunState，返回最终状态 */
@@ -239,6 +419,50 @@ function collect(events, sid) {
   const st = new RunState(sid)
   for (const ev of events) st.apply(ev)
   return st
+}
+
+/** 读假 pi 的 RPC 行为流水（收到的命令、交付的 user 消息、settle） */
+function readRpcLog(p) {
+  try {
+    return readFileSync(p, 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => {
+        try {
+          return JSON.parse(l)
+        } catch {
+          return null
+        }
+      })
+      .filter(Boolean)
+  } catch {
+    return []
+  }
+}
+
+/** 某次 spawn 写进 stdin 的命令 */
+function stdinCmds(call) {
+  return call.stdin
+    .join('')
+    .split('\n')
+    .filter(Boolean)
+    .map((l) => {
+      try {
+        return JSON.parse(l)
+      } catch {
+        return null
+      }
+    })
+    .filter(Boolean)
+}
+
+async function waitFor(cond, timeoutMs = 5000) {
+  const t0 = Date.now()
+  while (!cond()) {
+    if (Date.now() - t0 > timeoutMs) return false
+    await new Promise((r) => setTimeout(r, 10))
+  }
+  return true
 }
 
 const main = async () => {
@@ -272,8 +496,8 @@ const main = async () => {
     ok(def.constructor.name === 'OpencodeClient', '没有 backend 段时仍是 OpencodeClient（现有配置零改动）')
     const a = capabilitiesFor(cfg)
     const b = capabilitiesFor({ backend: { type: 'opencode' } })
-    ok(a.oneShot && !a.streaming && !a.agents && !a.permissions, 'pi 能力表：一次性、无流式/agent/权限')
-    ok(a.steer === false, 'pi 能力表：不支持 steer（一次性子进程注不进去）')
+    ok(a.oneShot === false && a.steer === true, 'pi 能力表：长驻 RPC 进程，支持 steer 注入')
+    ok(!a.streaming && !a.agents && !a.permissions, 'pi 能力表：没有 agent 与交互式权限')
     ok(!b.oneShot && b.streaming && b.agents && b.permissions, 'opencode 能力表：全功能')
     ok(b.steer === true, 'opencode 能力表：支持 steer（serve 的 delivery=steer）')
     ok(capabilitiesFor({}).type === 'opencode', '空配置默认 opencode')
@@ -314,6 +538,7 @@ const main = async () => {
     const s = await b.createSession({ title: '卡片', directory: root })
     currentMode = 'normal'
     calls.length = 0
+    warns.length = 0
     const r = await b.prompt(s.id, '说 HELLO')
     ok(r.ok === true, 'prompt 正常结束')
 
@@ -343,15 +568,20 @@ const main = async () => {
     ok(text.includes('@我 并发送'), '群版帮助提示仍在')
     ok(text.includes('已完成'), '标题带状态词')
 
-    // 启动参数：会话续聊、cwd、-- 分隔、授权
+    // 启动参数：RPC 长驻模式、会话续聊、cwd、模型、授权。消息正文不在 argv
+    // 里——RPC 模式拒绝命令行 prompt，消息走 stdin 的 prompt 命令
     const args = calls[0].args
-    ok(args.includes('-p') && args.includes('--mode') && args.includes('json'), '带 -p --mode json')
+    ok(args[0] === '--mode' && args[1] === 'rpc', 'RPC 长驻模式，不再是一次性 -p')
+    ok(!args.includes('-p') && !args.includes('--'), '不带 -p 与 -- 分隔的正文')
     ok(args.includes('--session-id') && args[args.indexOf('--session-id') + 1] === s.id, '带 --session-id 续聊')
     ok(args.includes('--session-dir'), '带 --session-dir')
-    ok(args.includes('--'), '用 -- 分隔 prompt，避免以 - 开头的消息被当选项')
-    ok(args.at(-1) === '说 HELLO', 'prompt 原样传到最后一个参数')
+    ok(args.includes('--model') && args[args.indexOf('--model') + 1] === 'deepseek/deepseek-v4-pro', '带 --model')
     ok(args.includes('--approve'), '飞书里点不了授权按钮，用 --approve')
     ok(calls[0].opts.cwd === root, 'cwd 是话题绑定的工作目录')
+    ok(calls[0].opts.stdio?.[0] === 'pipe', 'stdin 可写：RPC 命令从这儿进')
+    const cmds = stdinCmds(calls[0])
+    ok(cmds.some((x) => x.type === 'prompt' && x.message === '说 HELLO'), '消息正文走 stdin 的 prompt 命令')
+    ok(cmds.every((x) => typeof x.id === 'string' && x.id.length > 0), '每条命令都带 id（回执按 id 对应）')
   }
 
   section('运行中流式：文本、工具、步数、模型边收边发')
@@ -360,7 +590,7 @@ const main = async () => {
     // 就是一张静态图。用户 14:18 发的追问，Lil_P 实际从 14:18:19 干活到
     // 14:25:52，卡片 8 分 24 秒没有任何变化，用户看不到一个字
     const b = makeBackend({
-      backend: { type: 'pi', pi: { bin: 'pi', model: '', timeoutMs: 8000, extraArgs: [] } },
+      backend: { type: 'pi', pi: { bin: 'pi', model: '', timeoutMs: 8000, extraArgs: [], cliSessionRoot } },
     })
     const s = await b.createSession({ title: '流式', directory: root })
     currentMode = 'stream'
@@ -438,16 +668,17 @@ const main = async () => {
     let events = []
     b.subscribe((ev) => events.push(ev), () => {})
     await b.prompt(s.id, '会失败')
-    ok(collect(events, s.id).status === 'failed', '非零退出 → RunState failed')
+    ok(collect(events, s.id).status === 'failed', '进程崩溃 → RunState failed')
     ok(events.at(-1).type === 'session.execution.failed', '发出 execution.failed')
     ok(String(events.at(-1).data.error.message).includes('boom'), '错误信息带上 stderr')
+    ok(String(events.at(-1).data.error.message).includes('退出码 2'), '错误信息带退出码')
 
     currentMode = 'hang'
     events = []
     b.subscribe((ev) => events.push(ev), () => {})
     const pending = b.prompt(s.id, '挂着')
-    await new Promise((r) => setTimeout(r, 60))
-    ok(await b.interrupt(s.id), 'interrupt 找得到在跑的子进程')
+    await waitFor(() => b.procs.get(s.id)?.busy === true)
+    ok(await b.interrupt(s.id), 'interrupt 找得到在跑的任务')
     await pending
     ok(collect(events, s.id).status === 'aborted', '主动中止 → aborted，不是 failed')
     ok(events.at(-1).type === 'session.execution.interrupted', '发出 execution.interrupted')
@@ -464,7 +695,7 @@ const main = async () => {
     ok(providerErrorOf({ message: { role: 'assistant', stopReason: 'error', errorMessage: 'x' } }) === 'x', '认出 stopReason=error 的助手消息')
     ok(providerErrorOf({ message: { role: 'assistant', stopReason: 'stop' } }) === null, '正常结束不算报错')
     ok(providerErrorOf({ type: 'message_update' }) === null, '无关事件返回 null')
-    const bFast = makeBackend({ backend: { type: 'pi', pi: { bin: 'pi', model: '', timeoutMs: 5000, extraArgs: [] } } })
+    const bFast = makeBackend({ backend: { type: 'pi', pi: { bin: 'pi', model: '', timeoutMs: 5000, extraArgs: [], cliSessionRoot } } })
     const sFast = await bFast.createSession({ title: '限流', directory: root })
     currentMode = 'provider-error'
     events = []
@@ -482,7 +713,7 @@ const main = async () => {
     // 复现真实事故：一个运行 10 分钟产出 16290 行、12 步，被按总时长算的
     // 超时杀掉——她没卡住，只是活没干完
     const bSlow = makeBackend({
-      backend: { type: 'pi', pi: { bin: 'pi', model: '', timeoutMs: 1200, extraArgs: [] } },
+      backend: { type: 'pi', pi: { bin: 'pi', model: '', timeoutMs: 1200, extraArgs: [], cliSessionRoot } },
     })
     const sSlow = await bSlow.createSession({ title: '慢但活着', directory: root })
     currentMode = 'slow-but-alive'
@@ -507,7 +738,7 @@ const main = async () => {
     // grep -rl 实测要跑 6 分钟以上（是慢）。两类静默共用一个阈值，慢命令
     // 和挂住的运行分不开——现在工具在飞按 toolTimeoutMs 单独算预算
     const bTool = makeBackend({
-      backend: { type: 'pi', pi: { bin: 'pi', model: '', timeoutMs: 600, toolTimeoutMs: 2500, settleQuietMs: 0, extraArgs: [] } },
+      backend: { type: 'pi', pi: { bin: 'pi', model: '', timeoutMs: 600, toolTimeoutMs: 2500, settleQuietMs: 0, extraArgs: [], cliSessionRoot } },
     })
     const sTool = await bTool.createSession({ title: '工具挂住', directory: root })
     currentMode = 'tool-silent'
@@ -532,7 +763,7 @@ const main = async () => {
     // 工具正常结束之后模型挂住：预算切回模型静默档，按 timeoutMs 杀，
     // 不能还在工具档干等 toolTimeoutMs
     const bBack = makeBackend({
-      backend: { type: 'pi', pi: { bin: 'pi', model: '', timeoutMs: 600, toolTimeoutMs: 8000, settleQuietMs: 0, extraArgs: [] } },
+      backend: { type: 'pi', pi: { bin: 'pi', model: '', timeoutMs: 600, toolTimeoutMs: 8000, settleQuietMs: 0, extraArgs: [], cliSessionRoot } },
     })
     const sBack = await bBack.createSession({ title: '工具结束又挂住', directory: root })
     currentMode = 'tool-then-idle'
@@ -546,57 +777,36 @@ const main = async () => {
     ok(String(events.at(-1).data.error.message).includes('没有任何输出'), '失败文案是模型静默档')
   }
 
-  section('孤儿进程不再拖住收尾')
+  section('进程崩溃：在飞的一轮按失败收尾，重启接着聊')
   {
-    // 评审实测复现：pi 的 bash 工具留下长驻子进程，持有继承来的 stdout/stderr。
-    // 修复前收尾听 close，要等孤儿退出，中断后 29 秒才发 interrupted。
-    const b = makeBackend()
-    const s = await b.createSession({ title: '孤儿进程', directory: root })
-    const marker = join(root, 'orphan-marker-a')
-    process.env.OCB_TEST_ORPHAN_MARKER = marker
-
-    currentMode = 'orphan'
+    // 老实现里「孤儿进程拖着 stdout 让 close 不来」这件事在 RPC 下不成立：
+    // 完成信号是 agent_settled，不是进程退出。真正要覆盖的是另一种故障——
+    // pi 自己死在一轮中间（段错误、被 OOM 杀掉、扩展把进程搞崩）。那时
+    // 注册表要清干净，下次 prompt 能起来一个新进程，同 session 参数历史还在
+    const b = makeBackend({
+      backend: { type: 'pi', pi: { bin: 'pi', model: '', timeoutMs: 5000, settleQuietMs: 0, extraArgs: [], cliSessionRoot } },
+    })
+    const s = await b.createSession({ title: '崩溃', directory: root })
+    currentMode = 'crash'
     let events = []
     b.subscribe((ev) => events.push(ev), () => {})
-    const t0 = Date.now()
-    const pending = b.prompt(s.id, '挂着')
-    await new Promise((r) => setTimeout(r, 150))
-    ok(await b.interrupt(s.id), 'interrupt 找得到在跑的子进程')
-    await pending
-    const elapsed = Date.now() - t0
-    ok(elapsed < 1500, `有孤儿进程时中断也秒级收尾（实际 ${elapsed}ms，修复前要等孤儿退出）`)
-    ok(collect(events, s.id).status === 'aborted', '主动中止 → aborted')
-    ok(events.at(-1).type === 'session.execution.interrupted', '发出 execution.interrupted')
-    // 进程组一起杀掉：孤儿进程到点也不会写标记文件
-    await new Promise((r) => setTimeout(r, 3000))
-    ok(!existsSync(marker), 'kill 的是整个进程组，孤儿进程没有活下来')
-    delete process.env.OCB_TEST_ORPHAN_MARKER
+    const crashed = await b.prompt(s.id, '半路死掉')
+    ok(crashed.ok === false, '进程崩溃 → 运行失败')
+    ok(collect(events, s.id).status === 'failed', '崩溃 → RunState failed')
+    ok(String(events.at(-1).data.error.message).includes('crash'), '错误信息带 stderr 原文')
+    ok(!b.procs.has(s.id), '注册表清理：崩溃的进程不留给下一条消息复用')
 
-    // 超时路径同样 kill 进程组、同样秒级收尾（cfg.timeoutMs = 800）
-    const marker2 = join(root, 'orphan-marker-b')
-    process.env.OCB_TEST_ORPHAN_MARKER = marker2
+    // 重启之后同 session 参数接着聊
+    const before = calls.length
+    currentMode = 'normal'
     events = []
     b.subscribe((ev) => events.push(ev), () => {})
-    const t1 = Date.now()
-    const timed = await b.prompt(s.id, '超时')
-    ok(timed.ok === false, '超时返回失败')
-    ok(Date.now() - t1 < 2500, `有孤儿进程时超时也秒级收尾（实际 ${Date.now() - t1}ms）`)
-    ok(collect(events, s.id).status === 'failed', '超时 → RunState failed')
-    await new Promise((r) => setTimeout(r, 2500))
-    ok(!existsSync(marker2), '超时也 kill 整个进程组')
-    delete process.env.OCB_TEST_ORPHAN_MARKER
-
-    // _runOnce（health 检查走的同一条路）也不再被孤儿进程拖住：
-    // 孤儿比 5 秒超时活得久，修复前 health 要等孤儿退出才返回
-    forceMode = 'orphan'
-    process.env.OCB_TEST_ORPHAN_LIFE_MS = '10000'
-    const b2 = makeBackend()
-    const t2 = Date.now()
-    const h = await b2.health()
-    ok(h.ok === true, 'health 仍然返回 ok')
-    ok(Date.now() - t2 < 8000, `health 不再被孤儿进程拖过 5 秒超时（实际 ${Date.now() - t2}ms）`)
-    forceMode = null
-    delete process.env.OCB_TEST_ORPHAN_LIFE_MS
+    const again = await b.prompt(s.id, '崩溃后重启')
+    ok(again.ok === true, '重启之后能接着跑')
+    ok(calls.length === before + 1, '崩溃之后重起了进程')
+    const args = calls.at(-1).args
+    ok(args.includes('--session-id') && args[args.indexOf('--session-id') + 1] === s.id, '重启用同样的 session 参数（历史延续）')
+    ok(args.includes('--session-dir'), '重启用同样的 --session-dir')
   }
 
   section('子进程注入本实例飞书身份')
@@ -613,7 +823,7 @@ const main = async () => {
 
     const configDir = join(root, 'instance-config')
     const b = makeBackend({
-      backend: { type: 'pi', pi: { bin: 'pi', model: '', timeoutMs: 5000, settleQuietMs: 0, extraArgs: [] } },
+      backend: { type: 'pi', pi: { bin: 'pi', model: '', timeoutMs: 5000, settleQuietMs: 0, extraArgs: [], cliSessionRoot } },
       feishu: { appId: 'cli_testenv', appSecret: 'sec_testenv', domain: 'feishu' },
       // GitHub 身份一起进同一份配置：pi 侧的接线（childEnv → spawn env → 子进程
       // 环境）要有覆盖，不能只有 githubEnv 的单测
@@ -631,7 +841,7 @@ const main = async () => {
     currentMode = 'dump-env'
     const r = await b.prompt(s.id, '把环境变量落盘')
     delete process.env.OCB_TEST_ENV_DUMP
-    ok(r.ok === true, 'dump-env 正常退出')
+    ok(r.ok === true, 'dump-env 正常运行完（RPC 模式下也走同一条注入链）')
     // 读不到文件时给一条断言失败，别让裸栈把整份测试冲掉
     const readJson = (p) => {
       try {
@@ -659,14 +869,49 @@ const main = async () => {
     ok(env.GIT_CONFIG_COUNT === '2' && env.GIT_CONFIG_KEY_0 === 'credential.https://github.com.helper' && env.GIT_CONFIG_VALUE_0 === '', 'git 配置两段式：第一条空值只清 github.com 上累积的助手列表')
     ok(String(env.GIT_CONFIG_VALUE_1).includes('github-app-credential.mjs'), '第二条装真助手，指向凭证助手脚本')
     ok(env.OCB_CONFIG_DIR === configDir, '凭证助手靠 OCB_CONFIG_DIR 找到实例配置')
+
+    // 启动参数：RPC 长驻、会话续聊、cwd
+    const args = calls.at(-1).args
+    ok(args[0] === '--mode' && args[1] === 'rpc', 'RPC 长驻模式')
+    ok(args.includes('--session-id') && args[args.indexOf('--session-id') + 1] === s.id, '带 --session-id 续聊')
+    ok(calls.at(-1).opts.cwd === root, 'cwd 是话题绑定的工作目录')
   }
 
-  section('最终消息后静默：按已完成收尾，不等进程退出')
+  section('agent_settled 即收尾：进程长驻不杀')
+  {
+    // RPC 的正常完成路径。老实现等进程退出才结算，quietSettle 是唯一的提前
+    // 收尾手段；RPC 下 agent_settled 一到就收尾，而且进程是长驻资产，跑完
+    // 要留着给下一条消息复用
+    const b = makeBackend({
+      backend: { type: 'pi', pi: { bin: 'pi', model: '', timeoutMs: 5000, settleQuietMs: 0, extraArgs: [], cliSessionRoot } },
+    })
+    const s = await b.createSession({ title: 'settle 即收尾', directory: root })
+    currentMode = 'normal'
+    let events = []
+    b.subscribe((ev) => events.push(ev), () => {})
+    const t0 = Date.now()
+    const r = await b.prompt(s.id, '答完就 settle')
+    ok(r.ok === true, 'settle 到达即收尾')
+    ok(r.quietSettled === undefined, '不是静默兜底（那条只兜 agent 挂死）')
+    ok(Date.now() - t0 < 2000, `不等进程退出（实际 ${Date.now() - t0}ms）`)
+    ok(events.at(-1).type === 'session.execution.succeeded', '最后一个事件是 succeeded')
+    const proc = b.procs.get(s.id)
+    ok(proc !== undefined, '进程还在注册表里：长驻复用，不杀')
+    ok(proc.busy === false && proc.run === null, 'run 态清理干净，进程空闲待用')
+    const exited = await Promise.race([
+      new Promise((res) => proc.child.once('exit', () => res(true))),
+      new Promise((r) => setTimeout(() => r(false), 500)),
+    ])
+    ok(exited === false, '收尾没有杀进程')
+  }
+
+  section('最终消息后静默：兜底收尾，不等进程退出')
   {
     // 真实故障：pi 产出最终回答后不退出（agent_settled 永远不来），卡片在
-    // 「执行中」停了 6 分 58 秒。修复前桥接只能等进程退出，用户干看着
+    // 「执行中」停了 6 分 58 秒。修复前桥接只能等进程退出，用户干看着。
+    // RPC 下这条只兜 agent 挂死：最终回答有了、没有在飞的工作，却再无下文
     const bQuiet = makeBackend({
-      backend: { type: 'pi', pi: { bin: 'pi', model: '', timeoutMs: 30000, settleQuietMs: 400, extraArgs: [] } },
+      backend: { type: 'pi', pi: { bin: 'pi', model: '', timeoutMs: 30000, settleQuietMs: 400, extraArgs: [], cliSessionRoot } },
     })
     const sQ = await bQuiet.createSession({ title: '静默', directory: root })
     currentMode = 'quiet-final'
@@ -700,7 +945,7 @@ const main = async () => {
     // settleQuietMs=0 关闭静默收尾：恢复「只等进程退出」的老行为。没有最终
     // 消息的挂死仍然走到超时失败，不会被误判成完成
     const bOff = makeBackend({
-      backend: { type: 'pi', pi: { bin: 'pi', model: '', timeoutMs: 800, settleQuietMs: 0, extraArgs: [] } },
+      backend: { type: 'pi', pi: { bin: 'pi', model: '', timeoutMs: 800, settleQuietMs: 0, extraArgs: [], cliSessionRoot } },
     })
     const sOff = await bOff.createSession({ title: '关闭静默', directory: root })
     currentMode = 'quiet-final'
@@ -713,7 +958,7 @@ const main = async () => {
 
     // 最终轮次没有正文时不收尾：那可能只是还没产出回答的慢运行，切掉会丢答案
     const bEmpty = makeBackend({
-      backend: { type: 'pi', pi: { bin: 'pi', model: '', timeoutMs: 800, settleQuietMs: 400, extraArgs: [] } },
+      backend: { type: 'pi', pi: { bin: 'pi', model: '', timeoutMs: 800, settleQuietMs: 400, extraArgs: [], cliSessionRoot } },
     })
     const sEmpty = await bEmpty.createSession({ title: '空正文', directory: root })
     currentMode = 'quiet-empty'
@@ -724,15 +969,247 @@ const main = async () => {
     ok(collect(events, sEmpty.id).status === 'failed', '仍走超时失败，不会把慢运行误判成完成')
   }
 
+  section('steer：运行中注入，空闲抛错')
+  {
+    const b = makeBackend({
+      backend: { type: 'pi', pi: { bin: 'pi', model: '', timeoutMs: 8000, extraArgs: [], cliSessionRoot } },
+    })
+    const s = await b.createSession({ title: '引导', directory: root })
+    const log = join(root, 'rpc-log-steer.jsonl')
+    rmSync(log, { force: true })
+    process.env.OCB_TEST_RPC_LOG = log
+    currentMode = 'stream'
+    warns.length = 0
+    calls.length = 0
+    const events = []
+    b.subscribe((ev) => events.push(ev), () => {})
+    const pending = b.prompt(s.id, '读一下项目')
+    ok(await waitFor(() => b.procs.get(s.id)?.busy === true), '等 run 真的在飞')
+
+    const t0 = Date.now()
+    const r = await b.prompt(s.id, 'STEER：别再执行命令，直接回答', { delivery: 'steer' })
+    ok(r.ok === true, 'steer 命令被接受')
+    ok(Date.now() - t0 < 500, `steer 只等命令回执，不等交付（实际 ${Date.now() - t0}ms）`)
+    ok(b.procs.get(s.id).pendingSteers.size === 1, 'steer 文本记进交付核对表')
+
+    const res = await pending
+    ok(res.ok === true, '被 steer 的那一轮照样跑完')
+    const recs = readRpcLog(log)
+    ok(recs.some((x) => x.kind === 'cmd' && x.text.startsWith('steer')), 'steer 命令发给了 pi')
+    ok(recs.some((x) => x.kind === 'steer delivered' && x.text.includes('STEER')), 'steer 文本被当 user 消息交付')
+    ok(b.procs.get(s.id).pendingSteers.size === 0, '交付后核对表清空')
+    ok(warns.length === 0, '交付成功，没有竞态残留告警', warns.join(' | '))
+    ok(events.filter((e) => e.type === 'session.execution.started').length === 1, 'steer 没有新起一轮')
+    ok(calls.filter((c) => c.args.includes('--mode')).length === 1, 'steer 没有新起进程')
+
+    // steer 未被交付（竞态残留）：命令回执说 queued，这一轮却跑完了也没把它
+    // 当 user 消息交出去。收尾时要记 warn，排障时看得出文本。
+    // 另起一个后端：假 pi 的 steer-drop 行为由启动时的环境变量决定，长驻进程
+    // 跑起来之后再改环境变量对它无效
+    process.env.OCB_TEST_PI_STEER_DROP = '1'
+    const bDrop = makeBackend({
+      backend: { type: 'pi', pi: { bin: 'pi', model: '', timeoutMs: 8000, extraArgs: [], cliSessionRoot } },
+    })
+    const sDrop = await bDrop.createSession({ title: 'steer 落空', directory: root })
+    warns.length = 0
+    const pendingDrop = bDrop.prompt(sDrop.id, '读一下项目')
+    ok(await waitFor(() => bDrop.procs.get(sDrop.id)?.busy === true), '另一条 run 在飞')
+    await bDrop.prompt(sDrop.id, 'DROP：这条不会被交付', { delivery: 'steer' })
+    await pendingDrop
+    ok(
+      warns.some((w) => w.includes('未被交付') && w.includes('DROP')),
+      '未交付的 steer 在收尾时记 warn',
+      warns.join(' | '),
+    )
+    delete process.env.OCB_TEST_PI_STEER_DROP
+
+    // 空闲 steer 抛错：调用方（handler）会退回排队，消息不丢
+    let threw = ''
+    try {
+      await b.prompt(s.id, '空闲也发一条', { delivery: 'steer' })
+    } catch (err) {
+      threw = err.message
+    }
+    ok(/没有正在执行/.test(threw), '空闲时 steer 抛错，供调用方回退排队', threw)
+    delete process.env.OCB_TEST_RPC_LOG
+  }
+
+  section('忙时 prompt 自动走 followUp，等完整条 drain')
+  {
+    // 竞态：handler 的 busy 检查与 pi 的进程状态之间有窗口，普通 prompt 会被
+    // 直接拒绝（陷阱二）。桥接按 followUp 变体重试一次，然后等这条消息交付、
+    // 等 agent_settled——settle 覆盖整条 drain，排队的消息全部跑完才来
+    const b = makeBackend({
+      backend: { type: 'pi', pi: { bin: 'pi', model: '', timeoutMs: 8000, extraArgs: [], cliSessionRoot } },
+    })
+    const s = await b.createSession({ title: '排队', directory: root })
+    const log = join(root, 'rpc-log-followup.jsonl')
+    rmSync(log, { force: true })
+    process.env.OCB_TEST_RPC_LOG = log
+    currentMode = 'stream'
+    warns.length = 0
+    calls.length = 0
+    let events = []
+    b.subscribe((ev) => events.push(ev), () => {})
+    const first = b.prompt(s.id, '第一条')
+    ok(await waitFor(() => b.procs.get(s.id)?.busy === true), '等 run 真的在飞')
+    const second = b.prompt(s.id, 'FOLLOWUP：第二条')
+    const [r1, r2] = await Promise.all([first, second])
+    ok(r1.ok === true, '第一条正常跑完')
+    ok(r2?.ok === true, '第二条跟着同一条 drain 跑完', JSON.stringify(r2))
+    const recs = readRpcLog(log)
+    ok(recs.some((x) => x.kind === 'follow_up delivered' && x.text.includes('FOLLOWUP')), '排队的消息被当 user 消息交付')
+    ok(events.filter((e) => e.type === 'session.execution.started').length === 1, '第二条没有重新置位卡片')
+    ok(calls.filter((c) => c.args.includes('--mode')).length === 1, '第二条没有新起进程')
+    ok(warns.length === 0, '没有异常告警', warns.join(' | '))
+    delete process.env.OCB_TEST_RPC_LOG
+
+    // 陷阱二的竞态收口：普通 prompt 被 pi 拒绝，按 followUp 重试并跑到 settle
+    const log2 = join(root, 'rpc-log-race.jsonl')
+    rmSync(log2, { force: true })
+    process.env.OCB_TEST_RPC_LOG = log2
+    process.env.OCB_TEST_PI_REJECT_FIRST = '1'
+    const b2 = makeBackend({
+      backend: { type: 'pi', pi: { bin: 'pi', model: '', timeoutMs: 8000, extraArgs: [], cliSessionRoot } },
+    })
+    const s2 = await b2.createSession({ title: '竞态', directory: root })
+    currentMode = 'normal'
+    events = []
+    b2.subscribe((ev) => events.push(ev), () => {})
+    const race = await b2.prompt(s2.id, '会被拒一次')
+    ok(race.ok === true, '被拒后按 followUp 重试并跑完', JSON.stringify(race))
+    const recs2 = readRpcLog(log2)
+    ok(
+      recs2.filter((x) => x.kind === 'cmd' && x.text.startsWith('prompt')).length === 2,
+      '重试确实发了第二条命令（普通 prompt 被拒 → followUp）',
+    )
+    ok(recs2.some((x) => x.kind === 'follow_up delivered'), '重试的那条被当 user 消息交付')
+    ok(collect(events, s2.id).status === 'done', '竞态重试后终态是 done')
+    delete process.env.OCB_TEST_RPC_LOG
+    delete process.env.OCB_TEST_PI_REJECT_FIRST
+  }
+
+  section('扩展 UI 请求：对话类回取消，即发即忘类忽略')
+  {
+    // pi 的 docs/rpc-extension-ui.md：select / confirm / input / editor 发出来
+    // 会阻塞到客户端回一条 extension_ui_response（没带 timeout 的一直等）；
+    // notify / setStatus / setWidget 即发即忘。桥接在飞书里弹不出这些对话框，
+    // 统一按「取消」回应，别让 agent 干等一个不会有的人机交互
+    const b = makeBackend({
+      backend: { type: 'pi', pi: { bin: 'pi', model: '', timeoutMs: 8000, extraArgs: [], cliSessionRoot } },
+    })
+    const s = await b.createSession({ title: '扩展 UI', directory: root })
+    process.env.OCB_TEST_PI_UI_DIALOG = '1'
+    currentMode = 'normal'
+    calls.length = 0
+    const events = []
+    b.subscribe((ev) => events.push(ev), () => {})
+    const r = await b.prompt(s.id, '跑一轮')
+    delete process.env.OCB_TEST_PI_UI_DIALOG
+    ok(r.ok === true, '对话类请求没有把 agent 堵死，一轮照常跑完', JSON.stringify(r))
+    const writes = calls.flatMap((c) => stdinCmds(c))
+    ok(
+      writes.some((x) => x.type === 'extension_ui_response' && x.id === 'ui-dialog-1' && x.cancelled === true),
+      '对话类请求（confirm）收到取消回应，id 回显请求的 id',
+      JSON.stringify(writes.filter((x) => x.type === 'extension_ui_response')),
+    )
+    ok(!writes.some((x) => x.type === 'extension_ui_response' && x.id === 'ui-status-1'), '即发即忘类请求（setStatus）没有白回回应')
+    ok(collect(events, s.id).status === 'done', '终态照常是 done')
+  }
+
+  section('abort 之后进程可复用')
+  {
+    // abort 不等同于杀进程：会话回到空闲，进程是好的，下一条消息接着用它。
+    // 老实现一发中止就杀进程，每条消息都要重新起一次
+    const b = makeBackend({
+      backend: { type: 'pi', pi: { bin: 'pi', model: '', timeoutMs: 8000, extraArgs: [], cliSessionRoot } },
+    })
+    const s = await b.createSession({ title: '中止后重用', directory: root })
+    const log = join(root, 'rpc-log-reuse.jsonl')
+    rmSync(log, { force: true })
+    process.env.OCB_TEST_RPC_LOG = log
+    currentMode = 'normal'
+    calls.length = 0
+    const events = []
+    b.subscribe((ev) => events.push(ev), () => {})
+    const first = b.prompt(s.id, '第一次')
+    ok(await waitFor(() => b.procs.get(s.id)?.busy === true), '等 run 在飞')
+    ok(await b.interrupt(s.id), 'interrupt 发 abort')
+    const r1 = await first
+    ok(r1.aborted === true, 'abort 之后按中止收尾')
+    ok(collect(events, s.id).status === 'aborted', 'RunState 收到 interrupted')
+    ok(b.procs.has(s.id), '进程善后：没被杀，留着复用')
+    ok(b.procs.get(s.id).busy === false && b.procs.get(s.id).run === null, 'run 态清理干净')
+    const child = b.procs.get(s.id).child
+    const recs = readRpcLog(log)
+    ok(recs.some((x) => x.kind === 'cmd' && x.text.startsWith('abort')), 'abort 命令发给了 pi')
+
+    const r2 = await b.prompt(s.id, '第二次')
+    ok(r2.ok === true, '同一个进程上接着跑')
+    ok(b.procs.get(s.id)?.child === child, '没有新起进程')
+    ok(calls.filter((c) => c.args.includes('--mode')).length === 1, '全程只起过一个进程')
+    ok(
+      readRpcLog(log).filter((x) => x.kind === 'cmd' && x.text.startsWith('prompt')).length === 2,
+      '第二条消息也走了 prompt 命令',
+    )
+    delete process.env.OCB_TEST_RPC_LOG
+  }
+
+  section('空闲回收')
+  {
+    const b = makeBackend({
+      backend: { type: 'pi', pi: { bin: 'pi', model: '', timeoutMs: 5000, idleMs: 200, extraArgs: [], cliSessionRoot } },
+    })
+    ok(b.idleMs === 200, 'idleMs 从 backend.pi.idleMs 读')
+    const s = await b.createSession({ title: '回收', directory: root })
+    currentMode = 'normal'
+    const r = await b.prompt(s.id, '跑完就闲着')
+    ok(r.ok === true, '第一轮正常结束')
+    ok(b.procs.has(s.id), '跑完进程还在（长驻复用）')
+    const child = b.procs.get(s.id).child
+    const exited = new Promise((res) => child.once('exit', () => res(true)))
+    ok(await waitFor(() => !b.procs.has(s.id), 4000), '空闲超过 idleMs 后进程被回收')
+    ok(
+      (await Promise.race([exited, new Promise((r2) => setTimeout(() => r2(false), 3000))])) === true,
+      '回收真的杀掉了进程',
+    )
+
+    // 重启用同样的 session 参数：实测历史还在，回收不丢会话
+    const before = calls.length
+    const r2 = await b.prompt(s.id, '回收后重启')
+    ok(r2.ok === true, '回收之后重启还能跑')
+    ok(calls.length === before + 1, '重起了新进程')
+    const args = calls.at(-1).args
+    ok(args.includes('--session-id') && args[args.indexOf('--session-id') + 1] === s.id, '重启用同样的 session 参数（历史延续）')
+  }
+
   section('卡片按后端能力降级')
   {
     const pi = helpCard(capabilitiesFor(cfg))
     const oc = helpCard(capabilitiesFor({ backend: { type: 'opencode' } }))
     ok(JSON.stringify(pi).includes('pi 桥接'), 'pi 的帮助卡片标题带后端名')
-    ok(JSON.stringify(pi).includes('一次性执行'), 'pi 的帮助卡片说明一次性执行')
+    ok(!JSON.stringify(pi).includes('一次性执行'), 'pi 的帮助卡片不再宣称一次性执行（长驻进程边跑边刷新）')
     ok(!JSON.stringify(pi).includes('/agent'), 'pi 的帮助卡片不列 /agent')
     ok(JSON.stringify(oc).includes('/agent'), 'opencode 的帮助卡片保留 /agent')
     ok(JSON.stringify(statusCard({ server: { ok: true }, backendLabel: 'pi' })).includes('**pi**'), '状态卡片显示后端名而不是 opencode')
+    // 排队卡片的按钮按 caps.steer 给：pi 现在也支持运行中注入，引导按钮要有
+    const btnLabels = (card) => {
+      const out = []
+      const walk = (o) => {
+        if (Array.isArray(o)) o.forEach(walk)
+        else if (o && typeof o === 'object') {
+          if (o.tag === 'button') out.push(o.text?.content || '')
+          Object.values(o).forEach(walk)
+        }
+      }
+      walk(card)
+      return out
+    }
+    const withSteer = queuedCard({ preview: '插一句', from: '小P', qid: 'q1', position: 1, k: 'chat-x', rt: 'r1', steer: true })
+    ok(btnLabels(withSteer).some((l) => l.includes('引导')), 'caps.steer 为真时排队卡片有「引导」按钮')
+    const noSteer = queuedCard({ preview: '插一句', from: '小P', qid: 'q2', position: 1, k: 'chat-x', rt: 'r1', steer: false })
+    ok(!btnLabels(noSteer).some((l) => l.includes('引导')), 'caps.steer 为假时排队卡片没有「引导」按钮')
+    ok(btnLabels(noSteer).length === 1 && btnLabels(noSteer)[0].includes('取消'), '没有引导按钮时只剩取消')
   }
 
   section('默认配置与多实例 label')
@@ -741,11 +1218,24 @@ const main = async () => {
     ok(c.backend?.type === 'opencode' || c.backend?.type === 'pi', 'loadConfig 补出了 backend 段（老配置不会 undefined）')
     ok(c.backend?.pi?.timeoutMs > 0, 'pi 默认超时存在')
     ok(c.backend?.pi?.toolTimeoutMs > 0, 'pi 默认工具档超时存在')
+    ok(c.backend?.pi?.idleMs === 600_000, 'pi 默认空闲回收阈值 10 分钟')
     const { execFileSync } = await import('node:child_process')
     const script = `. '${process.cwd()}/scripts/lib/config-dir.sh'; ocb_label app; echo; OCB_INSTANCE=pi; ocb_label app; echo; ocb_label serve`
     const out = execFileSync('bash', ['-c', script], { encoding: 'utf8' }).trim().split('\n')
     ok(out[0] === 'ai.qiguang.ocbridge.app', '缺省实例 label 不变（老部署零改动）')
     ok(out[1] === 'ai.qiguang.ocbridge.pi.app' && out[2] === 'ai.qiguang.ocbridge.pi.serve', 'OCB_INSTANCE 隔开两个实例')
+  }
+
+  // RPC 进程长驻：不杀的话测试进程被 stdout 管道拖着退不出去
+  for (const b of backends) {
+    for (const proc of b.procs.values()) {
+      try {
+        proc.child.kill('SIGKILL')
+      } catch {
+        /* 进程已经没了 */
+      }
+    }
+    b.procs.clear()
   }
 
   rmSync(root, { recursive: true, force: true })

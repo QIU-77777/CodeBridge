@@ -129,7 +129,7 @@ opencode 后端的代理跑在常驻 serve 里，桥接没法向已启动的进�
 
 ## 5. 一次性模式下的行为差异
 
-2026-11-07 起 pi 后端改为**边收边转发**（见 4.2 与第 10 节事故复盘），与 opencode 后端的差异只剩后端能力本身：
+2026-11-07 起 pi 后端改为**边收边转发**（见 4.2 与第 10 节事故复盘），2026-11-13 起改为**长驻 RPC 进程**（第 13 节），与 opencode 后端的差异只剩后端能力本身（本节标题里的「一次性」已过期）：
 
 | 能力 | opencode 后端 | pi 后端 |
 |---|---|---|
@@ -139,14 +139,14 @@ opencode 后端的代理跑在常驻 serve 里，桥接没法向已启动的进�
 | `in / out / 金额` | 有 | 有（每条助手消息的 `usage` 都发 `session.usage.updated`） |
 | 模型名 | 有 | 有，且**不等跑完**：第一条助手消息带着 `model`/`provider`，`backend.meta` 立即补前缀 |
 | 步数 | 有 | 有（`turn_start` / `turn_end` → `session.step.started` / `ended`，一轮一记） |
-| 中止按钮 | 调 `/interrupt` | kill 子进程，同样有效 |
+| 中止按钮 | 调 `/interrupt` | 发 RPC `abort` 命令（等到会话空闲才返回），进程留着复用；stdin 写不进去才 kill 兜底 |
 | 工具调用轨迹 | 可开 `showTools` | 可开 `showTools`（`toolcall_*` / `tool_execution_*` 全套翻译，见 4.2） |
 | 思考过程 | 可开 `showReasoning` | 可开 `showReasoning`（`thinking_delta` → `session.reasoning.delta`） |
 | 交互式权限卡片 | 有 | 无；pi 用 `--approve` 或对工具做限制，不给飞书按钮 |
-| 引导（steer，忙时注入当前回合） | 有（serve 的 `delivery=steer`，下一个步骤边界生效，不中止） | 无；每条消息起一次性子进程，没有向运行中回合注入消息的通道。排队卡片只给「取消」，默认行为两种后端都是 follow-up 排队 |
+| 引导（steer，忙时注入当前回合） | 有（serve 的 `delivery=steer`，下一个步骤边界生效，不中止） | 有（2026-11-13 起）：长驻 RPC 进程的 `steer` 命令，同样在下一个步骤边界生效、不中止。空闲时发 steer 不会交付（pi 回一个 queued 就躺平），所以只在运行中发，见第 13 节 |
 | 看门狗 / 僵尸卡收尾 | 有 | 有 |
 
-仍然没有的只有四样：交互式权限卡片、`/agent`、steer、常驻服务意义上的「会话列表来自服务端」。卡片上不额外标注「这是 pi 后端」——状态词「执行中 / 已完成」已经说清楚了，多写一行是噪音。
+仍然没有的只有三样：交互式权限卡片、`/agent`、常驻服务意义上的「会话列表来自服务端」。（steer 自 2026-11-13 起可用，见第 13 节。）卡片上不额外标注「这是 pi 后端」——状态词「执行中 / 已完成」已经说清楚了，多写一行是噪音。
 
 ## 6. 配置
 
@@ -351,7 +351,7 @@ npm run test:init
 OCB_CONFIG_DIR=/tmp/ocb-pi-dry node src/index.js --dry
 ```
 
-真机验收：群里 @ 机器人发一句需要多轮工具调用的话（例如「读一下这个项目」），应看到卡片按约 1.8 秒的节流持续刷新：正文分段长出、前缀带模型名与步数、耗时走动；终态标题变「✅ 已完成」，后缀带 `in / out / 金额`。中途再发一句，验证它默认排进队列（卡片说明排第几位，不需要点按钮）；点「引导」验证「已中止」且正文保留已流到的内容，点「取消」验证那条消息不再发出。
+真机验收：群里 @ 机器人发一句需要多轮工具调用的话（例如「读一下这个项目」），应看到卡片按约 1.8 秒的节流持续刷新：正文分段长出、前缀带模型名与步数、耗时走动；终态标题变「✅ 已完成」，后缀带 `in / out / 金额`。中途再发一句，验证它默认排进队列（卡片说明排第几位，不需要点按钮）；点「引导」验证「已引导：下一步生效，不中断」且队列里那条消息出队，点「取消」验证那条消息不再发出。
 
 ## 12. 后续路线
 
@@ -360,3 +360,29 @@ OCB_CONFIG_DIR=/tmp/ocb-pi-dry node src/index.js --dry
 3. ~~给模型的来源标注后补一行能力说明~~（已完成：文案在 `prompts.json` 的 `once.rules` 键，配置方式见 6.2 节）
 5. **放行名单**（已完成）：`feishu.allowlist`（手写白名单）与 `feishu.listen`（单向放行「它的 @」）取并集，admin「谁能唤醒它」一张表管；`feishu.names` 供来源标注显示名字。三者全是人手动维护——自动攒的 contacts 通讯录已下线（攒出来的 open_id 用不上）。设计取舍见 README「放行名单」一节
 4. ~~可选流式~~（已完成，见 4.2）
+
+## 13. pi 长驻 RPC 化（2026-11-13）
+
+起因：bot 之间的 @ 要实时协调。一次性子进程模式下，一条 @ 到达时上一条还在跑，只能排进 follow-up 队列等收尾；agent 按协作规则轮询话题提前处理了它，队列照旧再发一遍，造成二次唤醒。opencode 侧有 serve 的 `delivery=steer`，pi 侧原本什么都没有。pi 的 `--mode rpc` 是长驻子进程：stdin 收 JSONL 命令，stdout 出回执与会话事件，正好补上这一侧。
+
+对真实二进制探过的语义（实现前逐条实测，不要凭文档猜）：
+
+1. 命令名在 `type` 字段；回执 `{"type":"response","command":...,"success":...}`，请求带 `id` 时回执回显同一个 id，按 id 对应（异步乱序）。
+2. **空闲时发 `steer` / `follow_up` 不会跑**：回一个 `disposition=queued` 就静静躺在队列里，直到未来某次 run 把它当排队消息注入，造成串话。所以 steer 只在确有 run 在飞时发；`PiBackend.steer()` 查内部 busy 标记，不在运行中直接抛错，桥接据此回退到排队，消息不丢。
+3. **运行中发普通 `prompt` 会被直接拒绝**（"Agent is already processing. Specify streamingBehavior..."）。桥接的 busy 检查与命令落地之间有窗口，被拒就按 `streamingBehavior=followUp` 重试一次。
+4. `agent_settled` 是一轮的权威完成信号，且覆盖整条 drain：排队的 follow_up 全部跑完才来。等它，不等进程退出。
+5. `abort` 等到会话空闲才返回；之后进程是好的，留着复用。
+6. 扩展 UI 记录分两类：`notify` / `setStatus` / `setWidget` 即发即忘，忽略；`select` / `confirm` / `input` / `editor` 会阻塞到客户端回一条 `extension_ui_response`（没带 timeout 的一直等）——桥接在飞书里弹不出这些对话框，统一回 `{"type":"extension_ui_response","id":<同一个>,"cancelled":true}`。
+7. 进程重启后同 session 参数（`--session-dir`/`--session-id` 或 `--session <file>`）历史延续，所以空闲回收是安全的。
+
+实现（`src/pi.js`）：
+
+- `this.procs` 从「一次性运行注册表」变成长驻进程注册表；`_ensureProc()` 按需起进程、复用没退出的进程，参数只把 `-p --mode json` 换成 `--mode rpc`（消息走 stdin，不再走 argv），session 选择、`--model`、`--approve`、cwd、`childEnv()` 原样保留。
+- `prompt()` 完成等 `agent_settled`；providerError 即杀即终态、看门狗两档、静默兜底三套原有机制整体搬过来（进程退出只在崩溃路径有意义）。
+- `steer()` / `interrupt()` 分别发 `steer` / `abort` 命令；interrupt 的 stdin 写失败才 killTree 兜底。
+- 空闲回收：一个统一定时器扫注册表，超过 `backend.pi.idleMs`（默认 10 分钟）没有新消息就杀进程；下次 prompt 用同样的 session 参数重启，历史还在。
+- `deleteSession()` 连带杀进程：pi 的会话内容写在 jsonl 里，进程活着会把刚删掉的文件重新写出来。
+- `capabilitiesFor()` 的 pi 分支改为 `oneShot: false, steer: true`——桥接忙等分支里「bot 之间的 @ 自动 steer」与排队卡片的「引导」按钮对这一侧同时生效，`src/handler.js` 无需改动。
+- 测试：`scripts/test-pi.mjs` 的假 pi 增加 RPC 服务循环（读命令、回执、按脚本发事件），158 项断言扩到 220 项，覆盖 steer 注入、空闲 steer 抛错、竞态重试、abort 后复用、崩溃收尾、空闲回收、扩展 UI 分流。
+
+灰度：切换后新消息才走 RPC（已在跑的一次性进程不受影响）；实例重启一次同时吃到 PR #43 的桥接侧删除同步。

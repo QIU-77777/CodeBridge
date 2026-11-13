@@ -34,7 +34,8 @@ export const PROMPT_TEMPLATES = JSON.parse(readFileSync(PROMPTS_PATH, 'utf8'))
 
 export const DEFAULTS = {
   backend: {
-    // opencode = 常驻 HTTP + SSE 流式；pi = 一次性子进程，跑完发一张结果卡片。
+    // opencode = 常驻 HTTP + SSE 流式；pi = 每个会话一个长驻 RPC 子进程，
+    // 消息走 stdin 命令，事件从 stdout 逐行读，跑完发一张结果卡片。
     // 每起一个机器人就复制一份 config.json，把 type 和 appId 一起换掉。
     type: 'opencode',
     pi: {
@@ -58,8 +59,14 @@ export const DEFAULTS = {
       // 「执行中」停了 6 分 58 秒；开了它，最坏空白约等于这个值。
       // 默认 3 分钟：实测同一轮任务里模型轮间思考间隔到过 62 秒和 107 秒，
       // 60 秒的阈值会把还在跑的运行误判成完成——杀掉进程、把中途答案标成
-      // 「已完成」。见过 agent_settled 之后的阈值另算（见 src/pi.js）
+      // 「已完成」。RPC 模式下 agent_settled 一到就收尾，这条只兜 agent
+      // 挂死（最终回答有了却再也不吐事件）
       settleQuietMs: 180_000,
+      // 空闲回收阈值（毫秒）：pi 是每个会话一个长驻进程，一轮结束后不退出，
+      // 留着给下一条消息复用（省一次启动）。超过这个时间没有新消息就杀掉，
+      // 下次 prompt 用同样的 session 参数重启——实测重启后会话历史还在，
+      // 回收不丢历史。默认 10 分钟
+      idleMs: 600_000,
       // 额外启动参数，例如 ["--no-extensions"]
       extraArgs: [],
     },
