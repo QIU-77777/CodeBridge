@@ -148,14 +148,19 @@ function writeStateAtomic(statePath, next) {
   renameSync(tmp, statePath)
 }
 
-/** 读 state.json。文件不存在返回 null；解析失败抛错（坏文件不能当空状态删） */
+/** 读 state.json。文件不存在返回 null；解析失败抛错（坏文件不能当空状态删）。
+ *  错误带 statusCode=400（与 readBody 同一做法）：外层 catch 按 statusCode 转状态码，
+ *  不带就会落成 500，把解析器原文抛到页面上——同一条路由里 pi 索引损坏返的是
+ *  400「会话索引读取失败」，两边状态码要一致 */
 function readStateSafe(dir) {
   const path = join(dir, 'state.json')
   if (!existsSync(path)) return { data: null, path }
   try {
     return { data: JSON.parse(readFileSync(path, 'utf8')), path }
   } catch (err) {
-    throw new Error(`state.json 解析失败: ${err.message}`)
+    const bad = new Error(`state.json 解析失败: ${err.message}`)
+    bad.statusCode = 400
+    throw bad
   }
 }
 

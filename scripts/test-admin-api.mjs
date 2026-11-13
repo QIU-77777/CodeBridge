@@ -374,6 +374,21 @@ try {
     ok(r.status === 400 && /还没有会话/.test(r.json.error || ''), 'reveal 没有绑定会话时返回 400')
     r = await post(`/api/instances/${NAME}/reveal`, { target: 'session', sid: '' })
     ok(r.status === 400 && /缺少会话 id/.test(r.json.error || ''), 'reveal 缺会话 id 时返回 400')
+
+    // state.json 损坏：三个接口统一返回 400「state.json 解析失败」，文件一个
+    // 字节不动。曾经 readStateSafe 的抛错没带 statusCode，外层 catch 按 500 处理，
+    // 把解析器原文抛到页面上，与同一条路由里 pi 索引损坏的 400 不一致
+    const brokenState = '{ 坏掉的 json'
+    const stateBeforeBroken = readFileSync(STATE_PATH, 'utf8')
+    writeFileSync(STATE_PATH, brokenState)
+    r = await del(`/api/instances/${NAME}/bindings/oc_keep`)
+    ok(r.status === 400 && /state\.json 解析失败/.test(r.json.error || ''), 'state.json 损坏时解除绑定返回 400', JSON.stringify(r.json))
+    r = await del(`/api/instances/${NAME}/sessions/pi-del0002`)
+    ok(r.status === 400 && /state\.json 解析失败/.test(r.json.error || ''), 'state.json 损坏时删除会话返回 400', JSON.stringify(r.json))
+    r = await post(`/api/instances/${NAME}/reveal`, { target: 'binding', key: 'oc_keep' })
+    ok(r.status === 400 && /state\.json 解析失败/.test(r.json.error || ''), 'state.json 损坏时按绑定键查看返回 400', JSON.stringify(r.json))
+    ok(readFileSync(STATE_PATH, 'utf8') === brokenState, '损坏的 state.json 不被改写')
+    writeFileSync(STATE_PATH, stateBeforeBroken)
   }
 
   // opencode 后端的删除走 serve 接口。这里起一个假 serve（stub fetch）：
