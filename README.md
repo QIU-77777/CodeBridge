@@ -160,8 +160,8 @@ flowchart LR
   I --> O["OpencodeClient<br/>src/oc.js"]
   I --> P["PiBackend<br/>src/pi.js"]
   I -.-> N["你的实现<br/>任意命令行 Agent"]
-  O --> C1["capabilities<br/>streaming / agents / permissions"]
-  P --> C2["capabilities<br/>oneShot"]
+  O --> C1["capabilities<br/>streaming / agents / permissions / steer"]
+  P --> C2["capabilities<br/>steer（长驻 RPC 进程）"]
   N -.-> C3["capabilities<br/>按需声明"]
   C1 --> FE["飞书交互层<br/>按能力自动降级"]
   C2 --> FE
@@ -174,8 +174,8 @@ flowchart LR
 `handler.js` 只调用 `Backend` 接口上的方法，`backend.js` 按 `backend.type` 选择实现。两个现有实现的差别被藏在各自文件里：
 
 - `oc.js` 连接常驻的 `opencode serve`，把 SSE 事件流交给 `render.js`。
-- `pi.js` 每条消息起一次子进程，把 JSONL 输出翻译成 `session.*` 形状的**合成事件**，`render.js` 因此只有一套聚合逻辑。
-- `capabilitiesFor()` 声明 `streaming`、`agents`、`permissions`、`oneShot`。声明为关闭的能力，`/agent`、权限审批卡片、流式刷新会自动降级。
+- `pi.js` 每个会话维持一个长驻 `pi --mode rpc` 进程，消息走 stdin 的 JSONL 命令（`prompt` / `steer` / `abort`），把 RPC 会话事件翻译成 `session.*` 形状的**合成事件**，`render.js` 因此只有一套聚合逻辑。空闲超过 `backend.pi.idleMs` 的进程被回收，下次用同样的 session 参数重启，历史不断。
+- `capabilitiesFor()` 声明 `streaming`、`agents`、`permissions`、`steer`、`oneShot`。声明为关闭的能力，`/agent`、权限审批卡片、流式刷新会自动降级。
 
 接入步骤见[开发章节](#开发)。
 
@@ -365,7 +365,7 @@ npm install
 
 ### 2. 确认使用哪份 opencode
 
-使用 pi 后端或自定义后端时跳过本节。这类后端每条消息起一次子进程，不需要 opencode serve。使用 opencode 后端时，`scripts/up.sh` 按以下顺序选择可执行文件：
+使用 pi 后端或自定义后端时跳过本节。这类后端不需要 opencode serve。使用 opencode 后端时，`scripts/up.sh` 按以下顺序选择可执行文件：
 
 ```
 OPENCODE_BIN 环境变量  →  桌面版自带 CLI  →  PATH 里的 opencode
@@ -554,7 +554,8 @@ npm run dry
 | `behavior.showReasoning` | 是否在卡片展示思考过程 | `false` |
 | `behavior.showTools` | 是否展示工具调用链路 | `false` |
 | `behavior.maxBodyChars` | 卡片正文字符上限，超出保留尾部 | `6000` |
-| `behavior.idleTimeoutMs` | 仅 opencode 后端：多久没有事件就判定卡死并收尾，`0` 关闭 | `300000` |
+| `behavior.idleTimeoutMs` | 仅 opencode 后端：没有工具在飞时，多久没有事件就判定卡死并收尾，`0` 关闭 | `300000` |
+| `behavior.toolIdleTimeoutMs` | 仅 opencode 后端：有工具在飞时的静默阈值。母回合派生子代理或跑长 bash 期间自己一条事件都不发，静默是预期行为，按模型档判定会误杀；真挂死的工具到这一档仍兜底 | `1800000` |
 | `behavior.maxParallel` | 整机同时运行的任务数，`0` 表示不限 | `2` |
 | `behavior.topicContext` | 群消息被唤醒时是否带上该话题最近 N 条消息原文（私聊不受影响） | `true` |
 | `behavior.topicContextMessages` | 近况最多带几条，`@` 过我的轮次只算一行指针 | `20` |
@@ -704,7 +705,7 @@ prompts.json
 
 同一会话同时只跑一个任务。上一条还在执行时，人的新消息默认排进 follow-up 队列，当前任务结束后自动发送，卡片会显示排在第几位。「取消」把它从队列移除。
 
-bot 之间的 @ 不排队：支持 steer 的后端上直接以 `delivery=steer` 注入正在跑的那一轮，下一步边界生效、不中断，群里回一条「已引导」；注入失败才退回排队，消息不丢。两个桥接 bot 之间因此是实时协调，人等结果的习惯不变。
+bot 之间的 @ 不排队：支持 steer 的后端上直接注入正在跑的那一轮（opencode 走 `delivery=steer`，pi 走 RPC 的 `steer` 命令），下一个步骤边界生效、不中止，群里回一条「已引导」；注入失败才退回排队，消息不丢。两个桥接 bot 之间因此是实时协调，人等结果的习惯不变。
 
 「引导」是改主意的选项，按后端能力分两种：
 
@@ -734,13 +735,14 @@ bot 之间的 @ 不排队：支持 steer 的后端上直接以 `delivery=steer` 
 
 | 能力 | opencode 后端 | pi 后端 |
 |---|---|---|
-| 执行方式 | 常驻 `opencode serve`，HTTP + SSE | 每条消息起一次 `pi -p --mode json` 子进程 |
-| 流式正文 | 原生事件流 | 把 JSONL 事件翻译成同形状的合成事件 |
+| 执行方式 | 常驻 `opencode serve`，HTTP + SSE | 每个会话一个长驻 `pi --mode rpc` 进程，stdin/stdout 走 JSONL |
+| 流式正文 | 原生事件流 | 把 RPC 会话事件翻译成同形状的合成事件 |
+| 引导（steer，忙时注入当前回合） | 支持（serve 的 `delivery=steer`） | 支持（RPC 的 `steer` 命令，2026-11-13 起） |
 | 卡片、节流、中止、僵尸卡收尾 | 共用 | 共用 |
 | 权限审批卡片 | 支持 | 不支持 |
 | `/agent` | 支持 | 不支持 |
 | 会话 | 由 serve 管理，接口查询 | `<配置目录>/pi-sessions/` 的索引与 JSONL；兼容终端 `pi -r` 会话 |
-| 卡死判定 | `behavior.idleTimeoutMs` | `backend.pi.timeoutMs`（模型静默）、`backend.pi.toolTimeoutMs`（工具在飞）与 `backend.pi.settleQuietMs` |
+| 卡死判定 | `behavior.idleTimeoutMs`（无工具在飞）、`behavior.toolIdleTimeoutMs`（工具在飞） | `backend.pi.timeoutMs`（模型静默）、`backend.pi.toolTimeoutMs`（工具在飞）与 `backend.pi.settleQuietMs` |
 
 pi 的 `/sessions` 同时列出桥接会话与终端 `pi -r` 会话。切到终端会话后走 `pi --session <文件>` 续聊，两端读写同一个 JSONL。终端会话的改名、删除、切模型由 pi 自己管理，桥接会明确拒绝这三个操作。
 
@@ -934,11 +936,11 @@ logs/                      运行日志（不入库）
 步骤：
 
 1. 在 `src/` 新建实现文件。事件形状按 `src/render.js` 输出，常用类型有 `session.execution.started`、`session.text.delta`、`session.tool.called`、`session.usage.updated`、`session.execution.succeeded` / `failed` / `interrupted`。
-2. 在 `src/backend.js` 的 `createBackend()` 注册新类型，在 `capabilitiesFor()` 声明 `streaming`、`agents`、`permissions`、`oneShot`、`label`。
+2. 在 `src/backend.js` 的 `createBackend()` 注册新类型，在 `capabilitiesFor()` 声明 `streaming`、`agents`、`permissions`、`steer`、`oneShot`、`label`。
 3. `handler.js` 无需改动。卡片、命令、状态、排队逻辑按能力声明自动降级。
 4. 在 `admin/backends.js` 的 `scanBackends()` 加入本机探测，管理后台才会显示这个选项。
 5. 补一份 `scripts/test-*.mjs`，并在 `package.json` 里加脚本入口。
-6. `scripts/up.sh` 与 `scripts/install-agent.sh` 只在 `backend.type = opencode` 时拉起 serve。一次性命令行后端沿用这条分支，无需改脚本。
+6. `scripts/up.sh` 与 `scripts/install-agent.sh` 只在 `backend.type = opencode` 时拉起 serve。其他后端不需要 serve，沿用这条分支，无需改脚本。
 
 ### 调试与日志
 
@@ -960,7 +962,7 @@ logs/                      运行日志（不入库）
 | 报 `RegionError` | `defaultModel` 用了本地区不可用的模型，换一个 |
 | 会话一秒内失败，错误含 `Failed to decode message` | 会话历史由另一个 opencode 版本写入。先跑 `npm run doctor` 看版本，再读 [design-notes 的历史数据兼容一节](docs/design-notes.md#opencode-升级后的历史数据兼容问题) |
 | 卡片不更新 | `streamIntervalMs` 过低被限流，调回 1800 |
-| 卡片一直停在「执行中」 | 看 `logs/bridge.log` 的事件流断开记录；opencode 靠 `idleTimeoutMs` 收尾，pi 靠 `settleQuietMs` 收尾；桥接重启后遗留卡片会被标成「已中止」 |
+| 卡片一直停在「执行中」 | 看 `logs/bridge.log` 的事件流断开记录；opencode 靠 `idleTimeoutMs`（无工具在飞）与 `toolIdleTimeoutMs`（工具在飞）收尾，pi 靠 `settleQuietMs` 收尾；桥接重启后遗留卡片会被标成「已中止」 |
 | 同一条消息回两遍 | 跑了两个桥接进程。执行 `./scripts/down.sh` 全部停止，再 `./scripts/up.sh` |
 | 机器人突然停止响应且日志无报错 | `nohup` 进程被外部回收。执行 `./scripts/status.sh` 确认，改装 `install-agent.sh` |
 | 提示「已经有 N 个任务在跑」 | 到达 `behavior.maxParallel` 上限，本机资源允许时调到 3–4 |

@@ -2,8 +2,9 @@
  * 后端工厂。
  *
  * Bridge 只依赖一组方法（health / location / subscribe / createSession /
- * prompt / interrupt / listSessions / ...），不关心背后是常驻 HTTP 服务还是
- * 一次性子进程。加第三个后端时在这里注册即可，不用碰 handler.js。
+ * prompt / interrupt / listSessions / ...），不关心背后是常驻 HTTP 服务
+ * （opencode serve）还是长驻 RPC 子进程（pi）。加第三个后端时在这里注册
+ * 即可，不用碰 handler.js。
  */
 
 import { OpencodeClient } from './oc.js'

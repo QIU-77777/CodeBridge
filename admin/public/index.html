@@ -335,7 +335,7 @@
               </div>
               <label class="fld"><span>默认工作目录（两个后端都用，留空用家主目录）</span><input type="text" id="c-defaultDirectory"></label>
               <label class="fld"><span>默认模型（两个后端都用，留空用 coding agent 本地默认模型）</span><input type="text" id="c-defaultModel"></label>
-              <p class="hint">选哪个后端显示哪组字段：opencode 连本机 serve，pi 起一次性子进程，两者的配置都默认复用本机已装的那一个。默认工作目录与默认模型留空即用 coding agent 自己的本地默认值。</p>
+              <p class="hint">选哪个后端显示哪组字段：opencode 连本机 serve，pi 起长驻 RPC 进程，两者的配置都默认复用本机已装的那一个。默认工作目录与默认模型留空即用 coding agent 自己的本地默认值。</p>
             </div>
             <div>
               <h3>飞书应用</h3>
@@ -558,7 +558,7 @@ const state = {
 // 扫描失败时退回静态清单：表单少一行说明也能用，不能变成空下拉框
 const FALLBACK_BACKENDS = [
   { type: 'opencode', summary: '常驻 serve，流式输出', available: false, bin: '', version: '', detail: '', reason: '扫描失败，按默认选项显示' },
-  { type: 'pi', summary: '一次性子进程，跑完一张结果卡片', available: false, bin: '', version: '', detail: '', reason: '扫描失败，按默认选项显示' },
+  { type: 'pi', summary: '长驻 RPC 进程，流式输出，支持 steer', available: false, bin: '', version: '', detail: '', reason: '扫描失败，按默认选项显示' },
 ]
 
 async function loadBackends(refresh = false) {
@@ -1175,7 +1175,7 @@ async function loadSessionsTab() {
       '<span class="row"><span class="dot ' + (ok2 ? 'green' : 'red') + '"></span>' +
       '<span class="' + (ok2 ? 'ok' : 'err') + '">' + esc(text) + '</span></span>'
     let be = detail.backend === 'pi'
-      ? '<dt>类型</dt><dd>pi（一次性子进程）</dd>' +
+      ? '<dt>类型</dt><dd>pi（长驻 RPC 进程）</dd>' +
         '<dt>CLI 可用性</dt><dd>' + (detail.pi?.ok
           ? dot(true, '可用 ' + (detail.pi.version || '?'))
           : dot(false, detail.pi?.error || '异常')) + '</dd>'

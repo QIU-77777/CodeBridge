@@ -28,7 +28,7 @@ const SCANNERS = {
 
 const BACKEND_META = {
   opencode: { summary: '常驻 serve，流式输出' },
-  pi: { summary: '一次性子进程，跑完一张结果卡片' },
+  pi: { summary: '长驻 RPC 进程，流式输出，支持 steer' },
 }
 
 /** 起一次 `bin --version`，超时或失败返回空串 */

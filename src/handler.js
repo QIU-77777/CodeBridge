@@ -34,8 +34,9 @@ export class Bridge {
    * @param {object} opts.transport  sendCard/patchCard/sendText
    */
   constructor({ oc, store, config, transport, capabilities = {}, logger = console }) {
-    // oc 只是历史变量名：现在是 createBackend() 给的后端，可能是 opencode，
-    // 也可能是一次性子进程（pi）。两者实现同一组方法 + 同形状的 SSE 事件。
+    // oc 只是历史变量名：现在是 createBackend() 给的后端，可能是常驻 HTTP
+    // 服务（opencode serve），也可能是长驻 RPC 子进程（pi）。两者实现同一
+    // 组方法 + 同形状的 SSE 事件。
     this.oc = oc
     this.store = store
     this.cfg = config
