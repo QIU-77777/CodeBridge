@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync, watch } from 'node:fs'
 import { dirname } from 'node:path'
 import { STATE_PATH } from './config.js'
 
@@ -15,7 +15,12 @@ export class Store {
     this.data = { version: VERSION, chats: {} }
     this.timer = null
     this.dirty = false
+    // 上次落盘（或加载）时磁盘上有的绑定键。同步时用它区分两种「内存有、
+    // 磁盘没有」：在 knownKeys 里的是被外部删了，要跟；不在的是桥接自己
+    // 刚建还没落盘的，要留
+    this.knownKeys = new Set()
     this.load()
+    this.watchExternalDeletes()
   }
 
   load() {
@@ -30,7 +35,65 @@ export class Store {
       // 文件损坏就从空状态开始，不阻塞启动
       this.data = { version: VERSION, chats: {} }
     }
+    this.knownKeys = new Set(Object.keys(this.data.chats))
     this.migrateLegacy()
+  }
+
+  /**
+   * 监听配置目录，把外部（管理后台）对 state.json 的删除同步进内存。
+   *
+   * 为什么需要：桥接进程是 state.json 的唯一写者，任何 scheduleSave() 都会在
+   * 300ms 防抖后把整份内存写回文件。管理后台直接删掉文件里的一个绑定，会被
+   * 下一次落盘原样写回，用户看到「删了但没删掉」。config.json 能走「后台写、
+   * 重启生效」是因为桥接只读配置；state.json 反过来，后台改完必须让本进程知道。
+   *
+   * 同步是单向的：只把「磁盘上已不存在的绑定」从内存删掉，不把磁盘内容整体
+   * 灌进内存。桥接自己的新增（刚建的绑定）与运行时状态（queue、inflight、
+   * sessionSeq）因此不会丢——那些东西磁盘上本来就是旧的或没有的。
+   *
+   * 监听目录而不是文件：state.json 在首次落盘前可能不存在，监听文件会 ENOENT。
+   * 桥接自己 flush 触发的事件也会进来，读盘比对后绑定集合一致，空操作返回。
+   */
+  watchExternalDeletes() {
+    try {
+      this.watcher = watch(dirname(this.path), () => this.syncExternalDeletes())
+      // 不 ref：测试进程与命令行工具不能因为一个监听器退不出去
+      this.watcher.unref?.()
+    } catch {
+      // 监听失败不阻塞启动：只是外部删除要等桥接重启才生效（flush 前的同步仍有效）
+    }
+  }
+
+  /**
+   * 把磁盘上已被删除的绑定从内存删掉。返回是否有变更。
+   *
+   * 「被删除」的判据是 knownKeys：上次落盘时磁盘上有这个键，现在没有了，
+   * 才是外部删的。内存里有、knownKeys 里没有的，是桥接自己刚建还没落盘的
+   * 绑定，必须保留——否则后台每删一次，桥接手里未落盘的新绑定就丢一批。
+   *
+   * 读失败或解析失败直接返回：磁盘正在被原子替换的瞬间读不到完整内容，
+   * 不能因此把内存清空。只在 flush 前与监听回调里调用，都不写盘——
+   * 磁盘已经是删除后的版本，内存跟上即一致；桥接自己下一次 flush 写出
+   * 来的也是不含该 key 的版本。
+   */
+  syncExternalDeletes() {
+    let disk
+    try {
+      const raw = readFileSync(this.path, 'utf8')
+      disk = JSON.parse(raw)
+    } catch {
+      return false
+    }
+    if (!disk || typeof disk !== 'object' || !disk.chats || typeof disk.chats !== 'object') return false
+    let changed = false
+    for (const key of Object.keys(this.data.chats)) {
+      if (this.knownKeys.has(key) && !(key in disk.chats)) {
+        delete this.data.chats[key]
+        this.knownKeys.delete(key)
+        changed = true
+      }
+    }
+    return changed
   }
 
   /**
@@ -225,10 +288,16 @@ export class Store {
 
   flush() {
     if (!this.dirty) return
+    // 落盘前先同步一次：管理后台的删除可能正好落在 300ms 防抖窗口里，
+    // 不先吸收进内存，这次全量写回就把用户的删除覆盖掉了
+    this.syncExternalDeletes()
     mkdirSync(dirname(this.path), { recursive: true })
     const tmp = this.path + '.tmp'
     writeFileSync(tmp, JSON.stringify(this.data, null, 2), 'utf8')
     renameSync(tmp, this.path)
+    // 写完，磁盘上有的键以这次写出的为准：之后同步时「内存有、磁盘没有」
+    // 的键只可能是外部删的
+    this.knownKeys = new Set(Object.keys(this.data.chats))
     this.dirty = false
   }
 }

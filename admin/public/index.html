@@ -397,6 +397,7 @@
             <button class="btn" id="ss-refresh">刷新</button>
           </div>
           <p class="hint" id="ss-status"></p>
+          <span id="ss-msg"></span>
           <div class="grid2">
             <div>
               <h3>后端与模型</h3>
@@ -413,11 +414,11 @@
           </div>
           <h3>飞书绑定</h3>
           <div class="scroll-x">
-          <table id="ss-chats"><thead><tr><th>绑定键</th><th>群 / 私聊</th><th>会话 id</th><th>目录</th><th>模型</th><th>最近更新</th></tr></thead><tbody></tbody></table>
+          <table id="ss-chats"><thead><tr><th>绑定键</th><th>群 / 私聊</th><th>会话 id</th><th>目录</th><th>模型</th><th>最近更新</th><th>操作</th></tr></thead><tbody></tbody></table>
           </div>
           <h3>后端会话</h3>
           <div class="scroll-x">
-          <table id="ss-sessions"><thead><tr><th>标题</th><th>会话 id</th><th>目录</th><th>模型</th><th>最近更新</th></tr></thead><tbody></tbody></table>
+          <table id="ss-sessions"><thead><tr><th>标题</th><th>会话 id</th><th>目录</th><th>模型</th><th>最近更新</th><th>操作</th></tr></thead><tbody></tbody></table>
           </div>
           <details id="ss-models-wrap">
             <summary>可用模型（<span id="ss-models-count">0</span>）</summary>
@@ -1221,7 +1222,7 @@ async function loadSessionsTab() {
     const chatsTbody = $('ss-chats').querySelector('tbody')
     if (detail.stateError) {
       chatsTbody.innerHTML =
-        '<tr><td colspan="6" class="err">状态文件读取失败：' + esc(detail.stateError) +
+        '<tr><td colspan="7" class="err">状态文件读取失败：' + esc(detail.stateError) +
         '。无法列出飞书绑定。</td></tr>'
     } else {
       const chats = Object.values(detail.state?.chats || {})
@@ -1236,33 +1237,53 @@ async function loadSessionsTab() {
           '<td class="mono">' + clip(c.directory, 28) + '</td>' +
           '<td class="mono">' + esc(modelOfSession.get(c.sessionId) || '—') + '</td>' +
           '<td class="mono dim">' + fmtTime(c.updatedAt) + '</td>' +
+          '<td class="row">' +
+            // 查看在访达里打开它绑定的会话；没有绑定会话时禁用并说明原因
+            (c.sessionId
+              ? '<button class="btn" onclick="revealSession(\'binding\', \'' + esc(c.key) + '\')">查看</button>'
+              : '<button class="btn" disabled title="这个绑定还没有会话">查看</button>') +
+            '<button class="btn danger" onclick="removeBinding(\'' + esc(c.key) + '\')">解除绑定</button>' +
+          '</td>' +
         '</tr>').join('')
-        || '<tr><td colspan="6" class="dim">还没有任何飞书聊天绑定到会话。</td></tr>'
+        || '<tr><td colspan="7" class="dim">还没有任何飞书聊天绑定到会话。</td></tr>'
     }
 
     // 后端会话：失败 / 接口报错 / 真空 / 有数据，四种情况四句话。
     // 展示截到 100 条（接口为模型列解析多拉了一些），排序由后端给
     const stbody = $('ss-sessions').querySelector('tbody')
-    const errRow = (msg) => '<tr><td colspan="5" class="err">' + msg + '</td></tr>'
+    const errRow = (msg) => '<tr><td colspan="6" class="err">' + msg + '</td></tr>'
     if (sessions.failed) {
       stbody.innerHTML = errRow('读不到会话列表：' + esc(sessions.error))
     } else if (sessions.error) {
       stbody.innerHTML = errRow(esc(sessions.error))
     } else if (!(sessions.sessions || []).length) {
       stbody.innerHTML =
-        '<tr><td colspan="5" class="dim">还没有会话。在飞书里 @ 它并说一句话，第一个会话就会出现。</td></tr>'
+        '<tr><td colspan="6" class="dim">还没有会话。在飞书里 @ 它并说一句话，第一个会话就会出现。</td></tr>'
     } else {
       const botBadge = ' <span class="badge gray"><span class="dot gray"></span>机器人</span>'
+      // 每个会话被几个飞书绑定指着：删除确认时要告诉用户会影响哪些绑定
+      const boundCount = new Map()
+      for (const c of Object.values(detail.state?.chats || {})) {
+        if (c?.sessionId) boundCount.set(c.sessionId, (boundCount.get(c.sessionId) || 0) + 1)
+      }
       stbody.innerHTML = (sessions.sessions || []).slice(0, 100).map((s) => {
         const isBot = /^飞书 · /.test(s.title || '')
+        const n = boundCount.get(s.id) || 0
+        const boundBadge = n
+          ? ' <span class="badge gray" title="删除后这些绑定的会话关联会被清掉，下一次 @ 在同一目录新建会话"><span class="dot gray"></span>被 ' + n + ' 个绑定</span>'
+          : ''
         return '<tr>' +
-          '<td>' + esc(s.title || '（无标题）') + (isBot ? botBadge : '') + '</td>' +
+          '<td>' + esc(s.title || '（无标题）') + (isBot ? botBadge : '') + boundBadge + '</td>' +
           '<td class="mono"><span class="clip" title="' + esc(s.id) + '">' + esc(s.id) + '</span></td>' +
           '<td class="mono"><span class="clip" title="' + esc(s.directory || '') + '">' + esc(short(s.directory, 40)) + '</span></td>' +
           '<td class="mono">' + esc(s.model || '—') + '</td>' +
           '<td class="mono dim">' + fmtTime(s.updatedAt) + '</td>' +
+          '<td class="row">' +
+            '<button class="btn" onclick="revealSession(\'session\', \'' + esc(s.id) + '\')">查看</button>' +
+            '<button class="btn danger" onclick="deleteSession(\'' + esc(s.id) + '\', ' + n + ', ' + (detail.backend === 'pi') + ')">删除</button>' +
+          '</td>' +
         '</tr>'
-      }).join('') + '<tr><td colspan="5" class="dim">只取最近 100 条，按更新时间倒序。</td></tr>'
+      }).join('') + '<tr><td colspan="6" class="dim">只取最近 100 条，按更新时间倒序。</td></tr>'
     }
 
     // 模型列表：失败 / 报错 / 空 / 有数据，都不再说「列表为空」冒充错误态
@@ -1289,6 +1310,87 @@ async function loadSessionsTab() {
       $(id).querySelector('tbody').innerHTML = ''
     }
     $('ss-models').textContent = ''
+  }
+}
+
+// ---------- 会话查看与删除 ----------
+
+/** 统一的状态行：会话页所有写操作的结果都写在这里 */
+function setSsMsg(text, isErr) {
+  $('ss-msg').innerHTML = isErr
+    ? '<span class="err">' + esc(text) + '</span>'
+    : '<span class="ok">' + esc(text) + '</span>'
+}
+
+/**
+ * 查看：在访达里打开会话。target=binding 时按绑定键找它绑定的会话，
+ * target=session 时按会话 id 找。pi 选中会话 jsonl 文件；opencode 打开
+ * 数据库所在目录（会话是数据库里的行，没有单会话文件）
+ */
+async function revealSession(target, sidOrKey) {
+  const inst = $('ss-instance').value
+  setSsMsg('正在打开访达…')
+  try {
+    const body = target === 'binding'
+      ? { target: 'binding', key: sidOrKey }
+      : { target: 'session', sid: sidOrKey }
+    const json = await api(`/api/instances/${encodeURIComponent(inst)}/reveal`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    setSsMsg(json.kind === 'file'
+      ? '已在访达选中会话文件：' + json.path
+      : '已在访达打开数据库目录：' + json.path + '（opencode 的会话在 opencode.db 里，没有单会话文件）')
+  } catch (err) {
+    setSsMsg('打开失败: ' + err.message, true)
+  }
+}
+
+/**
+ * 解除飞书绑定：从 state.json 删掉这个 key。桥接进程运行时会通过它自己的
+ * 监听把删除同步进内存，不会被 300ms 防抖的落盘写回
+ */
+async function removeBinding(key) {
+  if (!confirm(
+    '确定解除绑定 ' + key + '？\n\n解除后，这个群或话题下一次 @ 机器人会新建一个会话。' +
+    '后端里已存在的会话不会被删除。'
+  )) return
+  const inst = $('ss-instance').value
+  setSsMsg('解除中…')
+  try {
+    const json = await api(`/api/instances/${encodeURIComponent(inst)}/bindings/${encodeURIComponent(key)}`, {
+      method: 'DELETE',
+    })
+    setSsMsg('已解除绑定' + (json.bridgeRunning ? '，桥接已同步' : '（桥接未运行，下次启动生效）'))
+    await loadSessionsTab()
+  } catch (err) {
+    setSsMsg('解除失败: ' + err.message, true)
+  }
+}
+
+/**
+ * 删除后端会话。pi 删会话文件与索引条目；opencode 调 serve 的删除接口。
+ * 指向它的绑定会一并清掉会话关联（保留记录与目录），确认文案按后端分别说
+ */
+async function deleteSession(sid, bound, isPi) {
+  const what = isPi
+    ? '删除后该会话的 jsonl 文件不可恢复。'
+    : '删除后该会话的全部历史不可恢复（数据在 opencode 的本地数据库里，没有导出路径）。'
+  const extra = bound > 0
+    ? '有 ' + bound + ' 个飞书绑定指向它，这些绑定的会话关联会被清掉，下一次 @ 会在同一目录新建会话。'
+    : ''
+  if (!confirm(what + extra + '\n\n确定删除？')) return
+  const inst = $('ss-instance').value
+  setSsMsg('删除中…')
+  try {
+    const json = await api(`/api/instances/${encodeURIComponent(inst)}/sessions/${encodeURIComponent(sid)}`, {
+      method: 'DELETE',
+    })
+    setSsMsg('已删除会话' + (json.clearedBindings ? '，' + json.clearedBindings + ' 个绑定的会话关联已清掉' : ''))
+    await loadSessionsTab()
+  } catch (err) {
+    setSsMsg('删除失败: ' + err.message, true)
   }
 }
 

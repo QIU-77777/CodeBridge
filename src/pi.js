@@ -25,6 +25,7 @@ import {
   readSync,
   closeSync,
   statSync,
+  watch,
 } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
@@ -283,6 +284,8 @@ export class PiBackend {
     this._version = null
     this._index = null
     this._cliCache = null
+    this._watchStarted = false
+    this._ensureWatch()
   }
 
   // ---------- 子进程环境：把本实例的飞书身份、GitHub 身份钉进去 ----------
@@ -367,6 +370,34 @@ export class PiBackend {
     const tmp = this.indexPath + '.tmp'
     writeFileSync(tmp, JSON.stringify(this._load(), null, 2), 'utf8')
     renameSync(tmp, this.indexPath)
+  }
+
+  /**
+   * 监听会话目录，外部改动（管理后台删会话文件、改索引）时清掉索引缓存。
+   *
+   * `_index` 是 index.json 的纯内存缓存，进程启动后只读一次。管理后台按文件
+   * 删掉一条会话后，不失效缓存的话桥接的 `/sessions` 还列着它、绑定还指向它，
+   * 用户看到「删了但还在」。这里把缓存视作可随时作废的投影：目录下任何变动
+   * 都置空，下一次 `_load()` 从磁盘读新内容。
+   *
+   * 桥接自己 `_save()` 或建会话触发的事件同样只表现为一次重读，内容一致，
+   * 无需区分事件来源。目录不存在时先建（与 `_save()` 同一做法）：没有目录
+   * 就没有会话可删，建出来也无害。
+   */
+  _ensureWatch() {
+    if (this._watchStarted) return
+    this._watchStarted = true
+    try {
+      mkdirSync(this.sessionDir, { recursive: true })
+      this._watcher = watch(this.sessionDir, () => {
+        this._index = null
+      })
+      // 不 ref：测试进程不能因为一个监听器退不出去
+      this._watcher.unref?.()
+    } catch {
+      // 监听失败不阻塞启动：缓存失效退回「桥接重启后才生效」
+      this._watchStarted = false
+    }
   }
 
   _findSessionFile(id) {

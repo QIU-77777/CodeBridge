@@ -13,9 +13,11 @@
  *   npm run admin -- --port 8080 # 换端口
  */
 import { createServer } from 'node:http'
-import { join, resolve } from 'node:path'
+import { join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { existsSync, readFileSync, writeFileSync, renameSync, copyFileSync, chmodSync, unlinkSync, rmSync, readdirSync, openSync, readSync, closeSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { execFile } from 'node:child_process'
 import { collectAll, collectInstance, discoverInstances } from './instances.js'
 import { scanBackends } from './backends.js'
 import { startInstance, stopInstance, restartInstance, doctor, readLog, installInstance, rollbackService } from './control.js'
@@ -132,6 +134,127 @@ function writeConfigAtomic(configPath, next) {
   renameSync(tmp, configPath)
 }
 
+/**
+ * 保存 state.json：先备份成 state.json.bak，再临时文件加重命名。
+ * 备份沿用 config.json.bak 的做法——绑定层的删除可恢复，后端会话数据删了
+ * 不可恢复，确认文案里写清。不加 chmod：桥接自己的 flush() 也不加，两边
+ * 落盘权限保持一致（600 会把桥接随后的写入挡成 EACCES 的场景不存在，
+ * 但不必要的权限差异会让排障多一层困惑）。
+ */
+function writeStateAtomic(statePath, next) {
+  if (existsSync(statePath)) copyFileSync(statePath, statePath + '.bak')
+  const tmp = statePath + '.tmp'
+  writeFileSync(tmp, JSON.stringify(next, null, 2) + '\n', 'utf8')
+  renameSync(tmp, statePath)
+}
+
+/** 读 state.json。文件不存在返回 null；解析失败抛错（坏文件不能当空状态删） */
+function readStateSafe(dir) {
+  const path = join(dir, 'state.json')
+  if (!existsSync(path)) return { data: null, path }
+  try {
+    return { data: JSON.parse(readFileSync(path, 'utf8')), path }
+  } catch (err) {
+    throw new Error(`state.json 解析失败: ${err.message}`)
+  }
+}
+
+/** 某个会话是否正在执行（state.json 的 inflight 里有它） */
+function sessionInFlight(state, sid) {
+  return Boolean(state?.inflight && Object.prototype.hasOwnProperty.call(state.inflight, sid))
+}
+
+// ---------- 后端数据操作 ----------
+
+/** 向 opencode serve 发 DELETE。404 视为已删除（幂等）；其余状态码带 err.status 抛出，
+ *  网络层失败（连不上）抛出的错没有 status，路由据此区分两种说法 */
+async function ocDelete(cfg, path) {
+  const res = await fetch(ocBase(cfg) + path, {
+    method: 'DELETE',
+    headers: ocHeaders(cfg),
+    signal: AbortSignal.timeout(5000),
+  })
+  if (!res.ok && res.status !== 404) {
+    const text = await res.text().catch(() => '')
+    const err = new Error(`${path} -> ${res.status}${text ? ': ' + text.slice(0, 120) : ''}`)
+    err.status = res.status
+    throw err
+  }
+  return res.status
+}
+
+/**
+ * pi 会话的 jsonl 文件名：`<时间戳>_<sid>.jsonl`，按后缀匹配。
+ * 与 piModelOf() 找文件的规则一致；找不到返回 null。
+ */
+function piSessionFile(dir, sid) {
+  let files = []
+  try {
+    files = readdirSync(dir)
+  } catch {
+    return null
+  }
+  return files.find((f) => f.endsWith(`_${sid}.jsonl`)) || null
+}
+
+/** 在访达里打开一个路径：文件用 open -R（选中该文件），目录用 open */
+function revealInFinder(path, kind) {
+  return new Promise((res, rej) => {
+    execFile('open', kind === 'file' ? ['-R', path] : [path], (err) => (err ? rej(err) : res()))
+  })
+}
+
+/** 解析出的路径必须落在允许根之内。路径由服务端从 sid/key 查出来后拼接，
+ *  客户端传不了任意路径；这一层是兜底，防的是查表逻辑被非常规数据带偏 */
+function pathWithinAny(path, roots) {
+  const p = resolve(path)
+  return roots.some((r) => p === r || p.startsWith(r + sep))
+}
+
+/**
+ * 解析「查看」要打开的路径。纯函数（除 sessionExists 回调外不碰 I/O），
+ * 失败抛 Error，路由原样转成 400。单拆出来是为了能离线测：
+ * 路由本身会 spawn `open`，测试不该真的弹出访达窗口。
+ *
+ * @param {object} opts
+ * @param {string} opts.dir          实例配置目录
+ * @param {object} opts.cfg          实例配置（判后端类型）
+ * @param {'session'|'binding'} opts.target
+ * @param {string} opts.sidOrKey     会话 id 或绑定键
+ * @param {object} opts.state        state.json 内容（target=binding 时用）
+ * @param {Function} [opts.sessionExists] 确认 opencode 会话存在的回调，抛错即不存在
+ * @returns {Promise<{path: string, kind: 'file'|'dir'}>}
+ */
+export async function resolveRevealTarget({ dir, cfg, target, sidOrKey, state, sessionExists }) {
+  let sid = String(sidOrKey || '').trim()
+  if (target === 'binding') {
+    const key = String(sidOrKey || '').trim()
+    sid = state?.chats?.[key]?.sessionId || ''
+    if (!sid) throw new Error('这个绑定还没有会话')
+  }
+  if (!sid) throw new Error('缺少会话 id')
+  if ((cfg.backend?.type || 'opencode') === 'pi') {
+    const sessionDir = join(dir, 'pi-sessions')
+    const file = piSessionFile(sessionDir, sid)
+    if (!file) throw new Error(`找不到会话 ${sid} 的文件`)
+    const path = join(sessionDir, file)
+    if (!pathWithinAny(path, [resolve(sessionDir)])) throw new Error('路径不在允许范围内')
+    return { path, kind: 'file' }
+  }
+  // opencode：会话是 serve 数据库里的行，没有单会话文件。先确认会话存在，
+  // 不存在就没有打开目录的意义；确认不了（serve 无响应）也要说清楚
+  if (sessionExists) {
+    try {
+      await sessionExists(sid)
+    } catch (err) {
+      if (err.status === 404) throw new Error(`会话 ${sid} 不存在`)
+      if (err.status) throw new Error(`serve 返回 ${err.status}，无法确认会话（${err.message}）`)
+      throw new Error(`serve 无响应，无法确认会话：${err.message}`)
+    }
+  }
+  return { path: join(homedir(), '.local', 'share', 'opencode'), kind: 'dir' }
+}
+
 // ---------- 配置校验 ----------
 
 function validateConfig(body, current) {
@@ -218,7 +341,13 @@ function ocHeaders(cfg) {
 
 async function ocGet(cfg, path) {
   const res = await fetch(ocBase(cfg) + path, { headers: ocHeaders(cfg), signal: AbortSignal.timeout(5000) })
-  if (!res.ok) throw new Error(`${path} -> ${res.status}`)
+  if (!res.ok) {
+    const err = new Error(`${path} -> ${res.status}`)
+    // 带状态码：调用方要区分「会话不存在（404）」与「serve 无响应」，
+    // 两者给用户的下一步完全不同
+    err.status = res.status
+    throw err
+  }
   return res.json()
 }
 
@@ -258,8 +387,8 @@ function hostAllowed(req) {
   return name === 'localhost' || name === '127.0.0.1'
 }
 
-/** 写操作（POST/PUT/PATCH）除 application/json 外还要带自定义头，挡掉跨站表单 */
-const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH'])
+/** 写操作（POST/PUT/PATCH/DELETE）除 application/json 外还要带自定义头，挡掉跨站表单 */
+const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 const ADMIN_HEADER = 'x-ocb-admin'
 
 function requestGuards(req) {
@@ -647,6 +776,148 @@ async function handleApi(req, res, url) {
     } catch (err) {
       return sendJson(res, 200, { applicable: true, error: err.message, sessions: [] })
     }
+  }
+
+  // 会话查看：在访达里打开。pi 的会话本来就是文件，选中那个 jsonl；
+  // opencode 的会话是 serve 数据库里的行，没有单会话文件，打开数据库所在目录
+  if (sub === 'reveal' && req.method === 'POST') {
+    const body = await readBody(req)
+    const cfg = readJsonSafe(found.dir)
+    // 只有按绑定键查找时才需要 state.json：会话查看不该被一个损坏的
+    // 状态文件挡在门外
+    const state = body.target === 'binding' ? readStateSafe(found.dir).data : null
+    let target
+    try {
+      target = await resolveRevealTarget({
+        dir: found.dir,
+        cfg,
+        target: body.target,
+        sidOrKey: body.target === 'binding' ? body.key : body.sid,
+        state,
+        sessionExists: (sid) => ocGet(cfg, `/api/session/${encodeURIComponent(sid)}`),
+      })
+    } catch (err) {
+      return sendError(res, 400, err.message)
+    }
+    try {
+      await revealInFinder(target.path, target.kind)
+    } catch (err) {
+      return sendError(res, 500, `打开访达失败: ${err.message}`)
+    }
+    return sendJson(res, 200, { ok: true, path: target.path, kind: target.kind })
+  }
+
+  // 解除飞书绑定：从 state.json 删掉这个 key。桥接进程运行时会通过它自己的
+  // 监听把删除同步进内存（src/store.js 的 syncExternalDeletes），不会被
+  // 300ms 防抖的全量落盘写回
+  if (sub === 'bindings' && req.method === 'DELETE') {
+    const key = decodeURIComponent(parts[4] || '')
+    if (!key) return sendError(res, 400, '缺少绑定键')
+    const { data: state, path: statePath } = readStateSafe(found.dir)
+    // 原型链键（constructor、toString……）会从 Object.prototype 继承到值，
+    // 下标直取会把不存在的绑定判成存在；与 sessionInFlight 同一写法
+    const chats = state?.chats
+    const binding =
+      chats && typeof chats === 'object' && Object.prototype.hasOwnProperty.call(chats, key) ? chats[key] : undefined
+    if (!state || !binding) return sendError(res, 404, `没有键为 ${key} 的绑定`)
+    // 正在执行的会话拒解：绑定删掉后这个群再 @ 就是新会话，而飞书上那张
+    // 「执行中」的卡片还挂在旧会话上，事件回来时绑定已经不见了
+    if (binding.sessionId && sessionInFlight(state, binding.sessionId)) {
+      return sendError(res, 400, '这个绑定指向的会话正在执行中，先在飞书里发 /stop 中止再解除')
+    }
+    const next = { ...state, chats: { ...state.chats } }
+    delete next.chats[key]
+    writeStateAtomic(statePath, next)
+    const inst = await collectInstance(found)
+    return sendJson(res, 200, { ok: true, bridgeRunning: inst.process.running })
+  }
+
+  // 删除后端会话。pi 删文件与索引条目；opencode 没有本地会话文件，调 serve
+  // 的删除接口（删的是本地数据库里的行）。两种情况都要清掉指向它的绑定：
+  // 不清的话绑定悬空，下一次 @ 会打到不存在的会话上
+  if (sub === 'sessions' && req.method === 'DELETE') {
+    const sid = decodeURIComponent(parts[4] || '')
+    if (!sid) return sendError(res, 400, '缺少会话 id')
+    const { data: state } = readStateSafe(found.dir)
+    // 进行中的会话拒删：删了后端数据，事件流没有归宿，飞书卡片永远停在
+    // 「执行中」；pi 的子进程还会继续往已删除的 jsonl 写。opencode 分支
+    // 在下面等 serve 之前还会用最新快照再查一次：两次同步读之间桥接的
+    // 落盘，那次重读看得到；ocDelete 的 await 里落盘的那次，重读看不到，
+    // 原因见 spec 已知限制第 7 条
+    if (sessionInFlight(state, sid)) {
+      return sendError(res, 400, '这个会话正在执行中，先在飞书里发 /stop 中止再删除')
+    }
+    const cfg = readJsonSafe(found.dir)
+    const isPi = (cfg.backend?.type || 'opencode') === 'pi'
+    if (isPi) {
+      const dir = join(found.dir, 'pi-sessions')
+      const indexPath = join(dir, 'index.json')
+      let index = null
+      try {
+        index = JSON.parse(readFileSync(indexPath, 'utf8'))
+      } catch (err) {
+        // 从没建过会话时文件不存在；解析失败要说出来，不能当空索引删
+        if (err.code !== 'ENOENT') {
+          return sendError(res, 400, `会话索引读取失败: ${err.message}`)
+        }
+      }
+      // 原型链键（constructor……）会通过 `in` 的存在性检查，把不存在的
+      // 会话判成存在；与 sessionInFlight 同一写法，只认索引自己的键
+      if (!index || !Object.prototype.hasOwnProperty.call(index, sid)) {
+        return sendError(res, 404, `会话 ${sid} 不存在`)
+      }
+      delete index[sid]
+      const tmp = indexPath + '.tmp'
+      writeFileSync(tmp, JSON.stringify(index, null, 2) + '\n', 'utf8')
+      renameSync(tmp, indexPath)
+      // jsonl 文件删掉；文件本来就没有（索引残留）时忽略
+      const file = piSessionFile(dir, sid)
+      if (file) {
+        try {
+          unlinkSync(join(dir, file))
+        } catch {
+          /* 文件读不了就算了，索引条目已经删掉 */
+        }
+      }
+    } else {
+      // 等 serve 之前用最新快照再查一次 inflight：路由开头那次检查之后
+      // 桥接可能刚起了这个会话的执行，用旧快照查不到。这次重读只盖到
+      // 它读的那一刻——之后到 serve 返回之间仍是窗口，fetch 往返本身
+      // 盖不住，那时删除已经生效，拒无可拒（spec 已知限制第 3 条）
+      const { data: preDelete } = readStateSafe(found.dir)
+      if (sessionInFlight(preDelete, sid)) {
+        return sendError(res, 400, '这个会话正在执行中，先在飞书里发 /stop 中止再删除')
+      }
+      try {
+        await ocDelete(cfg, `/api/session/${encodeURIComponent(sid)}`)
+      } catch (err) {
+        // serve 连不上（没有状态码）与会话被 serve 拒绝（有状态码）是两回事，
+        // 文案不能把后者说成「不可达」——那时数据明明还在
+        const why = err.status ? `serve 返回 ${err.status}` : 'serve 无响应'
+        return sendError(res, 400, `删除失败：${why}（${err.message}）` + (err.status ? '' : '。此时会话还在 serve 的数据库里，删不掉，只能先解除绑定'))
+      }
+    }
+    // 清掉指向该会话的绑定：保留记录与目录，只把 sessionId 清空，
+    // 下一次 @ 在同一目录新建会话（与 /del 的行为一致）。
+    // 落盘前重读一次 state.json：opencode 分支上面的 ocDelete 最长要等
+    // 5 秒（超时），这期间桥接任何一次 flush（入队、setInflight、
+    // sessionSeq）都会被开头那份旧快照的写盘打回磁盘版本。排队消息与
+    // sessionSeq 的磁盘记录丢了有实际损失：进程在窗口内被杀时它们就没
+    // 了，sessionSeq 回退还会让重启后重发已用过的号（nextSessionSeq
+    // 要避免的会话重名）。在最新快照上改，写盘就只清 sessionId 一件事
+    let cleared = 0
+    const { data: latest, path: latestPath } = readStateSafe(found.dir)
+    if (latest?.chats) {
+      const next = { ...latest, chats: { ...latest.chats } }
+      for (const [k, c] of Object.entries(latest.chats)) {
+        if (c?.sessionId === sid) {
+          next.chats[k] = { ...c, sessionId: undefined }
+          cleared++
+        }
+      }
+      if (cleared > 0) writeStateAtomic(latestPath, next)
+    }
+    return sendJson(res, 200, { ok: true, clearedBindings: cleared })
   }
 
   // opencode 模型列表

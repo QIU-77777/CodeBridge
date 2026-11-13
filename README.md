@@ -789,13 +789,13 @@ npm run admin -- --port 8080 # 换端口
 | 总览 | 实例状态、后端类型、配置目录、pid 与运行时长、serve 版本、会话数与进行中卡片数；已装 launchd 服务时可启动、停止、重启 |
 | 配置 | 按实例编辑 `config.json`；后端选项来自本机扫描；密钥掩码显示，留空保持原值 |
 | 飞书应用 | 校验凭证、管理 `allowlist` / `listen` / `names` |
-| 会话与后端 | serve 健康、模型列表、会话列表、`state.json` 只读展示、pi CLI 版本 |
+| 会话与后端 | serve 健康、模型列表、会话列表；飞书绑定可查看与解除绑定，后端会话可查看与删除；`state.json` 概要、pi CLI 版本 |
 | 日志与体检 | `bridge.log` / `serve.log` 增量跟随；按实例运行 `doctor` |
 | 新建实例 | 三步生成配置、自动分配 serve 端口与密码、安装 launchd 服务并启动；失败自动回滚 |
 
-接口以 `/api/instances` 与 `/api/backends` 为入口，子路径包含 `config`、`allowlist`、`names`、`listen`、`action`、`logs`、`doctor`、`feishu-verify`、`sessions`、`models`。
+接口以 `/api/instances` 与 `/api/backends` 为入口，子路径包含 `config`、`allowlist`、`names`、`listen`、`action`、`logs`、`doctor`、`feishu-verify`、`sessions`、`models`、`reveal`，删除用 `DELETE /api/instances/:name/bindings/:key` 与 `DELETE /api/instances/:name/sessions/:sid`。
 
-安全边界：只监听 `127.0.0.1`；Host 头只接受 `localhost` 与 `127.0.0.1`；接口只收 `application/json`；写操作额外要求 `X-OCB-Admin: 1`；密钥不回传浏览器、不写入后台日志；起停操作只对已装 launchd 服务的实例开放。
+安全边界：只监听 `127.0.0.1`；Host 头只接受 `localhost` 与 `127.0.0.1`；接口只收 `application/json`；写操作（POST / PUT / PATCH / DELETE）额外要求 `X-OCB-Admin: 1`；密钥不回传浏览器、不写入后台日志；起停操作只对已装 launchd 服务的实例开放。
 
 代码在 `admin/`：`server.js`（服务与接口）、`instances.js`（实例发现）、`backends.js`（本机扫描）、`create.js`（新建实例）、`control.js`（起停、体检、日志）、`entries.js`（名单操作）、`public/index.html`（界面）。
 
@@ -835,7 +835,15 @@ npm run admin -- --port 8080 # 换端口
 
 ### 第 4 步：看会话与后端
 
-点左侧「会话与后端」：上半是后端健康（serve 版本与 pid、serve 地址、默认工作目录）与状态文件概要（绑定会话数、进行中卡片、攒到的名字）；往下是会话列表（标题、会话 id、目录、模型、最近更新）、模型列表，以及 `state.json` 里进行中的卡片。两个后端都有会话，存放方式不同：opencode 的问常驻 serve；pi 的没有 serve，桥接把会话索引写在配置目录的 `pi-sessions/index.json`，详细记录是同目录下的 JSONL 文件。pi 后端这一页同时显示 CLI 版本与默认工作目录。默认工作目录的修改入口在「配置」页；单个会话换目录在飞书里发 `/cd`。
+点左侧「会话与后端」：上半是后端健康（serve 版本与 pid、serve 地址、默认工作目录）与状态文件概要（绑定会话数、进行中卡片、攒到的名字）；往下是进行中的卡片、飞书绑定、后端会话三张表，以及模型列表。两个后端都有会话，存放方式不同：opencode 的问常驻 serve；pi 的没有 serve，桥接把会话索引写在配置目录的 `pi-sessions/index.json`，详细记录是同目录下的 JSONL 文件。pi 后端这一页同时显示 CLI 版本与默认工作目录。默认工作目录的修改入口在「配置」页；单个会话换目录在飞书里发 `/cd`。
+
+「飞书绑定」与「后端会话」两张表每行都有操作：
+
+- **查看**：在访达里打开。pi 选中该会话的 JSONL 文件；opencode 的会话是 serve 数据库（`~/.local/share/opencode/opencode.db`）里的行，没有单会话文件，打开的是数据库所在目录。
+- **解除绑定**（绑定表）：从 `state.json` 删掉这个绑定，下一次 @ 机器人会新建一个会话。后端里已存在的会话不受影响。改动前自动备份成 `state.json.bak`。
+- **删除**（会话表）：删掉后端数据——pi 删 JSONL 文件与索引条目，opencode 调 serve 的删除接口。指向它的绑定会一并清掉会话关联（目录等信息保留，下一次 @ 在同一目录新建会话）。删除不可恢复，确认弹窗里写清后果；会话正在执行中时拒绝删除，提示先在飞书里发 `/stop`。
+
+删除对运行中的桥接立即生效：桥接监听 `state.json`，把外部删除同步进内存，不会被自己的 300ms 防抖落盘写回（见 [design-notes.md](docs/design-notes.md) 第十六节）。需求规格见 [session-admin-spec.md](docs/session-admin-spec.md)。
 
 ![会话与后端页：serve 健康与会话列表](docs/images/admin/03-new-sidebar-sessions.png)
 
@@ -895,7 +903,7 @@ logs/                      运行日志（不入库）
 | `npm run test:topic-context` | 话题近况：text/post 拉平、双键缓冲、@ 闸门之前采集、私聊不带的三条边界、prompt 拼装与排队快照 |
 | `npm run test:prompt-layout` | XML 三段结构、空键省略、ids 三分支、闭合标签中和、续聊不发 profile、私聊/主聊天流/pi/plain 回退、排队 layout 快照 |
 | `npm run test:pi` / `test:pi-cli-sessions` | pi 后端与终端会话 |
-| `npm run test:admin` / `test:init` / `test:identity` / `test:github` / `test:serve-password` | 后台、初始化、身份注入、serve 密码 |
+| `npm run test:admin` / `test:state-sync` / `test:init` / `test:identity` / `test:github` / `test:serve-password` | 后台、删除同步、初始化、身份注入、serve 密码 |
 | `npm run probe:names [chat_id]` / `probe:msg` | 飞书接口探针，打印权限与字段 |
 | `npm run probe:prompt` | 打印**真正发给模型的 body**（走生产拼装链路，只 stub 网络与后端）。默认 xml 版；`--plain` 看回退形态、`--diff` 看两者逐行差异、`--all --out docs/prompt-samples.md` 生成存档 |
 
