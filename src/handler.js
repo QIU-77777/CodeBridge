@@ -609,13 +609,14 @@ export class Bridge {
       if (msg.isBot && this.caps.steer === true) {
         try {
           await this.oc.prompt(binding.sessionId, msg.text, { delivery: 'steer' })
-          // 反馈要能自明：谁的消息、内容是什么。卡片那路带「来自 / 内容 /
-          // 注入说明」，文本这路可以不一样，但这两样不能少——不然群里只看到
-          // 一句光秃秃的「已引导」，不知道注入的是什么
+          // 反馈要能自明：谁的消息、内容是什么，以及生效时机——排入当前
+          // 回合，本回合工具调用结束后交付，下次模型调用生效。卡片那路带
+          // 「来自 / 内容 / 注入说明」，文本这路可以不一样，但这几样不能少：
+          // 不然群里只看到一句光秃秃的「已引导」，不知道注入的是什么、什么时候生效
           const from = this.nameOf(msg.userId) || msg.userId
           await this.t.sendText(
             ctx.chatId,
-            `已引导：${from} 的消息已注入当前回合，下一步生效，不中断。\n\n${truncate(msg.text, 120)}`,
+            `已引导：${from} 的消息已排入当前回合，本回合工具调用结束后交付，下次模型调用生效，不中止已有工作。\n\n${truncate(msg.text, 120)}`,
             { replyTo: ctx.replyTo },
           )
           return null
