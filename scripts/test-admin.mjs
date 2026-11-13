@@ -696,12 +696,16 @@ try {
     ok(/removeBinding\(\\'/.test(chatsRow), '绑定行有解除绑定按钮')
     ok(/deleteSession\(\\'/.test(ssRow), '会话行有删除按钮')
     ok(/被 ' \+ n \+ ' 个绑定/.test(ssRow), '会话标题列显示绑定数量徽章')
+    // 终端 pi 的会话：桥接只读。删除置灰并指路，查看保留；标题列加「终端」徽章
+    ok(/disabled title="终端 pi 的会话不在桥接目录里/.test(ssRow), '终端会话的删除置灰并说明原因')
+    ok(/终端 pi 建的会话，桥接只读/.test(ssRow), '终端会话行有「终端」徽章')
     ok(/disabled title="' \+ esc\(blocked\)/.test(chatsRow), '置灰的查看按钮带原因浮泡')
     ok(/return '这个绑定还没有会话'/.test(chatsRow), '没有绑定会话时查看禁用并说明原因')
     // 可预测的失败一律置灰：会话不在后端列表里、serve 无响应，两类都不该
     // 让用户点完才报错（人类 2026-11-13 的要求）。会话列表拉不到时不置灰——
     // 那时列表为空不是会话不存在，按钮放回可点，让服务端的如实文案说话
-    ok(/绑定的会话不在后端列表里/.test(chatsRow), '绑定的会话不在后端列表时查看禁用并说明原因')
+    ok(/绑定的会话不在会话列表里/.test(chatsRow), 'pi 后端：会话不在列表时查看禁用并说明原因')
+    ok(/不在最近 500 条会话里/.test(chatsRow), 'opencode 后端：置灰文案写明 500 条窗口')
     ok(/serve 无响应，确认不了会话/.test(chatsRow), 'serve 无响应时查看禁用并说明原因')
     ok(/const sessionsKnown = !sessions\.failed/.test(chatsRow), '会话列表拉不到时不把查看误置灰')
 
@@ -722,6 +726,11 @@ try {
     ok(/statePath \+ '\.bak'/.test(serverSrc), '改 state.json 前备份成 .bak')
     ok(/export async function resolveRevealTarget\(/.test(serverSrc), 'reveal 路径解析是纯函数（可离线测）')
     ok(/sessionInFlight/.test(serverSrc), '删除前置检查会话是否在执行中')
+    // 终端 pi 会话：reveal 回退 cliSessionRoot、列表合并、删除拒删
+    ok(/cliSessionFilePath\(cliRoot, sid\)/.test(serverSrc), 'reveal 的 pi 分支回退查找 cliSessionRoot')
+    ok(/scanCliSessions\(cliRoot\)/.test(serverSrc), 'pi 会话列表合并终端会话')
+    ok(/终端 pi 的会话，不在桥接目录里/.test(serverSrc), '终端会话删除拒删并指路')
+    ok(/pi-cli-sessions\.js/.test(serverSrc), '终端会话读取走共享模块（与桥接同一份实现）')
     // DELETE 也必须过写操作防护：曾经 WRITE_METHODS 只有 POST/PUT/PATCH，
     // 解除绑定不带自定义头也能打过去，等于跨站表单挡不住这半边
     ok(/new Set\(\['POST', 'PUT', 'PATCH', 'DELETE'\]\)/.test(serverSrc), 'DELETE 纳入写操作防护（自定义头与 JSON 检查）')

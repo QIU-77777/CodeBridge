@@ -21,16 +21,12 @@ import {
   readdirSync,
   unlinkSync,
   chmodSync,
-  openSync,
-  readSync,
-  closeSync,
-  statSync,
   watch,
 } from 'node:fs'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
 import { CONFIG_DIR } from './config.js'
 import { githubEnv } from './github-identity.js'
+import { CLI_SESSION_ROOT, scanCliSessions, textOf } from './pi-cli-sessions.js'
 
 /** 单行 JSONL 可能包含整段 messages，限制一下，别让一条畸形输出吃光内存 */
 const MAX_STDOUT_CHARS = 4 * 1024 * 1024
@@ -49,14 +45,9 @@ const SETTLED_QUIET_MS = 5_000
 const EXIT_DRAIN_MS = 300
 
 /**
- * 终端 pi 的默认会话根目录（`pi -r` 列的就是它）。它按工作目录建子目录存放
- * `<时间戳>_<uuid>.jsonl`；桥接自建的会话在实例配置目录下的 pi-sessions 里
- * 平铺存放，两处互不可见。扫终端目录时只读每个文件的头部，不整读——一个会话
- * 文件能到 16MB，而 id、cwd、标题、模型都在最前面几行。
+ * 终端 pi 的默认会话根目录（`pi -r` 列的就是它）与头部读取规则在
+ * src/pi-cli-sessions.js：管理后台的会话列表与「查看」共用同一份实现。
  */
-const CLI_SESSION_ROOT = join(homedir(), '.pi', 'agent', 'sessions')
-/** 头部读取上限：够覆盖 system 行 + 第一条 user message（标题来源） */
-const CLI_HEAD_BYTES = 512 * 1024
 /** 扫描结果的进程内缓存时长：/sessions 之外，prompt 每次也要查一次 */
 const CLI_SCAN_TTL_MS = 10_000
 
@@ -82,92 +73,7 @@ function killTree(child, signal) {
   }
 }
 
-/**
- * 从 pi 的 message_end / turn_end 里抠出最终文本
- */
-function textOf(message) {
-  const content = message?.content
-  if (!Array.isArray(content)) return ''
-  return content
-    .filter((c) => c && c.type === 'text' && typeof c.text === 'string')
-    .map((c) => c.text)
-    .join('')
-}
-
-/**
- * 读终端 pi 一个会话文件的头部，提炼出桥接需要的字段。
- *
- * 头部三行就有全部信息：第一行 `type:"session"` 带 id 与 cwd，随后的
- * model_change 带模型，第一条 role=user 的 message 的文本即标题（与 pi 的
- * resume 选择器同一来源）。只读前 CLI_HEAD_BYTES 字节——会话文件能到 16MB，
- * 整读会让每次 /sessions 都卡住。
- *
- * 返回 null 表示这个文件读不出有效会话头（损坏、空文件、非 pi 格式）。
- */
-function readCliSessionHead(file) {
-  let head
-  try {
-    const fd = openSync(file, 'r')
-    try {
-      const buf = Buffer.allocUnsafe(CLI_HEAD_BYTES)
-      const n = readSync(fd, buf, 0, CLI_HEAD_BYTES, 0)
-      head = buf.toString('utf8', 0, n)
-    } finally {
-      closeSync(fd)
-    }
-  } catch {
-    return null
-  }
-  let id = null
-  let directory = ''
-  let created = 0
-  let model = null
-  let title = ''
-  for (const line of head.split('\n')) {
-    if (!line.startsWith('{')) continue
-    let ev
-    try {
-      ev = JSON.parse(line)
-    } catch {
-      continue
-    }
-    if (!id && ev?.type === 'session' && ev.id) {
-      id = ev.id
-      directory = ev.cwd || ''
-      created = ev.timestamp ? Date.parse(ev.timestamp) || 0 : 0
-      continue
-    }
-    if (id && !model && ev?.type === 'model_change' && ev.modelId) {
-      model = { providerID: ev.provider || '', id: ev.modelId }
-      continue
-    }
-    if (id && !title && ev?.type === 'message' && ev.message?.role === 'user') {
-      const t = textOf(ev.message).trim()
-      if (t) title = t
-      // 标题到手，后面的行都是正文，不再需要
-      if (model || created) break
-    }
-  }
-  if (!id) return null
-  let updated = 0
-  try {
-    updated = statSync(file).mtimeMs
-  } catch {
-    /* 拿不到 mtime 就用创建时间 */
-  }
-  return {
-    id,
-    title: title || '(无标题)',
-    location: { directory },
-    model,
-    time: { created: created || updated, updated: updated || created || Date.now() },
-    cost: 0,
-    tokens: null,
-    // 桥接据此走 --session <file> 续聊，并禁止改名/删除（那是终端 pi 的地盘）
-    file,
-    cli: true,
-  }
-}
+// textOf、readCliSessionHead 与扫描逻辑已移到 src/pi-cli-sessions.js（管理后台共用）
 
 /** tool_execution_end.result → 纯文本，供卡片工具行展示 */
 function toolOutputText(result) {
@@ -413,37 +319,16 @@ export class PiBackend {
   /**
    * 扫终端 pi 的会话根目录，返回 id -> 会话 的 Map。
    *
-   * 根目录下每个子目录是一个工作目录（目录名是路径编码，不用解析——jsonl
-   * 头部自带 cwd）。缓存 10 秒：prompt 每次也要查一次这个 Map 来判断会话在
-   * 哪，不缓存的话每条消息都全盘扫一遍。force=true 跳过缓存（/sessions 用）。
+   * 扫描实现在 src/pi-cli-sessions.js（管理后台共用）；这里只包一层 10 秒
+   * 缓存：prompt 每次也要查一次这个 Map 来判断会话在哪，不缓存的话每条消息
+   * 都全盘扫一遍。force=true 跳过缓存（/sessions 用）。
    */
   _scanCliSessions({ force = false } = {}) {
     const now = Date.now()
     if (!force && this._cliCache && now - this._cliCache.at < CLI_SCAN_TTL_MS) {
       return this._cliCache.map
     }
-    const map = new Map()
-    let subs = []
-    try {
-      subs = readdirSync(this.cliRoot, { withFileTypes: true }).filter((d) => d.isDirectory())
-    } catch {
-      // 没装过终端 pi、或目录被挪走：当作没有外部会话，桥接自建的照常用
-      this._cliCache = { at: now, map }
-      return map
-    }
-    for (const sub of subs) {
-      const dir = join(this.cliRoot, sub.name)
-      let files = []
-      try {
-        files = readdirSync(dir).filter((f) => f.endsWith('.jsonl'))
-      } catch {
-        continue
-      }
-      for (const f of files) {
-        const meta = readCliSessionHead(join(dir, f))
-        if (meta) map.set(meta.id, meta)
-      }
-    }
+    const map = scanCliSessions(this.cliRoot)
     this._cliCache = { at: now, map }
     return map
   }

@@ -30,6 +30,7 @@ import {
   checkName,
   checkOpenId,
 } from './entries.js'
+import { CLI_SESSION_ROOT, cliSessionFilePath, scanCliSessions } from '../src/pi-cli-sessions.js'
 
 const REPO = resolve(fileURLToPath(import.meta.url), '../..')
 /** admin 自己监听的端口。新建实例自动分配 serve 端口时要避开它 */
@@ -202,6 +203,12 @@ function piSessionFile(dir, sid) {
   return files.find((f) => f.endsWith(`_${sid}.jsonl`)) || null
 }
 
+/** 桥接自建 pi 会话文件的绝对路径；找不到返回 null */
+function piSessionFilePath(dir, sid) {
+  const file = piSessionFile(dir, sid)
+  return file ? join(dir, file) : null
+}
+
 /** 在访达里打开一个路径：文件用 open -R（选中该文件），目录用 open */
 function revealInFinder(path, kind) {
   return new Promise((res, rej) => {
@@ -240,10 +247,13 @@ export async function resolveRevealTarget({ dir, cfg, target, sidOrKey, state, s
   if (!sid) throw new Error('缺少会话 id')
   if ((cfg.backend?.type || 'opencode') === 'pi') {
     const sessionDir = join(dir, 'pi-sessions')
-    const file = piSessionFile(sessionDir, sid)
-    if (!file) throw new Error(`找不到会话 ${sid} 的文件`)
-    const path = join(sessionDir, file)
-    if (!pathWithinAny(path, [resolve(sessionDir)])) throw new Error('路径不在允许范围内')
+    // 桥接自建的会话平铺在 pi-sessions；终端 pi 的会话在 cliSessionRoot 下
+    // 按工作目录分的子目录里。/sessions 与 /switch 都认终端会话，「查看」
+    // 只认一半的话，指向终端会话的绑定点了必然失败
+    const cliRoot = cfg.backend?.pi?.cliSessionRoot || CLI_SESSION_ROOT
+    const path = piSessionFilePath(sessionDir, sid) || cliSessionFilePath(cliRoot, sid)
+    if (!path) throw new Error(`找不到会话 ${sid} 的文件`)
+    if (!pathWithinAny(path, [resolve(sessionDir), resolve(cliRoot)])) throw new Error('路径不在允许范围内')
     return { path, kind: 'file' }
   }
   // opencode：会话是 serve 数据库里的行，没有单会话文件。先确认会话存在，
@@ -751,7 +761,15 @@ async function handleApi(req, res, url) {
           return sendJson(res, 200, { applicable: true, error: `会话索引读取失败: ${err.message}`, sessions: [] })
         }
       }
-      const sessions = Object.values(index || {})
+      const merged = new Map()
+      for (const s of Object.values(index || {})) if (s?.id) merged.set(s.id, s)
+      // 终端 pi 的会话（cliSessionRoot 下按工作目录分目录存放）：桥接的
+      // /sessions 一直合并展示，admin 不合并的话，指向终端会话的绑定会被页面
+      // 误判成「会话已删除」而置灰，会话表也少一半会话。桥接自建的优先
+      // （id 命名空间不同，实际不会撞）
+      const cliRoot = cfg.backend?.pi?.cliSessionRoot || CLI_SESSION_ROOT
+      for (const [id, s] of scanCliSessions(cliRoot)) if (!merged.has(id)) merged.set(id, s)
+      const sessions = [...merged.values()]
         .sort((a, b) => (b.time?.updated || 0) - (a.time?.updated || 0))
         .map((s) => ({
           id: s.id || '',
@@ -759,6 +777,9 @@ async function handleApi(req, res, url) {
           directory: s.location?.directory || '',
           model: piModelOf(found.dir, s),
           updatedAt: s.time?.updated || null,
+          // 终端会话不在桥接索引里：页面把「删除」置灰（那是终端 pi 的地盘），
+          // 「查看」可用——reveal 会去 cliSessionRoot 找文件
+          cli: Boolean(s.cli),
         }))
       return sendJson(res, 200, { applicable: true, sessions })
     }
@@ -869,6 +890,11 @@ async function handleApi(req, res, url) {
       // 原型链键（constructor……）会通过 `in` 的存在性检查，把不存在的
       // 会话判成存在；与 sessionInFlight 同一写法，只认索引自己的键
       if (!index || !Object.prototype.hasOwnProperty.call(index, sid)) {
+        // 终端 pi 的会话不在桥接索引里：删不了，说清去哪儿删。与桥接的
+        // /del 对终端会话的拒绝同一口径（src/pi.js deleteSession）
+        if (cliSessionFilePath(cfg.backend?.pi?.cliSessionRoot || CLI_SESSION_ROOT, sid)) {
+          return sendError(res, 400, `会话 ${sid} 是终端 pi 的会话，不在桥接目录里，要删请在终端 pi 的会话选择器里操作`)
+        }
         return sendError(res, 404, `会话 ${sid} 不存在`)
       }
       delete index[sid]

@@ -72,7 +72,7 @@
 | D5 | 删后端会话后绑定怎么处理 | 清掉绑定的 `sessionId`，保留整条记录 | 目录等信息还在，下一次 @ 在同一目录新建会话。与 `/del` 的既有行为一致（`cmdDelete()` 里 `store.clearSession()`） |
 | D6 | 进行中的会话 | 拒绝删除，接口返回 400 与可读原因 | 见 2.3 |
 | D7 | 备份 | 改 `state.json` 前备份为 `state.json.bak`，沿用 `config.json.bak` 的做法 | 绑定层删除可恢复；后端会话数据删了不可恢复，确认文案写清 |
-| D8 | reveal 接口的路径来源 | 服务端从 sid 或 key 解析出绝对路径，只允许三个根：实例配置目录、pi-sessions 目录、`~/.local/share/opencode`。不接受客户端传任意路径 | 本地服务也要防滥用：浏览器里任何页面都能打这个接口，不能变成打开任意路径的通用工具 |
+| D8 | reveal 接口的路径来源 | 服务端从 sid 或 key 解析出绝对路径，只允许四个根：实例配置目录、pi-sessions 目录、`~/.local/share/opencode`、`backend.pi.cliSessionRoot`。不接受客户端传任意路径 | 本地服务也要防滥用：浏览器里任何页面都能打这个接口，不能变成打开任意路径的通用工具。第四个根给终端 pi 的会话：桥接的 /sessions 与 /switch 都认它们，查看只认一半会留下必然失败的点 |
 | D9 | 桥接不在跑时 | 同一套代码，没有分支 | 不在跑时既没有监听也没有覆写者，admin 改完即生效；桥接下次启动读到的就是改过的文件 |
 
 ## 5. 需求清单（可验收）
@@ -81,9 +81,9 @@
 |---|---|
 | FR-1 | 飞书绑定表每行有「查看」「解除绑定」；没有绑定会话时「查看」禁用并说明原因 |
 | FR-2 | 后端会话表每行有「查看」「删除」；被绑定的会话在标题列显示绑定数量徽章 |
-| FR-3 | 「查看」在访达打开：pi 选中该会话的 jsonl 文件；opencode 打开 `~/.local/share/opencode` 目录 |
+| FR-3 | 「查看」在访达打开：pi 选中该会话的 jsonl 文件（桥接自建的在 pi-sessions，终端 pi 的在 cliSessionRoot）；opencode 打开 `~/.local/share/opencode` 目录 |
 | FR-4 | 「解除绑定」从 state.json 移除该 key：先备份 `state.json.bak`，临时文件加重命名落盘 |
-| FR-5 | 「删除」删后端数据：pi 删 jsonl 文件并删 `index.json` 条目；opencode 调 serve 删除接口 |
+| FR-5 | 「删除」删后端数据：pi 删 jsonl 文件并删 `index.json` 条目；opencode 调 serve 删除接口。终端 pi 的会话不在桥接索引里，删除置灰并指路（要删去终端 pi 的会话选择器） |
 | FR-6 | 删除后端会话后，清掉指向它的绑定的 `sessionId` |
 | FR-7 | `inflight` 里有该会话时拒绝删除，返回 400 与可读原因（提示先发 `/stop`） |
 | FR-8 | 桥接侧：`state.json` 外部改动时单向同步删除；每次 flush 落盘前先同步一次 |
@@ -102,9 +102,11 @@
 
 **reveal 的路径解析规则**（服务端执行，D8）：
 
-- `target=session`：pi 在 `pi-sessions` 目录按 `_<sid>.jsonl` 后缀找文件（与 `piModelOf()` 同一规则），找到则 reveal 该文件，找不到返回 400；opencode 先向 serve 确认会话存在（`GET /api/session/:sid`），不存在返回 400，存在则打开 `~/.local/share/opencode` 目录。
+- `target=session`：pi 先在 `pi-sessions` 目录按 `_<sid>.jsonl` 后缀找文件（与 `piModelOf()` 同一规则），找不到再回退到 `backend.pi.cliSessionRoot`（默认 `~/.pi/agent/sessions`）下按工作目录分的子目录里找——终端 pi 的会话在那里，桥接的 `/sessions` 与 `/switch` 都认它们，「查看」只认一半的话，指向终端会话的绑定点了必然失败；两处都有取桥接自建的；都找不到返回 400。opencode 先向 serve 确认会话存在（`GET /api/session/:sid`），不存在返回 400，存在则打开 `~/.local/share/opencode` 目录。
 - `target=binding`：先从 state.json 取该 key 的 `sessionId`，没有则返回 400（页面按钮此时本就是禁用的）；有则按上一条解析。
-- 解析出的路径必须落在三个允许根之内，否则 400。
+- 解析出的路径必须落在四个允许根之内，否则 400：实例配置目录、`pi-sessions` 目录、`~/.local/share/opencode`、`backend.pi.cliSessionRoot`。
+
+**pi 的会话列表**（`GET /api/instances/:name/sessions`）：`pi-sessions/index.json` 与 `cliSessionRoot` 全量合并，桥接自建的优先（id 命名空间不同，实际不会撞）。终端会话带 `cli: true` 标记：页面据此把「删除」置灰（终端会话不在桥接索引里，删不了），「查看」保留（reveal 会去 cliSessionRoot 找文件）。合并展示与桥接的 `/sessions` 同一口径，两边共用 `src/pi-cli-sessions.js` 的扫描与头部解析。
 
 **删除的前置检查**（两个 DELETE 接口共用）：读一次磁盘上的 state.json，`inflight` 里有目标会话的 sessionId 即返回 400，原因写「会话正在执行中，先在飞书里发 /stop 中止」。opencode 的删除额外要求 serve 可达，不可达返回 400 并说明此时只能解除绑定；等 serve 之前再用最新快照查一次 `inflight`——路由开头那次检查之后，桥接可能刚起了这个会话的执行，旧快照查不到。查两次也盖不住 fetch 往返本身的窗口，那时删除已经生效（见已知限制第 3 条）。
 
@@ -134,8 +136,8 @@ opencode 后端不需要这一处：会话数据在 serve 里，桥接不缓存�
 
 ## 8. 前端交互
 
-- **飞书绑定表**加第 7 列「操作」：「查看」（绑定了会话才可点，否则禁用，悬停说明「这个绑定还没有会话」）、「解除绑定」（danger）。
-- **后端会话表**加第 6 列「操作」：「查看」、「删除」（danger）。标题列在既有「机器人」徽章后追加绑定数量徽章（N 个绑定指向它时显示）。
+- **飞书绑定表**加第 7 列「操作」：「查看」在三种可预测失败下禁用并悬停说明原因（没有绑定会话；绑定的会话不在会话列表里，可能已删除；opencode 的 serve 无响应）、「解除绑定」（danger）。会话列表拉失败时不跟着禁用——空列表不等于会话不存在。opencode 的列表是最近 500 条，窗外的老会话会被误判，文案写明窗口。
+- **后端会话表**加第 6 列「操作」：「查看」、「删除」（danger）。终端 pi 的会话（桥接只读）标题列加「终端」徽章，「删除」禁用并说明去哪儿删，「查看」保留。标题列在既有「机器人」徽章后追加绑定数量徽章（N 个绑定指向它时显示）。
 - 空态与错误态的 `colspan` 随列数调整（绑定表 6 改 7，会话表 5 改 6）。
 - 删除的 confirm 文案分后端：
   - pi：「删除后该会话的 jsonl 文件不可恢复。有 N 个飞书绑定指向它，这些绑定的会话关联会被清掉，下一次 @ 会在同一目录新建会话。确定删除？」
@@ -148,7 +150,7 @@ opencode 后端不需要这一处：会话数据在 serve 里，桥接不缓存�
 
 | 测试 | 覆盖 |
 |---|---|
-| `scripts/test-admin.mjs`（纯函数） | reveal 路径解析：三个允许根之内、目录穿越拒绝、pi 按 sid 找文件、找不到文件返回错误；`syncExternalDeletes` 单向语义：磁盘删除传播到内存、内存新增保留、磁盘读失败不动内存 |
+| `scripts/test-admin.mjs`（纯函数） | reveal 路径解析：四个允许根之内、目录穿越拒绝、pi 按 sid 找文件（含 cliSessionRoot 回退与两处都有的优先级）、找不到文件返回错误；`syncExternalDeletes` 单向语义：磁盘删除传播到内存、内存新增保留、磁盘读失败不动内存 |
 | `scripts/test-admin-api.mjs`（接口到落盘） | 解除绑定：`state.json.bak` 生成、chats 少一行、临时文件加重命名；inflight 占用返回 400（pi 与 opencode 两个分支，opencode 断言请求没发到 serve）；删除 opencode 会话（stub serve 的 fetch）：serve 收到 DELETE、指向它的绑定被清；删除 pi 会话：jsonl 文件没了、`index.json` 条目没了、绑定被清；原型链键（`constructor`）删除与解除返回 404、不动文件；删除窗口期桥接落盘（排队消息、sessionSeq）不被打回；reveal（stub spawn）路径与参数正确；serve 不可达时返回 400 |
 | 桥接侧（`scripts/test-admin.mjs` 或新文件） | `syncExternalDeletes` 单元用例；一个集成用例：起 Store 后从外部改写 state.json 删掉一个 key，断言内存同步（监听是异步的，用例里轮询等待）；pi 索引缓存外部改动后失效 |
 
@@ -165,13 +167,16 @@ opencode 后端不需要这一处：会话数据在 serve 里，桥接不缓存�
 5. **僵尸 inflight 记录会误挡删除。** 进程崩溃遗留的记录正常在下次启动时被 `reconcileInflight()` 清掉；万一残留，手动编辑 state.json（有 `.bak`）。
 6. **fs.watch 依赖本地文件系统事件。** 本机 APFS 可靠；万一丢事件，flush 前同步与桥接重启两条路兜底。
 7. **inflight 拒删检查盖不住 fetch 往返期间新起的执行。** 两次检查读到的都是 fetch 发出之前的快照，opencode 分支等 serve 的那几秒里桥接新起的执行两次都发现不了，删除照常执行。把检查挪到落盘前那份新快照上，只能在 serve 删完之后跑——那时行已经没了（serve 没有撤销删除的接口），返回 400 只是对一次已完成的删除报错，用户没有任何可做的动作，失败模式比现状差。现状的危害有限：执行挂在 serve 订阅上自行收尾，飞书卡片正常走完；就算绑定不清也不会悬空，桥接下次 @ 发现会话不存在会自动重建（`src/handler.js`）。
+8. **opencode 的会话列表只取最近 500 条。** 绑定指向的会话排在窗外时，页面把它误判成已删除而置灰（置灰文案已写明窗口）；pi 的列表是索引加终端目录的全量合并，没有这个边界。
+9. **终端 pi 的会话在管理后台只读。** 「查看」可打开它的 jsonl，「删除」置灰——删终端会话要去终端 pi 的会话选择器，与桥接 `/del` 的拒绝同一口径。
 
 ## 11. 实现清单
 
 | 文件 | 变更 |
 |---|---|
 | `admin/public/index.html` | 两张表加操作列与绑定数量徽章；删除 confirm；新增操作结果状态行；空态与错误态 colspan 调整 |
-| `admin/server.js` | reveal 与两个 DELETE 接口；`writeStateAtomic()`；删除前置检查（inflight、serve 可达性、原型链键用 hasOwnProperty 判定；opencode 分支等 serve 前用最新快照复查 inflight）；pi 索引条目删除；opencode 分支落盘前重读 state.json |
+| `admin/server.js` | reveal 与两个 DELETE 接口；`writeStateAtomic()`；删除前置检查（inflight、serve 可达性、原型链键用 hasOwnProperty 判定；opencode 分支等 serve 前用最新快照复查 inflight）；pi 索引条目删除；opencode 分支落盘前重读 state.json；reveal 的 pi 分支回退 cliSessionRoot；pi 会话列表合并终端会话 |
+| `src/pi-cli-sessions.js` | 终端 pi 会话的共享读取：头部解析（`readCliSessionHead`）、目录扫描（`scanCliSessions`）、按 id 找文件（`cliSessionFilePath`）。桥接与管理后台共用，不新造第二套 |
 | `src/store.js` | `syncExternalDeletes()`；构造时起目录监听（unref）；`flush()` 开头同步一次 |
 | `src/pi.js` | `_ensureWatch()` 与索引缓存失效 |
 | `scripts/test-admin.mjs` | 纯函数用例扩充 |

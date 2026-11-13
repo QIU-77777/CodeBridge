@@ -36,11 +36,14 @@ delete process.env.OCB_CONFIG_DIR
 process.env.HOME = FAKE_HOME
 
 const CONFIG_PATH = join(INSTANCE_DIR, 'config.json')
+// 终端 pi 会话根：初始为空目录，后面的合并用例往里写文件。初始配置就指过来，
+// 空目录对前面的列表计数断言没有影响
+const CLI_ROOT = join(FAKE_HOME, 'cli-sessions')
 writeFileSync(
   CONFIG_PATH,
   JSON.stringify(
     {
-      backend: { type: 'pi', pi: { bin: 'pi', model: '', timeoutMs: 600000, extraArgs: [] } },
+      backend: { type: 'pi', pi: { bin: 'pi', model: '', timeoutMs: 600000, extraArgs: [], cliSessionRoot: CLI_ROOT } },
       feishu: {
         appId: 'cli_test0000000000000a',
         appSecret: 'sec',
@@ -374,6 +377,33 @@ try {
     ok(r.status === 400 && /还没有会话/.test(r.json.error || ''), 'reveal 没有绑定会话时返回 400')
     r = await post(`/api/instances/${NAME}/reveal`, { target: 'session', sid: '' })
     ok(r.status === 400 && /缺少会话 id/.test(r.json.error || ''), 'reveal 缺会话 id 时返回 400')
+
+    // 终端 pi 的会话：合并进列表（带头部解析），带 cli 标记；删除拒删并指路。
+    // cliSessionRoot 在初始配置里就指向 CLI_ROOT，之前一直是空目录
+    mkdirSync(join(CLI_ROOT, '--tmp-work--'), { recursive: true })
+    const cliSid = '01a1b4ac-19da-74ad-8840-96a0a9203dc6'
+    writeFileSync(
+      join(CLI_ROOT, '--tmp-work--', `2026-11-07T06-22-20-122Z_${cliSid}.jsonl`),
+      JSON.stringify({ type: 'session', version: 3, id: cliSid, timestamp: '2026-11-07T06:22:20.122Z', cwd: '/tmp/work' }) +
+        '\n' +
+        JSON.stringify({ type: 'model_change', id: 'a1', parentId: null, provider: 'deepseek', modelId: 'deepseek-v4-pro' }) +
+        '\n' +
+        JSON.stringify({ type: 'message', id: 'm1', message: { role: 'user', content: [{ type: 'text', text: '读一下' }] } }) +
+        '\n',
+    )
+    const sessionsMerged = await fetch(`${BASE}/api/instances/${NAME}/sessions`, { headers: { Accept: 'application/json' } }).then((x) => x.json())
+    const cliRow = sessionsMerged.sessions?.find((s) => s.id === cliSid)
+    ok(Boolean(cliRow), '终端会话合并进列表')
+    ok(cliRow?.cli === true, '终端会话带 cli 标记（页面据此把删除置灰）')
+    ok(cliRow?.title === '读一下' && cliRow?.directory === '/tmp/work', '终端会话的标题与目录从文件头部解析')
+    ok(cliRow?.model === 'deepseek/deepseek-v4-pro', '终端会话的模型从头部 model_change 行解析')
+    ok(sessionsMerged.sessions?.find((s) => s.id === 'pi-del0002')?.cli === false, '桥接自建的会话 cli 为 false')
+
+    // 终端会话删除：拒删并说清去哪儿删（与桥接 /del 同一口径）
+    const idxBeforeCli = readFileSync(join(piDir, 'index.json'), 'utf8')
+    r = await del(`/api/instances/${NAME}/sessions/${cliSid}`)
+    ok(r.status === 400 && /终端 pi 的会话/.test(r.json.error || ''), '终端会话拒删并指路', r.json.error)
+    ok(readFileSync(join(piDir, 'index.json'), 'utf8') === idxBeforeCli, '拒删时索引不动')
 
     // state.json 损坏：三个接口统一返回 400「state.json 解析失败」，文件一个
     // 字节不动。曾经 readStateSafe 的抛错没带 statusCode，外层 catch 按 500 处理，

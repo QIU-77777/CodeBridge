@@ -157,7 +157,10 @@ try {
   {
     const dir = mkdtempSync(join(tmpdir(), 'ocb-reveal-'))
     const sessionDir = join(dir, 'pi-sessions')
-    const piCfg = { backend: { type: 'pi', pi: {} } }
+    // cliSessionRoot 显式指到一个不存在的临时路径：不指的话回退查找会扫到
+    // 真机 ~/.pi/agent/sessions，用例变得看机器脸色
+    const cliRoot = join(dir, 'cli-sessions')
+    const piCfg = { backend: { type: 'pi', pi: { cliSessionRoot: cliRoot } } }
     const ocCfg = { backend: { type: 'opencode' } }
     const sid = 'pi-bbbb2222'
     mkdirSync(sessionDir, { recursive: true })
@@ -187,6 +190,30 @@ try {
     err = null
     try { await resolveRevealTarget({ dir, cfg: piCfg, target: 'session', sidOrKey: '  ', state }) } catch (e) { err = e }
     ok(err?.message === '缺少会话 id', '空会话 id 被拒绝')
+
+    // 终端 pi 的会话：pi-sessions 没有时回退到 cliSessionRoot 找。终端会话按
+    // 工作目录分目录存放，文件名同样是 _<sid>.jsonl
+    mkdirSync(join(cliRoot, '--tmp-work--'), { recursive: true })
+    const cliSid = '01a1b4ac-19da-74ad-8840-96a0a9203dc6'
+    writeFileSync(
+      join(cliRoot, '--tmp-work--', `2026-11-07T06-22-20-122Z_${cliSid}.jsonl`),
+      JSON.stringify({ type: 'session', version: 3, id: cliSid, timestamp: '2026-11-07T06:22:20.122Z', cwd: '/tmp/work' }) + '\n',
+    )
+    const cliFile = await resolveRevealTarget({ dir, cfg: piCfg, target: 'session', sidOrKey: cliSid, state })
+    ok(cliFile.kind === 'file' && cliFile.path.endsWith(`_${cliSid}.jsonl`), '终端会话回退到 cliSessionRoot 找到文件', cliFile.path)
+    ok(cliFile.path.startsWith(cliRoot), '终端会话文件在 cliSessionRoot 内')
+
+    // 两处都有同一个 id 时取桥接自建的（id 命名空间不同，实际不会撞；这里钉优先级）
+    const bothSid = 'pi-cccc3333'
+    writeFileSync(join(sessionDir, `2026-11-12T02-00-00_${bothSid}.jsonl`), '{"type":"session"}\n')
+    writeFileSync(join(cliRoot, '--tmp-work--', `2026-11-07T07-00-00_${bothSid}.jsonl`), '{"type":"session"}\n')
+    const both = await resolveRevealTarget({ dir, cfg: piCfg, target: 'session', sidOrKey: bothSid, state })
+    ok(both.path.startsWith(sessionDir), '同名会话取桥接自建的 pi-sessions')
+
+    // 两处都没有：仍报找不到
+    err = null
+    try { await resolveRevealTarget({ dir, cfg: piCfg, target: 'session', sidOrKey: 'pi-nowhere', state }) } catch (e) { err = e }
+    ok(err?.message === '找不到会话 pi-nowhere 的文件', '两处都没有时报找不到')
 
     // opencode：解析到数据库目录；会话不存在与 serve 无响应分别报错
     const dir2 = await resolveRevealTarget({

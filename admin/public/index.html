@@ -1244,7 +1244,13 @@ async function loadSessionsTab() {
       const revealBlocked = (c) => {
         if (!c.sessionId) return '这个绑定还没有会话'
         if (serveDown) return 'serve 无响应，确认不了会话，打开不了'
-        if (sessionsKnown && !modelOfSession.has(c.sessionId)) return '绑定的会话不在后端列表里，可能已删除，打开不了'
+        if (sessionsKnown && !modelOfSession.has(c.sessionId)) {
+          // pi 的列表是完整的（索引加终端目录全量合并）；opencode 的列表是
+          // 最近 500 条，排在窗外的老会话会被误判，文案写明窗口
+          return detail.backend === 'pi'
+            ? '绑定的会话不在会话列表里，可能已删除，打开不了'
+            : '绑定的会话不在最近 500 条会话里，可能已删除，打开不了'
+        }
         return null
       }
       chatsTbody.innerHTML = chats.map((c) => {
@@ -1293,14 +1299,19 @@ async function loadSessionsTab() {
           ? ' <span class="badge gray" title="删除后这些绑定的会话关联会被清掉，下一次 @ 在同一目录新建会话"><span class="dot gray"></span>被 ' + n + ' 个绑定</span>'
           : ''
         return '<tr>' +
-          '<td>' + esc(s.title || '（无标题）') + (isBot ? botBadge : '') + boundBadge + '</td>' +
+          '<td>' + esc(s.title || '（无标题）') + (isBot ? botBadge : '') +
+            (s.cli ? ' <span class="badge gray" title="终端 pi 建的会话，桥接只读；删除去终端里操作"><span class="dot gray"></span>终端</span>' : '') +
+            boundBadge + '</td>' +
           '<td class="mono"><span class="clip" title="' + esc(s.id) + '">' + esc(s.id) + '</span></td>' +
           '<td class="mono"><span class="clip" title="' + esc(s.directory || '') + '">' + esc(short(s.directory, 40)) + '</span></td>' +
           '<td class="mono">' + esc(s.model || '—') + '</td>' +
           '<td class="mono dim">' + fmtTime(s.updatedAt) + '</td>' +
           '<td class="row">' +
             '<button class="btn" onclick="revealSession(\'session\', \'' + esc(s.id) + '\')">查看</button>' +
-            '<button class="btn danger" onclick="deleteSession(\'' + esc(s.id) + '\', ' + n + ', ' + (detail.backend === 'pi') + ')">删除</button>' +
+            // 终端会话不在桥接索引里，删不了（那是终端 pi 的地盘）；查看可用
+            (s.cli
+              ? '<button class="btn danger" disabled title="终端 pi 的会话不在桥接目录里，要删请在终端 pi 的会话选择器里操作">删除</button>'
+              : '<button class="btn danger" onclick="deleteSession(\'' + esc(s.id) + '\', ' + n + ', ' + (detail.backend === 'pi') + ')">删除</button>') +
           '</td>' +
         '</tr>'
       }).join('') + '<tr><td colspan="6" class="dim">只取最近 100 条，按更新时间倒序。</td></tr>'
