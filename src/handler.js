@@ -49,6 +49,9 @@ export class Bridge {
     this.modelCache = new Map()
     /** @type {Map<string, {sessions: any[], expires: number}>} */
     this.sessionCache = new Map()
+    /** 会话 id -> 父会话 id（opencode 会话数据的 parentID）或 null。子代理
+     *  活动计入母回合时按它沿链上找，见 _noteSubSession */
+    this.sessionParent = new Map()
     this.seenMessages = new Map()
     this.serverInfo = null
     this.lastEnv = null
@@ -194,6 +197,55 @@ export class Bridge {
     }
   }
 
+  /**
+   * 子会话（子代理）的活动计入母回合的静默计时器。
+   *
+   * 母回合用 subagent 工具派生子代理后，母会话在工具在飞期间一条事件都不发，
+   * 子会话的事件带的是子会话 id，在 runs 表里找不到——母回合的
+   * state.updatedAt 就此冻结，看门狗按「事件静默」把它误判成卡死
+   * （2026-11-13 实测连杀四轮，卡片文案写着「模型长时间无响应」，而模型与
+   * serve 都正常）。这里把子会话的活动接到母回合的计时器上：沿父会话链
+   * 往上找在飞的 run，刷它的 updatedAt。走链而不只看一级，是子代理再派
+   * 生子代理时一级查找接不上。
+   *
+   * 只对 opencode 做：pi 的看门狗不按事件静默判定（watchdogIdleMs()=0），
+   * 没有这个误杀。父会话查找按会话 id 缓存（含「没有父会话」的结果），
+   * 子代理的事件是流式的，不能每条都打一次 serve。
+   */
+  _noteSubSession(sid) {
+    if (!this.watchdogIdleMs()) return
+    let cur = sid
+    const seen = new Set()
+    while (cur && !seen.has(cur)) {
+      seen.add(cur)
+      const run = this.runs.get(cur)
+      // 链上第一个落在 runs 表里的会话：在跑就刷计时器，已终态就到此为止
+      if (run) {
+        if (run.state.status === 'running') run.state.updatedAt = Date.now()
+        return
+      }
+      const pid = this.sessionParent.get(cur)
+      if (pid === undefined) {
+        // 第一次见到这个会话：异步查父会话，查完顺着原会话再把链走一遍
+        this.oc.getSession(cur).then(
+          (s) => {
+            const parent = s?.parentID || null
+            this.sessionParent.set(cur, parent)
+            if (parent) this.log.info?.(`子会话 ${cur} 的活动计入母回合 ${parent}`)
+            this._noteSubSession(sid)
+          },
+          (err) => {
+            // 会话不存在（删了）或 serve 抖动：按没有父会话缓存，别每条都重查
+            this.sessionParent.set(cur, null)
+            this.log.warn?.(`查会话 ${cur} 的父会话失败，本次活动不计入母回合: ${err.message}`)
+          },
+        )
+        return
+      }
+      cur = pid
+    }
+  }
+
   // ---------- 事件 ----------
 
   onEvent(ev) {
@@ -215,7 +267,12 @@ export class Bridge {
     }
 
     const run = this.runs.get(sid)
-    if (!run) return
+    if (!run) {
+      // 不在 runs 表里的会话：多半是母回合派生的子代理。它的活动要接到
+      // 母回合的静默计时器上，否则母回合会被看门狗误判成卡死
+      this._noteSubSession(sid)
+      return
+    }
 
     // 兜底：任何带 error/failed 又不是工具级的事件，都把运行态翻成失败，
     // 并原地把「执行中」卡片转成报错卡片（不新发消息）。opencode 各版本
@@ -537,7 +594,15 @@ export class Bridge {
       if (msg.isBot && this.caps.steer === true) {
         try {
           await this.oc.prompt(binding.sessionId, msg.text, { delivery: 'steer' })
-          await this.t.sendText(ctx.chatId, '已引导：消息已注入当前回合，下一步生效，不中断。', { replyTo: ctx.replyTo })
+          // 反馈要能自明：谁的消息、内容是什么。卡片那路带「来自 / 内容 /
+          // 注入说明」，文本这路可以不一样，但这两样不能少——不然群里只看到
+          // 一句光秃秃的「已引导」，不知道注入的是什么
+          const from = this.nameOf(msg.userId) || msg.userId
+          await this.t.sendText(
+            ctx.chatId,
+            `已引导：${from} 的消息已注入当前回合，下一步生效，不中断。\n\n${truncate(msg.text, 120)}`,
+            { replyTo: ctx.replyTo },
+          )
           return null
         } catch (err) {
           this.log.warn?.(`bot @ 注入当前回合失败，退回排队: ${err.message}`)

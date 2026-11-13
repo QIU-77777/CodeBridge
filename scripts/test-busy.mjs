@@ -222,6 +222,8 @@ try {
     ok(h.sent.filter((s) => s.kind === 'card').length === 0, '不弹排队卡片')
     const last = h.sent[h.sent.length - 1]
     ok(last?.kind === 'text' && /已引导/.test(last.text), '群里收到一条注入反馈', last?.text)
+    ok(last?.text?.includes('ou_bot_p'), '反馈带发送者（谁的消息）', last?.text)
+    ok(last?.text?.includes('Lil_O 顺便看下这个'), '反馈带内容预览（注入的是什么）', last?.text)
     ok(last?.opts?.replyTo === 'om_bot_root', '反馈发在话题里')
   }
 

@@ -127,6 +127,47 @@ try {
     h.bridge.checkIdle(60_000)
     ok(h.bridge.runs.get('ses_run') != null, '正常收尾的 run 不被安全网误删')
   }
+  // 4. 子会话（子代理）的活动计入母回合：母回合不再被看门狗误杀
+  {
+    // 复现 2026-11-13 的事故：母回合用 subagent 工具派生子代理，母会话在
+    // 工具在飞期间一条事件都不发，子会话的事件带子会话 id——母回合的
+    // updatedAt 冻结 5 分钟，被看门狗判成「模型长时间无响应」
+    const h = makeBridge()
+    h.bridge.oc.getSession = async (id) => (id === 'ses_child' ? { id, parentID: 'ses_parent' } : { id })
+    const run = h.startRun('ses_parent', 'k1')
+    run.state.updatedAt = Date.now() - 3 * 60_000 // 母回合已静默 3 分钟
+    h.bridge.onEvent({ type: 'session.text.delta', data: { sessionID: 'ses_child', delta: '子代理在干活' } })
+    await new Promise((r) => setTimeout(r, 50)) // 等异步查父会话落地
+    h.bridge.checkIdle(60_000)
+    ok(h.bridge.runs.get('ses_parent') != null, '子会话活动计入母回合，母回合没被误杀')
+    ok(run.state.status === 'running', '母回合状态仍是 running')
+  }
+
+  // 5. 链式：孙子会话的活动也接得到母回合（子代理再派生子代理）
+  {
+    const h = makeBridge()
+    h.bridge.oc.getSession = async (id) =>
+      id === 'ses_grand' ? { id, parentID: 'ses_child' } : id === 'ses_child' ? { id, parentID: 'ses_parent' } : { id }
+    const run = h.startRun('ses_parent', 'k1')
+    run.state.updatedAt = Date.now() - 3 * 60_000
+    h.bridge.onEvent({ type: 'session.text.delta', data: { sessionID: 'ses_grand', delta: '孙子在干活' } })
+    await new Promise((r) => setTimeout(r, 80))
+    h.bridge.checkIdle(60_000)
+    ok(h.bridge.runs.get('ses_parent') != null, '孙子会话的活动沿链接到母回合')
+    ok(run.state.status === 'running', '链式计入后母回合仍在跑')
+  }
+
+  // 6. 没有父会话可计入：看门狗照常判定，不因新逻辑放过真卡死
+  {
+    const h = makeBridge()
+    const run = h.startRun('ses_parent', 'k1')
+    run.state.updatedAt = Date.now() - 3 * 60_000
+    h.bridge.onEvent({ type: 'session.text.delta', data: { sessionID: 'ses_orphan', delta: 'x' } })
+    await new Promise((r) => setTimeout(r, 50))
+    h.bridge.checkIdle(60_000)
+    ok(!h.bridge.runs.get('ses_parent'), '没有父会话可计入时看门狗照常判定')
+    ok(run.state.status === 'failed', '真静默的回合照旧判失败')
+  }
 } catch (err) {
   fail++
   console.log(`❌ 测试本身出错: ${err.stack || err.message}`)
