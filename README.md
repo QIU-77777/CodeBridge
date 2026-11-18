@@ -982,6 +982,8 @@ logs/                      运行日志（不入库）
 | `npm run test:oar-events` / `test:oar-backend` / `test:oar-probe` / `test:oar-login` / `test:oar-host-tools` | OAR 事件翻译层、OAR 后端、运行时探测、登录流程、飞书宿主工具，全部离线，不装 harness、不登录、不连模型提供商 |
 | `npm run test:parity` | 双实现对照的判定逻辑，合成运行态，不发 prompt |
 | `npm run parity:pi-oar -- <prompt>` | pi 双实现对照，真实模型调用，手动跑 |
+| `npm run test:oar-smoke` | OAR 冒烟的判定分支与采集器形状，合成观测加脚本运行时，不装 harness 不登录 |
+| `npm run smoke:oar -- <runtime id>` | OAR 冒烟六项（安装、一句话回合、工具回合、abort、忙时注入、图片），真实模型调用，手动跑 |
 | `npm run test:cmd-route` | 群里「@机器人 /命令」的分流，含缺少 `cmdText` 时的回退 |
 | `npm run test:busy` / `test:runfail` / `test:wedge` | 排队、运行失败、看门狗收尾 |
 | `npm run test:errors` | 失败卡片的错误分类与「下一步」提示 |
