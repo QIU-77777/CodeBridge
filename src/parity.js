@@ -13,7 +13,8 @@
  *   文本   两侧正文拼接结果
  *   工具   名称、参数、结果状态（exitCode 只在运行时报告时有，不要求两边都有）
  *   终态   done / failed / aborted，失败时再比错误的归类
- *   用量   input / output / cacheRead，以及 cost（OAR 不给金额，这项允许一边空）
+ *   用量   input / output 走容差带（带内只报观察项），cacheRead 只报不断定，
+ *          cost 允许一边空（OAR 不给金额）
  *
  * 文本与工具输出做归一化再比：模型同样一句话，两次运行的空白、标点、工具
  * 输出里的时间戳与临时路径都可能不同。完全字字相同的要求不现实，会把对照
@@ -37,6 +38,24 @@ function toolKey(t) {
   const keys = Object.keys(input).sort().join(',')
   const raw = typeof t.input === 'string' ? t.input : ''
   return `${t.name}|${keys}|${raw ? 'raw' : ''}`
+}
+
+/**
+ * 用量容差：最大值的 5% 与 5 个 token 取大。
+ *
+ * 5% 抓住装配丢失（一侧整个不发用量是 100% 级偏差）与字段映射错误（cacheRead
+ * 算进 input 也是数百 token 级）；5 的绝对下限让小输出（二十几个 token 的回
+ * 合）的采样噪声不绊倒判定。
+ *
+ * 带宽依据（2026-11-19 双实现实测，同目录同 prompt，各一个全新会话）：两种
+ * 模式的真实装配差只有 18 token（桥接 14523 对 OAR 14541）；连跑两遍的波动
+ * 数百 token，全部来自提供商侧提示缓存——顺序执行时后跑的一侧吃前一侧刚热
+ * 的缓存，OAR 第二遍 input 从 14541 涨到 14733、cacheRead 从 0 跳到 14080。
+ * 精确相等只对同模式重复跑成立（桥接侧连跑两遍 14523 对 14523），那是对照
+ * 脚本给自己的要求，不是跨模式判定能用的。
+ */
+function usageSlack(x, y) {
+  return Math.max(5, Math.ceil(Math.max(x, y) * 0.05))
 }
 
 /**
@@ -91,18 +110,35 @@ export function compareProjections(a, b) {
     if (ca !== cb) diffs.push({ aspect: '终态', detail: `失败归类不同：${ca} ≠ ${cb}` })
   }
 
-  // 4. 用量。cost 允许一边没有：OAR 的用量接口不给金额
+  // 4. 用量。三项都按「只在异常时判不一致」处理：
+  //
+  // input / output 走容差带，带内只报观察项。跨模式对照不要求精确相等：两种
+  // 模式的真实装配差只有 18 token，连跑的数百 token 波动全是提供商侧提示缓存
+  // 按执行顺序造成的（依据见 usageSlack 的注释）。精确相等留给同模式重复跑。
+  //
+  // cacheRead 只报不断定：它反映执行顺序，不反映实现差异。
+  //
+  // cost 允许一边没有：OAR 的用量接口不给金额，要显示得宿主自己按单价表算。
   const ua = a.tokens || {}
   const ub = b.tokens || {}
   for (const k of ['input', 'output']) {
-    if (Number(ua[k] || 0) !== Number(ub[k] || 0)) {
-      diffs.push({ aspect: '用量', detail: `${k} 不同：桥接 ${ua[k] ?? '空'}，OAR ${ub[k] ?? '空'}` })
+    const x = Number(ua[k] || 0)
+    const y = Number(ub[k] || 0)
+    const delta = Math.abs(x - y)
+    const slack = usageSlack(x, y)
+    if (delta > slack) {
+      diffs.push({
+        aspect: '用量',
+        detail: `${k} 偏差超容差带：桥接 ${ua[k] ?? '空'}，OAR ${ub[k] ?? '空'}（差 ${delta}，容差 ${slack}）`,
+      })
+    } else if (delta > 0) {
+      notes.push(`${k}：桥接 ${ua[k] ?? '空'}，OAR ${ub[k] ?? '空'}（差 ${delta}，容差 ${slack} 内，装配与缓存噪声，不计入判定）`)
     }
   }
   // cacheRead 只报不断言。两条路是顺序跑的，后跑的那一侧吃前一侧刚热的提示
   // 缓存，cacheRead 因此反映的是执行顺序，不是实现差异。实测：先跑桥接再跑
-  // OAR，OAR 侧 cacheRead 14080 而桥接侧为空。要对照缓存行为得两条路各跑两
-  // 遍比第二次，那不在本对照的范围里
+  // OAR，OAR 第二遍 cacheRead 从 0 跳到 14080、input 从 14541 涨到 14733。
+  // 要对照缓存行为得两条路各跑两遍比第二次，那不在本对照的范围里
   if (Number(ua.cacheRead || 0) !== Number(ub.cacheRead || 0)) {
     notes.push(`cacheRead：桥接 ${ua.cacheRead ?? '空'}，OAR ${ub.cacheRead ?? '空'}（顺序执行的缓存差，不计入判定）`)
   }

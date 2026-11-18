@@ -820,6 +820,7 @@ npm run parity:pi-oar -- --dir /tmp/x "跑一下 node --version"
 - `send_message` 没有频率限制。agent 循环失控能刷群；飞书的发送侧没有节流兜着（节流只覆盖卡片 patch）。真出这事先断网，再从日志找是哪个会话。
 - `ask_human` 会占住一个回合最长 1 小时（`timeout_ms` 上限 3600000）。超过 `behavior.toolIdleTimeoutMs`（30 分钟）的那段没有看门狗兜底——看门狗只对 opencode 后端生效。
 - `send_message` 的 `chat_id` 是任意值，agent 可以给本实例所在的任何飞书会话发消息。爆炸半径等于这个应用加入的所有群，与旧设计（凭证进子进程、agent 自己敲 feishu-cli）相同或更小，且身份不再依赖机器级配置。
+- 附着本身有代价：三个工具的 schema 加 instructions 实测让每轮的输入 token 稳定涨 457 到 749（2026-11-19 同目录同 prompt 实测，不挂 14541、挂 15190）。OAR 后端默认挂这三个工具，用户侧每轮都多这一截。
 - 提问与登录等待按 chat 加 thread 限定：只收同一个作用域里的答案，别的话题、别的群的消息照常进任务链路，不被吞掉。
 
 `/login` 的交互来自 OAR 的登录契约：事件面是 `auth_url`、`device_code`、`info`，回答面是 `text`、`secret`、`manual_code`、`select`。前三者让用户把答案发到群里，`select` 渲染成按钮。取消随时可以，中止信号交给 OAR，它停掉登录进程及其子进程。

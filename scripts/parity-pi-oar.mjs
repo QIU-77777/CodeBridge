@@ -4,6 +4,7 @@
  *
  *   node scripts/parity-pi-oar.mjs "这个仓库是做什么的"
  *   node scripts/parity-pi-oar.mjs --dir /tmp/x "跑一下 node --version"
+ *   node scripts/parity-pi-oar.mjs --repeat "..."                # 每侧连跑两遍，加做同模式自检
  *   OC_PARITY_SUBPROCESS=0 node scripts/parity-pi-oar.mjs "..."   # OAR 侧用进程内 SDK
  *
  * 两条路：
@@ -13,6 +14,12 @@
  *
  * 这一条要真实模型调用：会花钱，要本机 pi 已登录。它不进 CI，手动跑。
  * 判定不看事件原型，看四项投影：文本、工具、终态、用量（src/parity.js）。
+ *
+ * --repeat 加做同模式自检：每一侧连跑两遍，比同一侧两次的结果。跨模式判定走
+ * 容差带，对「两侧一起漂」是瞎的——装配不确定那一类回归只有同模式重复跑才抓
+ * 得到。注意同模式也不要求精确相等：提供商侧提示缓存按执行顺序决定冷热，第二
+ * 遍的 input 可能涨几百（实测 OAR 侧 14541 涨到 14733、cacheRead 0 跳 14080），
+ * 所以自检同样走容差带，超带才报。要精确相等得让提供商绕开缓存，不在本脚本范围。
  *
  * 退出码：0 四项全一致，1 有不一致，2 运行本身失败。
  */
@@ -29,7 +36,8 @@ import { compareProjections, formatComparison } from '../src/parity.js'
 const args = process.argv.slice(2)
 const dirIdx = args.indexOf('--dir')
 const directory = dirIdx >= 0 ? args[dirIdx + 1] : process.cwd()
-const prompt = args.filter((a, i) => a !== '--dir' && args[i - 1] !== '--dir').join(' ').trim()
+// --repeat 是开关不是 prompt 的一部分，得从待发送的文本里剔掉
+const prompt = args.filter((a, i) => a !== '--dir' && a !== '--repeat' && args[i - 1] !== '--dir').join(' ').trim()
 if (!prompt) {
   console.error('用法：node scripts/parity-pi-oar.mjs [--dir <目录>] <prompt>')
   process.exit(2)
@@ -37,6 +45,7 @@ if (!prompt) {
 
 const useSubprocess = process.env.OC_PARITY_SUBPROCESS === '1'
 const model = process.env.OC_PARITY_MODEL || ''
+const repeat = args.includes('--repeat')
 
 /**
  * 把一段事件流喂进 RunState，跑完返回运行态。
@@ -111,6 +120,13 @@ try {
   console.log('A 桥接 pi 后端跑…')
   a = await runBridgeSide()
   console.log(`   终态 ${a.status}，正文 ${a.text.length} 字，工具 ${a.tools.length} 个`)
+  if (repeat) {
+    const a2 = await runBridgeSide()
+    console.log(`   第2遍 终态 ${a2.status}，正文 ${a2.text.length} 字`)
+    const self = compareProjections(a, a2)
+    console.log(formatComparison('A 侧同模式自检', self))
+    if (!self.ok) process.exitCode = 1
+  }
 } catch (err) {
   console.error(`A 侧失败：${err?.message || err}`)
   process.exit(2)
@@ -119,6 +135,13 @@ try {
   console.log('B OAR pi 适配器跑…')
   b = await runOarSide()
   console.log(`   终态 ${b.status}，正文 ${b.text.length} 字，工具 ${b.tools.length} 个`)
+  if (repeat) {
+    const b2 = await runOarSide()
+    console.log(`   第2遍 终态 ${b2.status}，正文 ${b2.text.length} 字`)
+    const self = compareProjections(b, b2)
+    console.log(formatComparison('B 侧同模式自检', self))
+    if (!self.ok) process.exitCode = 1
+  }
 } catch (err) {
   console.error(`B 侧失败：${err?.message || err}`)
   process.exit(2)

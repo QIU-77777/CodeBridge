@@ -4,7 +4,8 @@
  *   node scripts/test-parity.mjs
  *
  * 用合成 RunState 验证 compareProjections 的判定：一致时判一致，差在哪一项
- * 说清哪一项，该容忍的差异（空白、临时路径、时间戳、cost 一边没有）不误报。
+ * 说清哪一项，该容忍的差异（空白、临时路径、时间戳、用量在容差带内、cost 一边
+ * 没有）不误报。
  */
 import { RunState } from '../src/render.js'
 import { compareProjections, formatComparison } from '../src/parity.js'
@@ -102,7 +103,29 @@ const tool = (_name, input, status = 'ok') => ({ id: 't1', name: _name, input, s
 
 {
   const r = compareProjections(makeRun({ tokens: { input: 100, output: 20 } }), makeRun({ tokens: { input: 120, output: 20 } }))
-  ok(r.ok === false && r.diffs.some((d) => d.aspect === '用量' && d.detail.includes('input')), '输入 token 不同判不一致', JSON.stringify(r.diffs))
+  ok(r.ok === false && r.diffs.some((d) => d.aspect === '用量' && d.detail.includes('input')), '输入 token 差超容差带判不一致', JSON.stringify(r.diffs))
+
+  // 容差带内：装配与缓存噪声只报观察项，不判不一致。实测两种模式的真实装配差
+  // 18 token、连跑波动数百 token（全来自提供商侧提示缓存），都在带内
+  {
+    const r = compareProjections(makeRun({ tokens: { input: 100, output: 20 } }), makeRun({ tokens: { input: 105, output: 23 } }))
+    ok(r.ok === true, 'token 差在容差带内判一致', JSON.stringify(r.diffs))
+    ok(r.notes.some((x) => x.startsWith('input')) && r.notes.some((x) => x.startsWith('output')), '带内的差作为观察项报出来', JSON.stringify(r.notes))
+  }
+
+  // 超带：一侧整个不发用量是 100% 级偏差，容差带抓得住
+  {
+    const r = compareProjections(makeRun({ tokens: { input: 100, output: 20 } }), makeRun({ tokens: { input: 0, output: 0 } }))
+    ok(r.ok === false && r.diffs.filter((d) => d.aspect === '用量').length === 2, '一侧丢用量判不一致', JSON.stringify(r.diffs))
+  }
+
+  // 边界：差正好等于容差不判，超一个 token 就判
+  {
+    const r = compareProjections(makeRun({ tokens: { input: 100, output: 20 } }), makeRun({ tokens: { input: 106, output: 20 } }))
+    ok(r.ok === true, '差等于容差不判不一致', JSON.stringify(r.diffs))
+    const r2 = compareProjections(makeRun({ tokens: { input: 100, output: 20 } }), makeRun({ tokens: { input: 107, output: 20 } }))
+    ok(r2.ok === false, '差超容差一个 token 也判不一致', JSON.stringify(r2.diffs))
+  }
 
   // cacheRead 只报不断定：两条路顺序跑，后跑的吃前一侧刚热的缓存，它反映
   // 的是执行顺序不是实现差异
