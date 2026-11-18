@@ -107,12 +107,6 @@ function shortDir(dir) {
   return home && dir.startsWith(home) ? '~' + dir.slice(home.length) : dir
 }
 
-/** 金额统一两位小数：卡片上只要看得出量级，细节去 opencode 里看 */
-export function fmtCost(cost) {
-  if (typeof cost !== 'number' || !Number.isFinite(cost) || cost < 0) return ''
-  return `$${cost.toFixed(2)}`
-}
-
 /**
  * 运行中的会话卡片。同一个 message 反复 patch 更新。
  * @param {object} state RunState
@@ -176,18 +170,12 @@ export function runCard(state, meta = {}) {
 
   // 后缀：按钮在上，用量/帮助那行小字在下。正文与后缀之间不加分割线 ——
   // 正文结尾本身就有留白，再加一条线会把卡片切得太碎。
-  /**
-   * 用量 + 帮助合成一行。
-   *
-   * 金额以前用 `if (state.cost)` 判断，cost 为 0 时整段消失——而套餐型 provider
-   * （stepfun 这类）在 /api/model 里把价格全填 0，于是「金额不见了」。现在只要有
-   * 用量就显示，0 也照显示 $0.0000：那是真实价格，不是没取到。
-   */
+  //
+  // 只显示 token 消耗，不显示金额：金额要宿主自己按模型单价表算，OAR 的
+  // 用量接口也不给这个字段
   const usage = []
   if (state.tokens?.input) usage.push(`in ${state.tokens.input}`)
   if (state.tokens?.output) usage.push(`out ${state.tokens.output}`)
-  const costText = fmtCost(state.cost)
-  if (costText && (usage.length || state.cost > 0)) usage.push(costText)
 
   // 按钮只覆盖三个高频动作，/model /cd /switch 这些不看 /help 是发现不了的。
   // 群里要写清楚还得先 @ 一下，否则用户以为直接打字就行。
@@ -243,7 +231,6 @@ export function sessionsCard({ sessions, currentId, directory, page = 0, pageSiz
     const metaLine = [
       fmtAgo(s.time?.updated || s.time?.created),
       s.model?.id || '',
-      s.cost ? fmtCost(s.cost) : '',
       // 终端 pi 的会话：人类在 `pi -r` 里也能看到同一条，续聊写的是同一个文件
       s.cli ? '终端' : '',
     ]
@@ -271,6 +258,81 @@ export function sessionsCard({ sessions, currentId, directory, page = 0, pageSiz
   elements.push(hr(), buttonRow([...navRow, button('新建会话', { a: 'new', ...nav }, 'primary')]))
 
   return card('📂 会话列表', 'turquoise', elements)
+}
+
+/**
+ * 登录卡片。
+ *
+ * 一台机器一个登录态：登录改的是本机凭据，不属于任何会话，所以卡片发到人发起
+ * /login 的那个话题里，按钮也带那个话题的导航。
+ *
+ * 密钥不进卡片：设备码是给人看的，用户粘贴的回执码走消息正文交给驱动，不渲染
+ * 进任何卡片。
+ */
+export function loginCard(state, { label = '', k = '', rt = '' } = {}) {
+  const nav = navOf({ k, rt })
+  const title = state.phase === 'done' ? loginDoneTitle(state.result) : '🔑 登录' + (label ? ' · ' + label : '')
+  const template =
+    state.phase === 'done'
+      ? state.result && state.result.kind === 'logged_in'
+        ? 'green'
+        : state.result && state.result.kind === 'cancelled'
+          ? 'grey'
+          : 'red'
+      : 'blue'
+
+  const lines = []
+  if (state.phase === 'starting') lines.push('正在启动登录流程…')
+  // 地址与设备码在等待回答时也要留在卡片上：人要看着它们才能答
+  if (state.url) lines.push('**打开这个地址**\n' + truncate(state.url, 300))
+  if (state.userCode) lines.push('**输入这个码** `' + state.userCode + '`')
+  if (state.expiresInSeconds) lines.push('**有效期** ' + Math.round(state.expiresInSeconds / 60) + ' 分钟')
+  if (state.phase === 'prompt' && state.prompt) {
+    lines.push('**' + state.prompt.message + '**')
+    if (state.prompt.kind === 'secret') lines.push('_直接把这串内容发到群里，不要加上别的话。_')
+    else if (state.prompt.kind === 'manual_code') lines.push('_把页面给的回执码发到群里。_')
+    else lines.push('_直接回答，在群里发一条消息。_')
+  }
+  if (state.phase === 'prompting') lines.push('已收到，正在交给运行时…')
+  if (state.phase === 'done') lines.push(loginDoneBody(state.result))
+  for (const i of state.info) lines.push('_' + truncate(i, 200) + '_')
+
+  const elements = [div(lines.filter(Boolean).join('\n\n'))]
+
+  // 进行中的两种交互：给地址的开链接按钮，给选项的选项按钮
+  if (state.url && (state.phase === 'url' || state.phase === 'device_code')) {
+    elements.push(
+      buttonRow([button(state.phase === 'url' ? '打开链接' : '打开验证页', { a: 'noop', url: state.url }, 'primary', { url: state.url })]),
+    )
+  }
+  if (state.phase === 'prompt' && state.prompt && state.prompt.kind === 'select') {
+    elements.push(
+      buttonRow(
+        state.prompt.options.slice(0, 5).map((o) => button(truncate(o.label, 20), { a: 'login-answer', v: o.id, ...nav }, 'default')),
+      ),
+    )
+  }
+  if (state.phase !== 'done') {
+    elements.push(buttonRow([button('取消登录', { a: 'login-cancel', ...nav }, 'danger')]))
+  }
+
+  return card(title, template, elements)
+}
+
+function loginDoneTitle(result) {
+  if (result && result.kind === 'logged_in') return '✅ 登录成功'
+  if (result && result.kind === 'cancelled') return '⏹ 登录已取消'
+  return '❌ 登录失败'
+}
+
+function loginDoneBody(result) {
+  if (result && result.kind === 'logged_in') {
+    const who = (result.account && (result.account.email || result.account.name)) || ''
+    return who ? '已登录：' + who : '已登录。'
+  }
+  if (result && result.kind === 'cancelled') return '已取消，本机凭据没有变化。'
+  if (result && result.kind === 'unsupported') return '这个运行时不支持在桥接里登录：' + (result.detail || result.reason || '')
+  return String((result && result.reason) || '失败') + (result && result.detail ? '：' + truncate(result.detail, 300) : '')
 }
 
 export function permissionCard({ request, sessionTitle, k = '', rt = '' }) {
@@ -406,7 +468,6 @@ export function statusCard({ session, binding, directory, server, backendLabel =
     if (session.tokens) {
       lines.push(`**累计 tokens** in ${session.tokens.input} / out ${session.tokens.output}`)
     }
-    if (session.cost) lines.push(`**累计成本** ${fmtCost(session.cost)}`)
   }
   return textCard('📊 状态', lines.join('\n'), 'indigo', [
     button('会话列表', { a: 'sessions', ...nav }, 'default'),
@@ -442,6 +503,9 @@ export function helpCard(caps = {}) {
     '`/model` 列出模型，`/model <序号>` 切换',
   )
   if (caps.agents !== false) body.push('`/agent` 列出 agent，`/agent <名字>` 切换')
+  if (caps.type === 'oar') {
+    body.push('', '**运行时登录**', '`/login` 登录当前运行时（OAR 后端），卡片给地址与设备码，回执码直接发到群里', '`/logout` 登出')
+  }
   body.push('`/help` 本帮助')
   return textCard(`🤖 ${label} 桥接`, body.join('\n'), 'wathet')
 }

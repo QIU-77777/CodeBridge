@@ -26,6 +26,11 @@
     "test:topic-context": "node scripts/test-topic-context.mjs",
     "test:wedge": "node scripts/test-wedge.mjs",
     "test:render": "node scripts/test-render.mjs",
+    "test:oar-events": "node scripts/test-oar-events.mjs",
+    "test:oar-backend": "node scripts/test-oar-backend.mjs",
+    "test:oar-probe": "node scripts/test-oar-probe.mjs",
+    "test:oar-login": "node scripts/test-oar-login.mjs",
+    "test:oar-host-tools": "node scripts/test-oar-host-tools.mjs",
     "test:serve-password": "node scripts/test-serve-password.mjs",
     "dry": "node src/index.js --dry",
     "selftest": "node scripts/selftest.mjs",
@@ -38,6 +43,7 @@
     "probe:prompt": "node scripts/probe-prompt.mjs"
   },
   "dependencies": {
+    "@botiverse/oar": "^0.118.0",
     "@larksuiteoapi/node-sdk": "^1.76.0"
   }
 }

@@ -247,9 +247,12 @@ try {
   const cfgToggle = indexHtml.slice(indexHtml.indexOf('function toggleConfigBackend'))
   ok(
     cfgToggle.includes("$('c-pi-group').classList.toggle('hidden', !pi)") &&
-      cfgToggle.includes("$('c-oc-group').classList.toggle('hidden', pi)"),
-    'toggleConfigBackend 按后端类型切换两组的显隐',
+      cfgToggle.includes("$('c-oc-group').classList.toggle('hidden', type !== 'opencode')") &&
+      cfgToggle.includes("$('c-oar-group').classList.toggle('hidden', !oar)"),
+    'toggleConfigBackend 按后端类型切换三组的显隐',
   )
+  ok(indexHtml.includes('id="c-oar-group"'), '配置页有 OAR 字段组')
+  ok(indexHtml.includes('id="c-oarRuntime"'), '配置页有 OAR 运行时选择框')
   ok(
     /async function loadConfigTab[\s\S]*?loadBackends\(\)/.test(indexHtml),
     '配置页加载时一并取本地 coding agent 扫描',

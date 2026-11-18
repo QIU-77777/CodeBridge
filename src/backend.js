@@ -9,8 +9,9 @@
 
 import { OpencodeClient } from './oc.js'
 import { PiBackend, capabilitiesFor } from './pi.js'
+import { OarBackend } from './oar.js'
 
-export function createBackend(cfg, { logger = console, sessionDir, spawnImpl } = {}) {
+export function createBackend(cfg, { logger = console, sessionDir, spawnImpl, registry } = {}) {
   const type = cfg.backend?.type || 'opencode'
   if (type === 'opencode') {
     return new OpencodeClient({ url: cfg.opencode.url, password: cfg.opencode.password, logger })
@@ -18,8 +19,11 @@ export function createBackend(cfg, { logger = console, sessionDir, spawnImpl } =
   if (type === 'pi') {
     return new PiBackend({ cfg, logger, sessionDir, spawnImpl })
   }
+  if (type === 'oar') {
+    return new OarBackend({ cfg, logger, sessionDir, registry })
+  }
   throw new Error(
-    `未知的 backend.type: ${type}（可选：opencode / pi）。检查 ${cfg.__configPath || 'config.json'}`,
+    `未知的 backend.type: ${type}（可选：opencode / pi / oar）。检查 ${cfg.__configPath || 'config.json'}`,
   )
 }
 

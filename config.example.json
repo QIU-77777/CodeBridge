@@ -9,6 +9,12 @@
       "settleQuietMs": 180000,
       "idleMs": 600000,
       "extraArgs": []
+    },
+    "oar": {
+      "runtime": "kimi",
+      "model": "",
+      "env": {},
+      "idleMs": 600000
     }
   },
   "feishu": {

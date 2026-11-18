@@ -333,6 +333,17 @@
                 <label class="fld"><span>pi.toolTimeoutMs（工具在飞时的静默预算，构建/测试/大搜索不吐输出时按这一档算）</span><input type="number" id="c-piToolTimeout"></label>
                 <label class="fld"><span>pi.extraArgs（逗号分隔）</span><input type="text" id="c-piExtra"></label>
               </div>
+              <div id="c-oar-group" class="hidden">
+                <label class="fld"><span>运行时（打开页面时探测本机装了哪些，探测结果见「会话与后端」页）</span>
+                  <select id="c-oarRuntime"></select>
+                </label>
+                <label class="fld"><span>模型（留空用运行时自己的默认；claude、opencode、qwen、factory 没有默认标记，建议显式给）</span><input type="text" id="c-oarModel" placeholder="provider/model"></label>
+                <label class="fld"><span>环境变量（每行一个 KEY=VALUE，原样进会话与登录；值写 null 删掉继承的键）</span><textarea id="c-oarEnv" rows="4" placeholder="KIMI_MODEL_NAME=...
+KIMI_MODEL_BASE_URL=...
+KIMI_MODEL_PROVIDER_TYPE=openai"></textarea></label>
+                <label class="fld"><span>空闲回收（一轮跑完后多久关掉运行中的会话，下次发消息用恢复把历史带回来；0 关掉）</span><input type="number" id="c-oarIdle"></label>
+                <div id="c-oar-scan" class="hint" style="margin-bottom:8px"></div>
+              </div>
               <label class="fld"><span>默认工作目录（两个后端都用，留空用家主目录）</span><input type="text" id="c-defaultDirectory"></label>
               <label class="fld"><span>默认模型（两个后端都用，留空用 coding agent 本地默认模型）</span><input type="text" id="c-defaultModel"></label>
               <p class="hint">选哪个后端显示哪组字段：opencode 连本机 serve，pi 起长驻 RPC 进程，两者的配置都默认复用本机已装的那一个。默认工作目录与默认模型留空即用 coding agent 自己的本地默认值。</p>
@@ -424,6 +435,9 @@
             <summary>可用模型（<span id="ss-models-count">0</span>）</summary>
             <div id="ss-models" class="mono dim" style="max-height:160px;overflow:auto"></div>
           </details>
+          <h3>OAR 运行时探测</h3>
+          <p class="hint">本机装了哪些编码 agent 运行时、各登没登录、能用哪些模型、配额余多少。探测不开会话、不发消息，按当前实例的 backend.oar.env 叠加来看。装好或登录后点「刷新」。这里报的是 OAR 适配器看到的情况：opencode 走桌面版自带的 CLI 时，OAR 的探测器可能找不到它，用 opencode 后端不受影响。</p>
+          <div id="ss-oar-runtimes"></div>
         </div>
       </section>
 
@@ -435,7 +449,7 @@
             <select id="lg-file"><option value="bridge">bridge.log</option><option value="serve">serve.log</option></select>
             <span class="spacer"></span>
             <button class="btn" id="lg-follow">暂停跟随</button>
-            <button class="btn" id="lg-jump" class="hidden">回到底部</button>
+            <button class="btn hidden" id="lg-jump">回到底部</button>
           </div>
           <div class="term">
             <div class="term-bar">
@@ -550,6 +564,7 @@ const state = {
   ssReqId: 0,
   log: { since: 0, follow: true, timer: null, name: '', file: 'bridge' },
   backends: null,
+  oarRuntimes: null,
 }
 
 // ---------- 本地 coding agent 扫描 ----------
@@ -559,6 +574,7 @@ const state = {
 const FALLBACK_BACKENDS = [
   { type: 'opencode', summary: '常驻 serve，流式输出', available: false, bin: '', version: '', detail: '', reason: '扫描失败，按默认选项显示' },
   { type: 'pi', summary: '长驻 RPC 进程，流式输出，支持 steer', available: false, bin: '', version: '', detail: '', reason: '扫描失败，按默认选项显示' },
+  { type: 'oar', summary: '一套接口驱动多个编码 agent 运行时，装哪个选哪个', available: true, bin: '', version: '', detail: '', reason: '' },
 ]
 
 async function loadBackends(refresh = false) {
@@ -582,6 +598,27 @@ function fillBackendSelect(sel, backends) {
   sel.innerHTML = backends.map((b) => `<option value="${esc(b.type)}">${esc(backendOptionLabel(b))}</option>`).join('')
 }
 
+/** 环境变量文本 → 扁平 map。每行 KEY=VALUE；值写 null 删掉继承的键 */
+function envTextToMap(text) {
+  const out = {}
+  for (const line of String(text || '').split('\n')) {
+    const t = line.trim()
+    if (!t || t.startsWith('#')) continue
+    const i = t.indexOf('=')
+    if (i <= 0) continue
+    const k = t.slice(0, i).trim()
+    const v = t.slice(i + 1).trim()
+    out[k] = v === 'null' ? null : v
+  }
+  return out
+}
+
+/** 扁平 map → 文本。密钥按原样回显：配置页读到的本就是掩码以外的真值 */
+function envMapToText(env) {
+  if (!env || typeof env !== 'object') return ''
+  return Object.entries(env).map(([k, v]) => k + '=' + (v === null ? 'null' : v)).join('\n')
+}
+
 /** 选中后端下方那行「复用本地」的说明：可用给路径与版本，不可用给原因 */
 function backendScanHtml(b) {
   if (!b) return '<span class="dim">扫描中…</span>'
@@ -596,12 +633,91 @@ function refreshBackendScan(selectId, lineId) {
   return b
 }
 
-// 页签标题。左侧功能栏与页头顶部各司其职，不重复堆标签
+// ---------- OAR 运行时探测 ----------
+// 后端选 oar 时，runtime 下拉与「会话与后端」页的探测表都从这里来。探测要起
+// 进程、可能连服务，失败时退回静态清单，不能变成空下拉框
+const FALLBACK_OAR_RUNTIMES = ['claude', 'codex', 'pi', 'kimi', 'qwen', 'grok', 'opencode', 'antigravity', 'codebuddy', 'qoder', 'devin', 'factory', 'dsh']
+
+async function loadOarRuntimes(instance, refresh = false) {
+  if (!state.oarRuntimes || refresh) {
+    try {
+      const q = instance ? '?instance=' + encodeURIComponent(instance) : ''
+      state.oarRuntimes = await api('/api/oar/runtimes' + q)
+    } catch {
+      state.oarRuntimes = null
+    }
+  }
+  return state.oarRuntimes
+}
+
+function fillOarRuntimeSelect(sel, probe, current) {
+  const list = probe && probe.runtimes && probe.runtimes.length
+    ? probe.runtimes
+    : FALLBACK_OAR_RUNTIMES.map((id) => ({ id, name: id, installed: false, auth: { loggedIn: false } }))
+  sel.innerHTML = list.map((r) => {
+    const mark = !r.installed ? '未安装' : r.auth && r.auth.loggedIn ? '可用' + (r.installation && r.installation.version ? ' ' + r.installation.version : '') : '未登录'
+    return '<option value="' + esc(r.id) + '">' + esc(r.name || r.id) + ' · ' + mark + '</option>'
+  }).join('')
+  if (current && list.some((r) => r.id === current)) sel.value = current
+}
+
+/** 选中运行时下方那行：装没装、登没登、能用几个模型 */
+/** 登录那一列的措辞：已登录、未登录、查不到，各有各的说法 */
+function authLabel(r) {
+  const a = r.auth || {}
+  if (a.state === 'logged_out') return '未登录'
+  if (a.state === 'unknown' && a.configured && a.configured.length) return '有本地凭据，连不上服务验证'
+  if (a.state === 'unknown') return '登录状态查不到'
+  if (a.state === 'unsupported') return '不报告登录状态'
+  return '未登录'
+}
+
+function oarRuntimeScanHtml(probe, runtimeId) {
+  const r = (probe && probe.runtimes || []).find((x) => x.id === runtimeId)
+  if (!r) return '<span class="dim">探测中…</span>'
+  if (!r.installed) return '<span class="err">' + esc(r.installation && r.installation.detail || '本机没有这个运行时') + '</span>'
+  const parts = []
+  if (r.installation && r.installation.version) parts.push('v' + esc(r.installation.version))
+  if (r.installation && r.installation.command) parts.push('<span class="mono">' + esc(r.installation.command) + '</span>')
+  parts.push(r.auth && r.auth.loggedIn ? '<span class="ok">已登录</span>' : '<span class="warn">未登录</span>')
+  if (r.models) parts.push(r.models.length + ' 个模型')
+  return parts.join(' · ')
+}
+
+/** 探测表：装了的在前，同状态按名字。每行说清装没装、登没登、能用什么 */
+function oarRuntimesTableHtml(probe) {
+  if (!probe || !probe.runtimes || !probe.runtimes.length) return '<p class="hint">探测失败或没有可用数据。</p>'
+  const rows = probe.runtimes.map((r) => {
+    const st = !r.installed ? ['未安装', 'dim'] : r.auth && r.auth.loggedIn ? ['可用', 'ok'] : ['未登录', 'warn']
+    const detail = !r.installed
+      ? esc((r.installation && r.installation.detail) || '本机没有这个运行时')
+      : [
+          r.installation && r.installation.version ? 'v' + esc(r.installation.version) : '',
+          r.installation && r.installation.command ? '<span class="mono">' + esc(r.installation.command) + '</span>' : '',
+          r.auth && r.auth.loggedIn ? '已登录' : authLabel(r),
+          r.models ? r.models.length + ' 个模型' : '模型目录不可读',
+          r.providers ? r.providers.configured + '/' + r.providers.total + ' 个提供方已配置' : '',
+        ].filter(Boolean).join(' · ')
+    const usage = r.usage && r.usage.rows && r.usage.rows.length
+      ? r.usage.rows.map((w) => esc(w.label) + ' ' + (w.used == null ? '' : Math.round(w.used * 100) + '%') + (w.resetsAt ? '（' + esc(String(w.resetsAt).slice(0, 10)) + ' 重置）' : '')).join('，')
+      : ''
+    const models = r.models && r.models.length
+      ? r.models.slice(0, 6).map((m) => '<span class="mono">' + esc(m.id || m.name) + '</span>').join('、') + (r.models.length > 6 ? ' 等 ' + r.models.length + ' 个' : '')
+      : ''
+    const tail = (models ? '<div class="dim" style="margin-top:4px">' + models + '</div>' : '')
+      + (usage ? '<div class="dim" style="margin-top:4px">配额 ' + usage + '</div>' : '')
+    return '<tr><td>' + esc(r.name || r.id) + '<div class="dim mono">' + esc(r.id) + (r.supported ? '' : ' · 第一版未开放') + '</div></td>'
+      + '<td><span class="' + st[1] + '">' + st[0] + '</span><div class="dim">' + detail + '</div>' + tail + '</td></tr>'
+  }).join('')
+  return '<table class="tbl"><thead><tr><th style="width:200px">运行时</th><th>状态</th></tr></thead><tbody>' + rows + '</tbody></table>'
+}
+
+  // 页签标题。左侧功能栏与页头顶部各司其职，不重复堆标签
 const TAB_META = {
   overview: ['总览', '本机实例一览'],
   config: ['配置', '编辑实例的 config.json'],
   feishu: ['飞书应用', '凭证、白名单与名字对照'],
-  sessions: ['会话与后端', 'serve 健康、会话与模型'],
+  sessions: ['会话与后端', 'serve 健康、会话与模型、运行时探测'],
   logs: ['日志与体检', '日志跟随与 doctor'],
 }
 
@@ -805,6 +921,12 @@ function formToConfig() {
         toolTimeoutMs: num('c-piToolTimeout'),
         extraArgs: $('c-piExtra').value.split(',').map((s) => s.trim()).filter(Boolean),
       },
+      oar: {
+        runtime: $('c-oarRuntime').value,
+        model: $('c-oarModel').value.trim(),
+        env: envTextToMap($('c-oarEnv').value),
+        idleMs: num('c-oarIdle'),
+      },
     },
   }
   // 密钥只在用户真的输入了新值时才出现在请求体里；留空 = 保持原值
@@ -852,6 +974,13 @@ async function loadConfigTab() {
     $('c-piTimeout').value = c.backend?.pi?.timeoutMs ?? 600000
     $('c-piToolTimeout').value = c.backend?.pi?.toolTimeoutMs ?? 1800000
     $('c-piExtra').value = (c.backend?.pi?.extraArgs || []).join(',')
+    // OAR 探测与实例配置并行：探测按这个实例的 env 叠加来，看到的是这个实例
+    // 将会看到的那个环境
+    const probe = await loadOarRuntimes(name)
+    fillOarRuntimeSelect($('c-oarRuntime'), probe, c.backend?.oar?.runtime || 'kimi')
+    $('c-oarModel').value = c.backend?.oar?.model || ''
+    $('c-oarEnv').value = envMapToText(c.backend?.oar?.env)
+    $('c-oarIdle').value = c.backend?.oar?.idleMs ?? 600000
     toggleConfigBackend()
   } catch (err) {
     $('cfg-msg').innerHTML = `<span class="err">${esc(err.message)}</span>`
@@ -860,10 +989,18 @@ async function loadConfigTab() {
 
 /** 配置页按后端显隐：opencode 只显示 serve 两项，pi 只显示 pi 参数，共用两组不动 */
 function toggleConfigBackend() {
-  const pi = $('c-backendType').value === 'pi'
+  const type = $('c-backendType').value
+  const pi = type === 'pi'
+  const oar = type === 'oar'
   $('c-pi-group').classList.toggle('hidden', !pi)
-  $('c-oc-group').classList.toggle('hidden', pi)
+  $('c-oc-group').classList.toggle('hidden', type !== 'opencode')
+  $('c-oar-group').classList.toggle('hidden', !oar)
   refreshBackendScan('c-backendType', 'c-backend-scan')
+  if (oar) {
+    const probe = state.oarRuntimes
+    fillOarRuntimeSelect($('c-oarRuntime'), probe, $('c-oarRuntime').value)
+    $('c-oar-scan').innerHTML = oarRuntimeScanHtml(probe, $('c-oarRuntime').value)
+  }
 }
 
 async function saveConfig() {
@@ -1149,6 +1286,15 @@ function fmtAgo(ts) {
  * 把失败折叠成「没有会话 / 没有进行中的卡片」会让用户把故障读成正常状态，
  * 其中 inflight 的假空态最危险——飞书上正有一张卡片永远停在「执行中」。
  */
+async function loadOarRuntimesPanel() {
+  const name = $('ss-instance').value
+  const box = $('ss-oar-runtimes')
+  if (!box) return
+  box.innerHTML = '<p class="hint">探测中…（要起进程，可能连服务，最多一分钟）</p>'
+  const probe = await loadOarRuntimes(name, true)
+  box.innerHTML = oarRuntimesTableHtml(probe)
+}
+
 async function loadSessionsTab() {
   const name = $('ss-instance').value
   if (!name) return
@@ -1623,6 +1769,9 @@ $('btn-refresh').addEventListener('click', () => {
 })
 $('cfg-instance').addEventListener('change', loadConfigTab)
 $('c-backendType').addEventListener('change', toggleConfigBackend)
+$('c-oarRuntime').addEventListener('change', () => {
+  $('c-oar-scan').innerHTML = oarRuntimeScanHtml(state.oarRuntimes, $('c-oarRuntime').value)
+})
 $('cfg-save').addEventListener('click', saveConfig)
 $('fs-instance').addEventListener('change', loadFeishuTab)
 $('fs-verify').addEventListener('click', verifyFeishu)
