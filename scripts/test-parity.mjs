@@ -32,7 +32,13 @@ function makeRun({ text = '结论：跑通了。', tools = [], status = 'done', 
   return st
 }
 
-const tool = (name, input, status = 'ok') => ({ id: 't1', name, input, status, output: '' })
+/** 给一个运行态补上 cacheRead，用来验「0 与缺失等价」 */
+function withCacheRead(run, v) {
+  run.tokens = { ...run.tokens, cacheRead: v }
+  return run
+}
+
+const tool = (_name, input, status = 'ok') => ({ id: 't1', name: _name, input, status, output: '' })
 
 // ---------- 1. 一致判一致 ----------
 
@@ -98,8 +104,11 @@ const tool = (name, input, status = 'ok') => ({ id: 't1', name, input, status, o
   const r = compareProjections(makeRun({ tokens: { input: 100, output: 20 } }), makeRun({ tokens: { input: 120, output: 20 } }))
   ok(r.ok === false && r.diffs.some((d) => d.aspect === '用量' && d.detail.includes('input')), '输入 token 不同判不一致', JSON.stringify(r.diffs))
 
+  // cacheRead 只报不断定：两条路顺序跑，后跑的吃前一侧刚热的缓存，它反映
+  // 的是执行顺序不是实现差异
   const r2 = compareProjections(makeRun({ tokens: { input: 100, output: 20 } }), makeRun({ tokens: { input: 100, output: 20, cacheRead: 40 } }))
-  ok(r2.ok === false && r2.diffs.some((d) => d.detail.includes('cacheRead')), '缓存读取不同判不一致')
+  ok(r2.ok === true, 'cacheRead 不同不断差异', JSON.stringify(r2))
+  ok(r2.notes.some((x) => x.includes('cacheRead')), 'cacheRead 的差作为观察项报出来', JSON.stringify(r2.notes))
 
   // OAR 不给金额：一边有 cost 一边没有，不算差异
   const r3 = compareProjections(
@@ -107,6 +116,12 @@ const tool = (name, input, status = 'ok') => ({ id: 't1', name, input, status, o
     makeRun({ tokens: { input: 100, output: 20 } }),
   )
   ok(r3.ok === true, '一边有 cost 一边没有不算差异（OAR 不给金额）', JSON.stringify(r3.diffs))
+
+  // cacheRead 一边报 0、一边不报：等价，不算差异
+  const r4 = compareProjections(makeRun({ tokens: { input: 100, output: 20 } }), withCacheRead(makeRun({ tokens: { input: 100, output: 20 } }), 0))
+  ok(r4.ok === true, 'cacheRead 一边 0 一边缺失不算差异', JSON.stringify(r4.diffs))
+  const r5 = compareProjections(makeRun({ tokens: { input: 100, output: 20 } }), withCacheRead(makeRun({ tokens: { input: 100, output: 20 } }), 40))
+  ok(r5.ok === true && r5.notes.some((x) => x.includes('cacheRead')), 'cacheRead 真的不同也只报不断定', JSON.stringify(r5))
 }
 
 // ---------- 6. 该容忍的噪声不误报 ----------

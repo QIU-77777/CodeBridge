@@ -48,6 +48,8 @@ function toolKey(t) {
  */
 export function compareProjections(a, b) {
   const diffs = []
+  // notes 是只报不断定的观察项：真实存在但不构成实现差异
+  const notes = []
 
   // 1. 文本
   const ta = norm(a.text)
@@ -97,11 +99,15 @@ export function compareProjections(a, b) {
       diffs.push({ aspect: '用量', detail: `${k} 不同：桥接 ${ua[k] ?? '空'}，OAR ${ub[k] ?? '空'}` })
     }
   }
-  if (ua.cacheRead !== ub.cacheRead) {
-    diffs.push({ aspect: '用量', detail: `cacheRead 不同：桥接 ${ua.cacheRead ?? '空'}，OAR ${ub.cacheRead ?? '空'}` })
+  // cacheRead 只报不断言。两条路是顺序跑的，后跑的那一侧吃前一侧刚热的提示
+  // 缓存，cacheRead 因此反映的是执行顺序，不是实现差异。实测：先跑桥接再跑
+  // OAR，OAR 侧 cacheRead 14080 而桥接侧为空。要对照缓存行为得两条路各跑两
+  // 遍比第二次，那不在本对照的范围里
+  if (Number(ua.cacheRead || 0) !== Number(ub.cacheRead || 0)) {
+    notes.push(`cacheRead：桥接 ${ua.cacheRead ?? '空'}，OAR ${ub.cacheRead ?? '空'}（顺序执行的缓存差，不计入判定）`)
   }
 
-  return { ok: diffs.length === 0, diffs }
+  return { ok: diffs.length === 0, diffs, notes }
 }
 
 /** 错误归类：复用卡片那一套，对照的是「给人看的那句话」 */
@@ -113,5 +119,6 @@ function classify(message) {
 export function formatComparison(label, result) {
   const head = result.ok ? `✅ ${label}：四项全部一致` : `❌ ${label}：${result.diffs.length} 处不一致`
   const body = result.diffs.map((d) => `  [${d.aspect}] ${d.detail}`).join('\n')
-  return body ? `${head}\n${body}` : head
+  const notes = (result.notes || []).map((x) => `  [观察] ${x}`).join('\n')
+  return [head, body, notes].filter(Boolean).join('\n')
 }

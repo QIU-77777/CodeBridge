@@ -564,7 +564,8 @@ const main = async () => {
     const text = JSON.stringify(c)
     ok(text.includes('HELLO'), '结果卡片包含正文')
     ok(text.includes('in 17 · out 3'), '结果卡片带 in/out')
-    ok(text.includes('$0.00'), '结果卡片带金额（两位小数）')
+    // 金额已经不显示（OAR 的用量接口也没有这个字段）：卡片只留 token
+    ok(!text.includes('$'), '结果卡片不带金额')
     ok(text.includes('@我 并发送'), '群版帮助提示仍在')
     ok(text.includes('已完成'), '标题带状态词')
 
