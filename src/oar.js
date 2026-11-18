@@ -40,8 +40,15 @@ const OPEN_RUNTIMES = [
   'dsh',
 ]
 
-/** 解析前的保守取值：能力面板不渲染任何按钮，也不允许忙时注入 */
+/**
+ * 解析前的保守取值：能力面板不渲染任何按钮，也不允许忙时注入。
+ *
+ * type 必须在这里就有：handler 的 setCaps 是整体替换，解析完成后推上来的
+ * caps 若缺 type，/login、/logout、helpCard 的登录段、提示词的身份句全都会
+ * 落到错误的分支上。
+ */
 const PENDING_CAPS = {
+  type: 'oar',
   streaming: true,
   agents: false,
   permissions: false,
@@ -115,6 +122,7 @@ export class OarBackend {
       }
       const declared = this.runtime.sessionCapabilities?.(this.installation) || {}
       this.caps = {
+        type: 'oar',
         streaming: true,
         agents: false,
         permissions: false,
@@ -301,15 +309,25 @@ export class OarBackend {
   async deleteSession(id) {
     const idx = this._load()
     if (!idx[id]) throw new Error(`会话 ${id} 不存在`)
+    // 同 switchModel：删会话会 dispose 正在跑的回合
+    if (this.isBusy(id)) throw new Error('有任务正在跑，等它结束再删会话')
     delete idx[id]
     this._save()
     this._dropLive(id, '删除会话')
     return true
   }
 
+  /** 这个会话有没有正在跑的回合。切模型与删会话据此拒绝 */
+  isBusy(id) {
+    return Boolean(this.live.get(id)?.busy)
+  }
+
   async switchModel(id, model) {
     const s = this._load()[id]
     if (!s) throw new Error(`会话 ${id} 不存在`)
+    // 切模型要 dispose 正在跑的会话，等于杀掉当前回合。明确拒绝，别让用户的
+    // 任务白跑一半
+    if (this.isBusy(id)) throw new Error('有任务正在跑，等它结束再切模型')
     s.model = this._modelRef(model)
     s.time.updated = Date.now()
     this._save()
@@ -405,7 +423,13 @@ export class OarBackend {
   /** 取这个桥接会话的 OAR 会话：活着就复用，否则按索引恢复或新建 */
   async _sessionFor(id) {
     const live = this.live.get(id)
-    if (live) return live
+    // 复用前一定清掉空闲定时器：上一轮跑完装的那个，会在第 N 分钟整点把正在
+    // 跑的长回合 dispose 腰斩，卡片翻成「运行时进程退出」。src/pi.js 的回收器
+    // 是 inFlight 感知的，同一条教训
+    if (live) {
+      this._clearIdle(id)
+      return live
+    }
     // 等启动解析落地：解析失败也继续走，下面会给一句明确的话
     await this._ready.catch(() => {})
     await this._ensureHostTools()
@@ -419,6 +443,9 @@ export class OarBackend {
     const options = this.buildSessionOptions({
       directory: entry.location?.directory,
       model: entry.model?.id ? `${entry.model.providerID ? entry.model.providerID + '/' : ''}${entry.model.id}` : '',
+      // 第一次开才带名字：运行时的 UI 里会话不该是匿名的。恢复不传——恢复从来
+      // 不替换运行时就有的名字
+      name: entry.oarId ? undefined : entry.title,
     })
     let session
     try {
@@ -432,9 +459,12 @@ export class OarBackend {
     entry.time.updated = Date.now()
     this._save()
 
-    const live1 = { session, translate: createEventTranslator(session.id) }
+    const live1 = { session, translate: createEventTranslator(session.id), busy: false }
     this.live.set(id, live1)
     session.events((ev) => {
+      // 忙等标记：一个会话最多一个活动回合，切模型与删会话要据此拒绝
+      if (ev.kind === 'turn_started') live1.busy = true
+      else if (ev.kind === 'turn_ended' || ev.kind === 'exited') live1.busy = false
       for (const b of live1.translate(ev)) this._emit(id, b.type, b.data)
     })
     return live1
@@ -450,24 +480,34 @@ export class OarBackend {
       const reason = err?.reason === 'archived' ? '已被归档' : '正被其他进程占用'
       return `原会话取不回来：${reason}。等占用它的程序退出后再试，或用 /new 开新会话`
     }
+    // 换目录恢复：会话绑在它自己的目录上，回去得用 /cd
+    if (name === 'UnsupportedOptionError' && err?.option === 'cwd') {
+      return '原会话绑在另一个目录，要回去得用 /cd 切回那个目录再用；或 /new 开新会话'
+    }
     return err?.message || String(err)
   }
 
   async prompt(sessionId, body, opts = {}) {
     const { session } = await this._sessionFor(sessionId)
-    // 忙时注入统一走 deliver：空闲新开一回合，忙时能引导就引导、不能就排队，
-    // OAR 自己判断，不读 caps
-    if (opts.delivery === 'steer') {
-      const r = await session.deliver(body)
-      if (r.landed === 'rejected') throw new Error(r.reason || '注入被拒绝')
-      return r.landed
-    }
-    const r = await session.prompt(body)
-    if (r.kind === 'rejected') throw new Error(r.reason || '发送被拒绝')
-    return 'prompted'
+    // 统一走 deliver：空闲新开一回合，忙时能引导就引导、不能就排队，OAR 自己
+    // 判断，不读 caps。不用 prompt() 是因为它在忙时的拒绝码是 busy，而忙等有
+    // 两种来路：回合刚结束状态还没翻、运行时自己起的回合。两种都不该让用户的
+    // 消息变成一张失败卡片
+    const r = await session.deliver(body)
+    if (r.landed === 'rejected') throw new Error(r.reason || '发送被拒绝')
+    return r.landed
   }
 
   // ---------- 生命周期 ----------
+
+  /** 清掉一个会话的空闲回收定时器。定时器只认 id，不认会话对象，得按 id 删 */
+  _clearIdle(id) {
+    const timer = this.idleTimers.get(id)
+    if (timer) {
+      clearTimeout(timer)
+      this.idleTimers.delete(id)
+    }
+  }
 
   /** 关掉运行中的会话，索引里的 oarId 留着，下次发消息用 resume 恢复 */
   _dropLive(id, why) {
@@ -476,11 +516,7 @@ export class OarBackend {
       this.live.delete(id)
       live.session.dispose().catch((e) => this.log.warn?.(`OAR 会话回收失败（${why}）: ${e?.message || e}`))
     }
-    const timer = this.idleTimers.get(id)
-    if (timer) {
-      clearTimeout(timer)
-      this.idleTimers.delete(id)
-    }
+    this._clearIdle(id)
   }
 
   /**

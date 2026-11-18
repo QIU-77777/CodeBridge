@@ -787,8 +787,25 @@ pi 的 `/sessions` 同时列出桥接会话与终端 `pi -r` 会话。切到终�
 | `/model` | 会话中切换走 dispose 加 resume，索引里的模型立即更新，卡片显示与实际执行一致 |
 | `/login`、`/logout` | 走运行时自己的登录，卡片给地址与设备码，回执码直接发到群里。桥接不碰密钥 |
 | 空闲回收 | 一轮跑完 `backend.oar.idleMs` 后 dispose，下次发消息用 resume 把历史带回来 |
+
+回收之后第一次发消息要走 resume，多一段开会话的耗时。**优化触发条件**：resume 本身耗时超过 1 秒，或 resume 后首条 prompt 到首个 `text_delta` 的延迟劣化超过热进程路径的 3 倍。测量方法：dispose 后用 resume 重开，两项各跑 10 次取分布，与热进程路径对照。预算内不优化；触发之后再考虑养热进程（`src/pi.js` 的 `_ensureProc` 注册表模式可以抄）。
 | 成本 | 不显示。OAR 的用量接口只有 token 与上下文，没有金额 |
 | 飞书能力 | 以宿主工具挂给任何 harness：`send_message`、`list_chats`、`ask_human`。身份由桥接进程持有，不进子进程环境 |
+
+### pi 双实现对照
+
+同一条 prompt 走两条路，比投影到卡片状态机的结果：
+
+- A 桥接现有 pi 后端：长驻 `pi --mode rpc` 进程，stdin JSONL 命令，合成事件
+- B OAR 的 pi 适配器：默认进程内 SDK，`OC_PARITY_SUBPROCESS=1` 时每会话一个原生 RPC 进程（与 A 同一个进程模型）
+
+```
+npm run parity:pi-oar -- "这个仓库是做什么的"
+npm run parity:pi-oar -- --dir /tmp/x "跑一下 node --version"
+```
+
+判定不看事件原型是否相同，看四项投影：文本（正文拼接）、工具（名称、参数键集合、结果状态）、终态（done / failed / aborted，失败再比归类）、用量（input / output / cacheRead，cost 允许一边没有）。该容忍的噪声先归一化：临时路径、时间戳、连续空白。这一条要真实模型调用，会花钱，不进 CI。判定逻辑本身有离线测试（`npm run test:parity`），合成运行态就能验。
+
 
 **飞书能力为什么换成宿主工具。** 现在只有 pi 后端能让 agent 在飞书上发言，做法是把本实例的飞书凭证注进子进程环境、让 agent 自己敲 feishu-cli。多机器人同机部署时，那个机器级配置经常是另一个实例的，代理就以别人的身份发言（真实事故记在 `src/pi.js` 的注释里）。OAR 后端改成：桥接在自己进程内起一个 MCP 服务器（只监听 `127.0.0.1`，带随机 bearer 令牌），把三个工具挂上去，任何 harness 通过自己的 MCP 通道连进来。
 
@@ -797,6 +814,13 @@ pi 的 `/sessions` 同时列出桥接会话与终端 `pi -r` 会话。切到终�
 - `ask_human`：向一个会话里的人提一个问题，等到回答或超时（默认 5 分钟，上限 1 小时）。一个会话同时只等一个回答，回答不挑人。
 
 这不改变 agent 间的协作方式：传输仍然是飞书群消息，@、话题、忙时 steer 都不变。这是宿主给 agent 发工具，不是建立父子关系。挂不上的运行时由 `refusedSessionOptions` 决定：pi-durable 拒绝 `mcpServers`、antigravity 拒绝带头部的条目、dsh 只收 stdio，这三种不挂，其余都挂。
+
+宿主工具的已知限制，第一版不限：
+
+- `send_message` 没有频率限制。agent 循环失控能刷群；飞书的发送侧没有节流兜着（节流只覆盖卡片 patch）。真出这事先断网，再从日志找是哪个会话。
+- `ask_human` 会占住一个回合最长 1 小时（`timeout_ms` 上限 3600000）。超过 `behavior.toolIdleTimeoutMs`（30 分钟）的那段没有看门狗兜底——看门狗只对 opencode 后端生效。
+- `send_message` 的 `chat_id` 是任意值，agent 可以给本实例所在的任何飞书会话发消息。爆炸半径等于这个应用加入的所有群，与旧设计（凭证进子进程、agent 自己敲 feishu-cli）相同或更小，且身份不再依赖机器级配置。
+- 提问与登录等待按 chat 加 thread 限定：只收同一个作用域里的答案，别的话题、别的群的消息照常进任务链路，不被吞掉。
 
 `/login` 的交互来自 OAR 的登录契约：事件面是 `auth_url`、`device_code`、`info`，回答面是 `text`、`secret`、`manual_code`、`select`。前三者让用户把答案发到群里，`select` 渲染成按钮。取消随时可以，中止信号交给 OAR，它停掉登录进程及其子进程。
 
@@ -955,6 +979,8 @@ logs/                      运行日志（不入库）
 | `OC_PW=<密码> npm run selftest -- --model <providerID/modelID>` | 真实模型集成自测：建会话、发 prompt、删会话、流式聚合、卡片回调、白名单、@ 判定 |
 | `npm run test:render` / `test:patch` | 卡片渲染与 patch 顺序 |
 | `npm run test:oar-events` / `test:oar-backend` / `test:oar-probe` / `test:oar-login` / `test:oar-host-tools` | OAR 事件翻译层、OAR 后端、运行时探测、登录流程、飞书宿主工具，全部离线，不装 harness、不登录、不连模型提供商 |
+| `npm run test:parity` | 双实现对照的判定逻辑，合成运行态，不发 prompt |
+| `npm run parity:pi-oar -- <prompt>` | pi 双实现对照，真实模型调用，手动跑 |
 | `npm run test:cmd-route` | 群里「@机器人 /命令」的分流，含缺少 `cmdText` 时的回退 |
 | `npm run test:busy` / `test:runfail` / `test:wedge` | 排队、运行失败、看门狗收尾 |
 | `npm run test:errors` | 失败卡片的错误分类与「下一步」提示 |

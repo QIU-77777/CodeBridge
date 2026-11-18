@@ -95,8 +95,8 @@ const toolOf = (tools, name) => tools.find((t) => t.name === name)
 
 {
   let asked = null
-  const askHuman = async (chatId, question, timeoutMs) => {
-    asked = { chatId, question, timeoutMs }
+  const askHuman = async (scope, question, timeoutMs) => {
+    asked = { scope, question, timeoutMs }
     return '用方案 A'
   }
   const tools = feishuHostTools({ transport: fakeTransport(), askHuman })
@@ -104,8 +104,12 @@ const toolOf = (tools, name) => tools.find((t) => t.name === name)
   ok(Boolean(ask), '给了 askHuman 实现才有 ask_human 工具')
   const r = await ask.handler({ chat_id: 'oc_a', question: '选 A 还是 B？' })
   ok(r === '用方案 A', '回答原样返回给模型', String(r))
-  ok(asked.chatId === 'oc_a' && asked.question === '选 A 还是 B？', '问题与目标会话传对了', JSON.stringify(asked))
+  ok(asked.scope === 'chat:oc_a|thread:' && asked.question === '选 A 还是 B？', '作用域与问题传对了', JSON.stringify(asked))
   ok(asked.timeoutMs === 300_000, '默认等 5 分钟', String(asked.timeoutMs))
+
+  // 给了 thread_id 就问在那个话题下，只收那一处的回答
+  await ask.handler({ chat_id: 'oc_a', question: '在话题里问', thread_id: 'om_root_1' })
+  ok(asked.scope === 'chat:oc_a|thread:om_root_1', '给了 thread_id 就限定到那个话题', JSON.stringify(asked))
 
   const r2 = await ask.handler({ chat_id: 'oc_a', question: '快点', timeout_ms: 60_000 })
   ok(asked.timeoutMs === 60_000, '超时可调', String(asked.timeoutMs))

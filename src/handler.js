@@ -583,6 +583,23 @@ export class Bridge {
     return { key: msg.key || `root:${rootId}`, chatId: msg.chatId, replyTo: rootId }
   }
 
+  /**
+   * 等待类状态的作用域键：chat 加 thread。
+   *
+   * 登录等待与 ask_human 都只收同一个作用域里的答案。只按 chatId 收会把同一
+   * 个群里别的话题的消息吞掉——那边的人 @ 了我，消息却没了，agent 水远看不到。
+   */
+  _scopeKey(msg) {
+    if (msg.chatType !== 'group') return `chat:${msg.chatId}`
+    return `chat:${msg.chatId}|thread:${msg.rootId || ''}`
+  }
+
+  /** 一条消息是否落在某个作用域里 */
+  _inScope(scope, msg) {
+    if (!scope) return false
+    return scope.chatId === msg.chatId && (scope.threadId || '') === (msg.rootId || '')
+  }
+
   async onMessage(msg) {
     const text = (msg.text || '').trim()
     if (!text) return
@@ -592,9 +609,10 @@ export class Bridge {
       return
     }
 
-    // 登录流程在等人回答：这条消息就是答案，不进任务链路。一台机器一个登录态，
-    // 所以不按话题隔离，谁发起谁答，同一个人同时只跑一个登录
-    if (this.loginFlow?.awaitingText) {
+    // 登录流程在等人回答：这条消息就是答案，不进任务链路。
+    // 按 chat 加 thread 限定：登录卡片发在哪个话题就只收那个话题的答案，别的
+    // 话题、别的群的消息照常进任务链路，不被吞掉
+    if (this.loginFlow?.awaitingText && this._inScope(this.loginScope, msg)) {
       const flow = this.loginFlow
       if (text === '/取消' || text === '/cancel') {
         flow.cancel()
@@ -606,10 +624,12 @@ export class Bridge {
       }
     }
 
-    // 有人在等问题回答（ask_human 工具）：这条消息就是回答
-    const ask = this.pendingAsks.get(msg.chatId)
+    // 有人在等问题回答（ask_human 工具）：同一条作用域规则，问题发在主聊天流
+    // 就只收主聊天流的回答
+    const askKey = this._scopeKey(msg)
+    const ask = this.pendingAsks.get(askKey)
     if (ask) {
-      this.pendingAsks.delete(msg.chatId)
+      this.pendingAsks.delete(askKey)
       clearTimeout(ask.timer)
       ask.resolve(text)
       return null
@@ -1003,7 +1023,9 @@ export class Bridge {
       return this.t.sendText(ctx.chatId, '这条话题还没有绑定会话', { replyTo: ctx.replyTo })
     }
     const ok = await this.oc.interrupt(binding.sessionId)
-    return this.t.sendText(ctx.chatId, ok ? '已发送中止请求' : '中止失败（可能当前没有在执行）', {
+    // false 的两种来路：这个后端没有正在执行的回合（OAR 的会话已被回收、或
+    // 回合早就结束）。说清是「已经结束」，不要说成失败
+    return this.t.sendText(ctx.chatId, ok ? '已发送中止请求' : '没有正在执行的任务，它已经结束了', {
       replyTo: ctx.replyTo,
     })
   }
@@ -1124,6 +1146,8 @@ export class Bridge {
     this.loginCardId = null
     this.loginNavKey = ctx.key
     this.loginNavRt = ctx.replyTo || ''
+    // 只收同一个 chat 加同一个 thread 里的答案
+    this.loginScope = { chatId: ctx.chatId, threadId: ctx.replyTo || '' }
 
     // 卡片先落地，登录过程在它上面 patch：人看到的是一张卡在变，不是一堆新消息
     const first = await this.t.sendCard(ctx.chatId, loginCard(flow.state, { label, k: ctx.key, rt: ctx.replyTo || '' }), {
@@ -1170,14 +1194,25 @@ export class Bridge {
    *
    * @returns {Promise<string|null>} 回答的文本；超时返回 null
    */
-  async askHuman(chatId, question, timeoutMs = 300_000) {
+  /**
+   * 给一个飞书会话提一个问题，等到回答或超时。
+   *
+   * 一个作用域同时只等一个回答：第二个问题会顶掉第一个（第一个拿到超时）。
+   * 回答不挑人——群里任何人答都算，这本来就是把决定权交回给群里。
+   * 作用域按 chat 加 thread：别的话题、别的群的消息不会被吞。
+   *
+   * @param {string} scopeKey _scopeKey 算出来的作用域
+   * @returns {Promise<string|null>} 回答的文本；超时返回 null
+   */
+  async askHuman(scopeKey, question, timeoutMs = 300_000) {
+    const chatId = String(scopeKey).replace(/^chat:([^|]+)(\|thread:.*)?$/, '$1')
     await this.t.sendText(chatId, question)
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
-        if (this.pendingAsks.get(chatId)?.resolve === resolve) this.pendingAsks.delete(chatId)
+        if (this.pendingAsks.get(scopeKey)?.resolve === resolve) this.pendingAsks.delete(scopeKey)
         resolve(null)
       }, timeoutMs)
-      this.pendingAsks.set(chatId, { resolve, timer })
+      this.pendingAsks.set(scopeKey, { resolve, timer })
     })
   }
 
@@ -1186,7 +1221,8 @@ export class Bridge {
     this.oc.setHost?.({
       transport: this.t,
       store: this.store,
-      askHuman: (chatId, question, timeoutMs) => this.askHuman(chatId, question, timeoutMs),
+      // 作用域由桥接算：宿主的 askHuman 只拿得到 chat_id，thread 在桥接这边
+      askHuman: (scopeKey, question, timeoutMs) => this.askHuman(scopeKey, question, timeoutMs),
     })
   }
 
