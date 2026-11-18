@@ -668,15 +668,19 @@ export class Bridge {
       // 要的是实时；注入失败退回下面的排队路，消息不丢
       if (msg.isBot && this.caps.steer === true) {
         try {
-          await this.oc.prompt(binding.sessionId, msg.text, { delivery: 'steer' })
-          // 反馈要能自明：谁的消息、内容是什么，以及生效时机——排入当前
-          // 回合，本回合工具调用结束后交付，下次模型调用生效。卡片那路带
-          // 「来自 / 内容 / 注入说明」，文本这路可以不一样，但这几样不能少：
-          // 不然群里只看到一句光秃秃的「已引导」，不知道注入的是什么、什么时候生效
+          const landed = await this.oc.prompt(binding.sessionId, msg.text, { delivery: 'steer' })
+          // 反馈要能自明：谁的消息、内容是什么、以及生效时机。落点决定文案：
+          // 统一走 deliver 之后，忙时注入可能落在排队（运行时那一刻拒了 steer），
+          // 那一条要等当前回合结束才跑，说成「已排入当前回合」是骗人
+          // OAR 后端返回落点字符串，另两个后端的返回值不是这个形状，按老文案走
+          const effect =
+            landed === 'queued'
+              ? '已排进队列，当前回合结束后接着跑'
+              : '已排入当前回合，本回合工具调用结束后交付，下次模型调用生效'
           const from = this.nameOf(msg.userId) || msg.userId
           await this.t.sendText(
             ctx.chatId,
-            `已引导：${from} 的消息已排入当前回合，本回合工具调用结束后交付，下次模型调用生效，不中止已有工作。\n\n${truncate(msg.text, 120)}`,
+            `已引导：${from} 的消息${effect}，不中止已有工作。\n\n${truncate(msg.text, 120)}`,
             { replyTo: ctx.replyTo },
           )
           return null
@@ -1426,8 +1430,9 @@ export class Bridge {
           if (this.caps.steer === true && run?.state?.status === 'running') {
             const item = this.store.removeQueued(key, a.q)
             if (!item) return { toast: { type: 'error', content: '这条消息不在队列里（可能已经发出或被取消）' } }
+            let landed
             try {
-              await this.oc.prompt(binding.sessionId, item.text, { delivery: 'steer' })
+              landed = await this.oc.prompt(binding.sessionId, item.text, { delivery: 'steer' })
             } catch (err) {
               // 注入失败（老版本 serve 不认识 delivery 等）：消息不能丢，放回
               // 队首，按老路数中止当前改发
@@ -1452,7 +1457,9 @@ export class Bridge {
             // 说明」并撤掉按钮，与取消分支一样只翻新、不发新卡，避免同一事件
             // 出现两张内容相同的「已引导」
             this.refreshQueuedCard(item, queuedSteeredCard)
-            return { toast: { type: 'success', content: '已引导：下一步生效，不中断' } }
+            // 落排队的那一条要等当前回合结束，跟引导的生效时机不同，toast 分开说
+            const toast = landed === 'queued' ? '已排进队列：当前回合结束后接着跑' : '已引导：下一步生效，不中断'
+            return { toast: { type: 'success', content: toast } }
           }
           // 后端不支持 steer，或任务已经结束（点得太慢）：提到队首，任务还在
           // 就中止，等排空时发出去。按 qid 找，找不到说明它已经发出去（或被
