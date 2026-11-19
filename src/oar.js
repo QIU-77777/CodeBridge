@@ -16,12 +16,13 @@
  * 设，配置里不加字段。
  */
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { defaultRuntimes } from '@botiverse/oar'
 import { CONFIG_DIR } from './config.js'
 import { createEventTranslator } from './oar-events.js'
 import { serveFeishuTools } from './oar-host-tools.js'
+import { githubEnv } from './github-identity.js'
 
 /** 第一版放开的运行时。cursor 与 pi-durable 要宿主传 SDK，不在表内 */
 const OPEN_RUNTIMES = [
@@ -90,6 +91,7 @@ export class OarBackend {
     const idle = Number(this.oar.idleMs)
     this.idleMs = Number.isFinite(idle) && idle >= 0 ? idle : 600_000
 
+    this.configDir = cfg.__configDir || CONFIG_DIR
     this.sessionDir = sessionDir || join(CONFIG_DIR, 'oar-sessions')
     this.indexPath = join(this.sessionDir, 'index.json')
     // 桥接会话 id -> 运行中的 OAR 会话
@@ -121,6 +123,13 @@ export class OarBackend {
         return
       }
       const declared = this.runtime.sessionCapabilities?.(this.installation) || {}
+      // GitHub 身份：取不到不拖垮启动，本次运行沿用默认身份（与 pi 后端同策）
+      try {
+        this.ghEnv = (await githubEnv(this.cfg, this.configDir)) || null
+      } catch (err) {
+        this.log.warn?.(`GitHub 身份注入失败，本次运行沿用默认身份: ${err.message}`)
+        this.ghEnv = null
+      }
       this.caps = {
         type: 'oar',
         streaming: true,
@@ -185,13 +194,52 @@ export class OarBackend {
     const m = model || this.defaultModel
     if (m) opts.model = m
     if (name && !refused.name) opts.name = name
-    if (this.env) opts.env = this.env
+    // 身份叠加：飞书凭证与 lark-cli 配置让 agent 以自己的应用身份发言，GitHub
+    // 身份让 git 操作落在本实例的 App 上。缺了它们，agent 手敲 feishu-cli 会读
+    // 机器级全局配置，以别的实例的身份发言（Lil_K 进群时踩过）。用户配置的 env
+    // 后叠，盖住身份默认值——他要改 PROVIDER 一类就该能改
+    opts.env = { ...this.identityEnv(), ...(this.env || {}) }
     // 飞书能力挂上来：运行时拒绝 mcpServers 或带头部的条目时不挂
     if (this.hostServer && !refused.mcpServers && !refused.mcpServerCredentials) {
       opts.mcpServers = [this.hostServer]
     }
     for (const key of Object.keys(refused)) delete opts[key]
     return opts
+  }
+
+  /** 本实例的身份环境变量：飞书凭证、lark-cli 配置目录、GitHub 身份 */
+  identityEnv() {
+    const env = {}
+    const f = this.cfg.feishu || {}
+    if (f.appId) env.FEISHU_APP_ID = f.appId
+    if (f.appSecret) env.FEISHU_APP_SECRET = f.appSecret
+    if (f.domain) env.FEISHU_DOMAIN = f.domain
+    const larkDir = this.ensureLarkCliConfig()
+    if (larkDir) env.LARKSUITE_CLI_CONFIG_DIR = larkDir
+    if (this.ghEnv) Object.assign(env, this.ghEnv)
+    return env
+  }
+
+  /**
+   * 在实例配置目录下生成一份只含本实例应用的 lark-cli 配置，返回其目录。
+   * 与 pi 后端同一条路：多机器人同机部署时，agent 手敲 feishu-cli 读的是机器级
+   * 全局配置，那个默认应用经常是另一个实例的——不钉住就会以别人的身份发言。
+   */
+  ensureLarkCliConfig() {
+    const f = this.cfg.feishu || {}
+    if (!f.appId || !f.appSecret) return null
+    const dir = join(this.configDir, 'lark-cli')
+    const file = join(dir, 'config.json')
+    try {
+      const want = JSON.stringify({ strictMode: 'bot', apps: [{ appId: f.appId, appSecret: f.appSecret }] })
+      if (!existsSync(file) || readFileSync(file, 'utf8') !== want) {
+        mkdirSync(dir, { recursive: true })
+        writeFileSync(file, want, { mode: 0o600 })
+      }
+      return dir
+    } catch {
+      return null
+    }
   }
 
   /**

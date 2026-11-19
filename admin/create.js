@@ -71,8 +71,13 @@ function instanceOnPort(instances, port) {
 }
 
 function readTemplate() {
-  if (!existsSync(TEMPLATE_PATH)) throw new Error(`找不到配置模板 ${TEMPLATE_PATH}，请确认仓库完整`)
-  return JSON.parse(readFileSync(TEMPLATE_PATH, 'utf8'))
+  // 模板缺失或损坏都是配置问题，不当成未捕获异常冒泡到请求外
+  try {
+    if (!existsSync(TEMPLATE_PATH)) throw new Error(`找不到配置模板 ${TEMPLATE_PATH}，请确认仓库完整`)
+    return JSON.parse(readFileSync(TEMPLATE_PATH, 'utf8'))
+  } catch (err) {
+    throw new Error(`读取配置模板失败：${err.message}`)
+  }
 }
 
 /**
