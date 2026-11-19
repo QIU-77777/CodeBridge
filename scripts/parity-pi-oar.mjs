@@ -4,24 +4,25 @@
  *
  *   node scripts/parity-pi-oar.mjs "这个仓库是做什么的"
  *   node scripts/parity-pi-oar.mjs --dir /tmp/x "跑一下 node --version"
- *   node scripts/parity-pi-oar.mjs --repeat "..."                # 每侧连跑两遍，加做同模式自检
- *   OC_PARITY_SUBPROCESS=0 node scripts/parity-pi-oar.mjs "..."   # OAR 侧用进程内 SDK
+ *   OC_PARITY_SUBPROCESS=1 node scripts/parity-pi-oar.mjs "..."   # OAR 侧用每会话一个 RPC 进程
  *
  * 两条路：
  *   A 桥接现有 pi 后端：长驻 pi --mode rpc 进程，stdin JSONL 命令，合成事件
- *   B OAR 的 pi 适配器：默认进程内 SDK，加 OC_PARITY_SUBPROCESS=1 用每会话一个
- *     原生 RPC 进程（与 A 同一个进程模型）
+ *   B OAR 的 pi 适配器：默认进程内 SDK
  *
  * 这一条要真实模型调用：会花钱，要本机 pi 已登录。它不进 CI，手动跑。
- * 判定不看事件原型，看四项投影：文本、工具、终态、用量（src/parity.js）。
+ * 判定分两类，依据见 src/parity.js 文件头：
+ *   进判定  终态、工具（名字序列与结果状态）
+ *   只观察  文本（模型采样不确定性）、用量（两侧读数口径不同）、工具参数
  *
- * --repeat 加做同模式自检：每一侧连跑两遍，比同一侧两次的结果。跨模式判定走
- * 容差带，对「两侧一起漂」是瞎的——装配不确定那一类回归只有同模式重复跑才抓
- * 得到。注意同模式也不要求精确相等：提供商侧提示缓存按执行顺序决定冷热，第二
- * 遍的 input 可能涨几百（实测 OAR 侧 14541 涨到 14733、cacheRead 0 跳 14080），
- * 所以自检同样走容差带，超带才报。要精确相等得让提供商绕开缓存，不在本脚本范围。
+ * 每侧连跑两遍，同模式自检必跑：跨模式判定弱化之后，自检是抓「装配不确定」
+ * 类回归的主要信号。自检同样只判定终态与工具。
  *
- * 退出码：0 四项全一致，1 有不一致，2 运行本身失败。
+ * 每行都打原始用量（input / output / cacheRead）。两侧读数口径不同——OAR 报
+ * 整个回合所有模型调用的累计并把缓存加回 input，桥接报单次调用不含缓存且取
+ * 哪次不确定——不看原始数字，只看判定项，看不出一个差是口径还是实现。
+ *
+ * 退出码：0 判定项全一致，1 有不一致，2 运行本身失败。
  */
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -36,8 +37,7 @@ import { compareProjections, formatComparison } from '../src/parity.js'
 const args = process.argv.slice(2)
 const dirIdx = args.indexOf('--dir')
 const directory = dirIdx >= 0 ? args[dirIdx + 1] : process.cwd()
-// --repeat 是开关不是 prompt 的一部分，得从待发送的文本里剔掉
-const prompt = args.filter((a, i) => a !== '--dir' && a !== '--repeat' && args[i - 1] !== '--dir').join(' ').trim()
+const prompt = args.filter((a, i) => a !== '--dir' && args[i - 1] !== '--dir').join(' ').trim()
 if (!prompt) {
   console.error('用法：node scripts/parity-pi-oar.mjs [--dir <目录>] <prompt>')
   process.exit(2)
@@ -45,7 +45,6 @@ if (!prompt) {
 
 const useSubprocess = process.env.OC_PARITY_SUBPROCESS === '1'
 const model = process.env.OC_PARITY_MODEL || ''
-const repeat = args.includes('--repeat')
 
 /**
  * 把一段事件流喂进 RunState，跑完返回运行态。
@@ -109,22 +108,35 @@ async function runOarSide() {
   return state
 }
 
+/** 一行的摘要：终态、正文、工具，加原始用量。用量必须打——两侧读数口径不同，
+ *  只看判定项看不出来，原始数字（含 cacheRead）摆出来才有人能判断 */
+function line(label, st) {
+  const t = st.tokens || {}
+  const usage = `in ${t.input ?? '空'} / out ${t.output ?? '空'} / cacheRead ${t.cacheRead ?? '空'}`
+  return `${label} 终态 ${st.status}，正文 ${st.text.length} 字，工具 ${st.tools.length} 个，${usage}`
+}
+
 console.log(`pi 双实现对照`)
 console.log(`  目录   ${directory}`)
 console.log(`  prompt ${prompt}`)
 console.log(`  OAR 侧 ${useSubprocess ? '每会话一个原生 RPC 进程' : '进程内 SDK'}`)
+console.log(`  模型   ${model || '运行时自己的默认'}`)
 console.log()
+
+// 每侧连跑两遍：跨模式判定已经只剩终态与工具（用量与文本是观察项），同模式
+// 自检是剩下的主要信号，所以必跑，不再用 --repeat 开关
+const RUNS = 2
 
 let a, b
 try {
   console.log('A 桥接 pi 后端跑…')
   a = await runBridgeSide()
-  console.log(`   终态 ${a.status}，正文 ${a.text.length} 字，工具 ${a.tools.length} 个`)
-  if (repeat) {
-    const a2 = await runBridgeSide()
-    console.log(`   第2遍 终态 ${a2.status}，正文 ${a2.text.length} 字`)
-    const self = compareProjections(a, a2)
-    console.log(formatComparison('A 侧同模式自检', self))
+  console.log(`   ${line('第1遍', a)}`)
+  for (let i = 1; i < RUNS; i++) {
+    const again = await runBridgeSide()
+    console.log(`   ${line(`第${i + 1}遍`, again)}`)
+    const self = compareProjections(a, again)
+    console.log(formatComparison(`A 侧同模式自检（第1遍 对 第${i + 1}遍）`, self))
     if (!self.ok) process.exitCode = 1
   }
 } catch (err) {
@@ -134,12 +146,12 @@ try {
 try {
   console.log('B OAR pi 适配器跑…')
   b = await runOarSide()
-  console.log(`   终态 ${b.status}，正文 ${b.text.length} 字，工具 ${b.tools.length} 个`)
-  if (repeat) {
-    const b2 = await runOarSide()
-    console.log(`   第2遍 终态 ${b2.status}，正文 ${b2.text.length} 字`)
-    const self = compareProjections(b, b2)
-    console.log(formatComparison('B 侧同模式自检', self))
+  console.log(`   ${line('第1遍', b)}`)
+  for (let i = 1; i < RUNS; i++) {
+    const again = await runOarSide()
+    console.log(`   ${line(`第${i + 1}遍`, again)}`)
+    const self = compareProjections(b, again)
+    console.log(formatComparison(`B 侧同模式自检（第1遍 对 第${i + 1}遍）`, self))
     if (!self.ok) process.exitCode = 1
   }
 } catch (err) {

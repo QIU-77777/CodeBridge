@@ -1,11 +1,14 @@
 #!/usr/bin/env node
 /**
- * 双实现对照逻辑的离线测试：不发 prompt、不起后端。
+ * 双实现对照判定逻辑的离线测试：不发 prompt、不起后端。
  *   node scripts/test-parity.mjs
  *
- * 用合成 RunState 验证 compareProjections 的判定：一致时判一致，差在哪一项
- * 说清哪一项，该容忍的差异（空白、临时路径、时间戳、用量在容差带内、cost 一边
- * 没有）不误报。
+ * 用合成 RunState 验证 compareProjections 的判定。判定分两类，依据是
+ * 2026-11-19 的正式对照实测：
+ *   进判定  终态、工具（名字序列与结果状态）
+ *   只观察  文本、用量、工具参数
+ * 用量只观察的理由是两侧读数口径不同（OAR 报累计多调用并把缓存加回 input，
+ * 桥接报单次调用不含缓存且取哪次不确定），跨模式比大小永远得不到结论。
  */
 import { RunState } from '../src/render.js'
 import { compareProjections, formatComparison } from '../src/parity.js'
@@ -33,7 +36,7 @@ function makeRun({ text = '结论：跑通了。', tools = [], status = 'done', 
   return st
 }
 
-/** 给一个运行态补上 cacheRead，用来验「0 与缺失等价」 */
+/** 给一个运行态补上 cacheRead，用来验「只报观察」 */
 function withCacheRead(run, v) {
   run.tokens = { ...run.tokens, cacheRead: v }
   return run
@@ -41,129 +44,137 @@ function withCacheRead(run, v) {
 
 const tool = (_name, input, status = 'ok') => ({ id: 't1', name: _name, input, status, output: '' })
 
-// ---------- 1. 一致判一致 ----------
+// ---------- 1. 判定项一致判通过 ----------
 
 {
   const a = makeRun({ tools: [tool('bash', { command: 'node --version' })] })
   const b = makeRun({ tools: [tool('bash', { command: 'node --version' })] })
   const r = compareProjections(a, b)
-  ok(r.ok === true, '两侧完全相同判一致', JSON.stringify(r.diffs))
-  ok(formatComparison('pi 对照', r).includes('四项全部一致'), '一致的报告说清四项')
+  ok(r.ok === true, '判定项全部相同判通过', JSON.stringify(r.diffs))
+  ok(r.notes.length === 0, '没有差异时没有观察项', JSON.stringify(r.notes))
+  ok(formatComparison('pi 对照', r).includes('判定项全部一致'), '一致的报告说清判定项')
 }
 
-// ---------- 2. 文本差异 ----------
+// ---------- 2. 文本：只在一侧空时判失败 ----------
 
 {
-  const r = compareProjections(makeRun({ text: '结论是 A' }), makeRun({ text: '结论是 B' }))
-  ok(r.ok === false, '正文不同判不一致')
-  ok(r.diffs.length === 1 && r.diffs[0].aspect === '文本', '只报文本一项', JSON.stringify(r.diffs))
-  ok(r.diffs[0].detail.includes('结论是 A') && r.diffs[0].detail.includes('结论是 B'), '报告带两侧原文', r.diffs[0].detail)
+  const r = compareProjections(makeRun({ text: '' }), makeRun({ text: '有内容' }))
+  ok(r.ok === false && r.diffs.some((d) => d.aspect === '文本'), '一侧空一侧非空判失败', JSON.stringify(r.diffs))
+  ok(r.diffs[0].detail.includes('（空）'), '报告标出哪侧空', r.diffs[0].detail)
+
+  // 两侧措辞不同：模型的采样不确定性，只报观察
+  const r2 = compareProjections(makeRun({ text: '结论是 A' }), makeRun({ text: '结论是 B' }))
+  ok(r2.ok === true, '两侧措辞不同不判失败', JSON.stringify(r2.diffs))
+  ok(r2.notes.some((x) => x.startsWith('正文措辞不同')), '措辞差异报观察项', JSON.stringify(r2.notes))
+  ok(r2.notes.some((x) => x.includes('结论是 A') && x.includes('结论是 B')), '观察项带两侧原文', JSON.stringify(r2.notes))
+
+  // 两边都空且终态相同：空答复回合，记观察不判失败
+  const r3 = compareProjections(makeRun({ text: '' }), makeRun({ text: '' }))
+  ok(r3.ok === true, '两边都空且终态相同判通过（空答复回合）', JSON.stringify(r3.diffs))
+  ok(r3.notes.some((x) => x.includes('都为空')), '空答复记观察项', JSON.stringify(r3.notes))
+
+  // 归一化：临时路径、时间戳、空白差异不该产生观察项
+  const r4 = compareProjections(
+    makeRun({ text: '写入了 /tmp/build-1234/out.log，时间 2026-11-18T10:00:00Z' }),
+    makeRun({ text: '写入了 /tmp/build-9999/out.log，时间 2026-11-18T11:22:33Z' }),
+  )
+  ok(r4.ok === true && !r4.notes.some((x) => x.startsWith('正文措辞')), '临时路径与时间戳归一化后不误报', JSON.stringify(r4.notes))
 }
 
-// ---------- 3. 工具差异 ----------
+// ---------- 3. 工具：名字序列与结果状态进判定 ----------
 
 {
   const r = compareProjections(
     makeRun({ tools: [tool('bash', { command: 'ls' })] }),
     makeRun({ tools: [tool('read', { filePath: '/tmp/x' })] }),
   )
-  ok(r.ok === false && r.diffs[0].aspect === '工具', '工具名不同判不一致', JSON.stringify(r.diffs))
+  ok(r.ok === false && r.diffs.some((d) => d.aspect === '工具'), '工具名不同判失败', JSON.stringify(r.diffs))
 
   const r2 = compareProjections(makeRun({ tools: [tool('bash', { command: 'ls' })] }), makeRun({ tools: [] }))
-  ok(r2.ok === false && r2.diffs[0].aspect === '工具', '工具个数不同判不一致')
+  ok(r2.ok === false && r2.diffs.some((d) => d.aspect === '工具'), '工具个数不同判失败', JSON.stringify(r2.diffs))
 
   const r3 = compareProjections(
     makeRun({ tools: [tool('bash', { command: 'ls' }, 'ok')] }),
     makeRun({ tools: [tool('bash', { command: 'ls' }, 'error')] }),
   )
-  ok(r3.ok === false && r3.diffs[0].aspect === '工具' && r3.diffs[0].detail.includes('结果状态'), '工具结果状态不同判不一致', JSON.stringify(r3.diffs))
+  ok(r3.ok === false && r3.diffs.some((d) => d.detail.includes('结果状态')), '工具结果状态不同判失败', JSON.stringify(r3.diffs))
+
+  // 参数键集合不同：模型选不选带可选参数，只报观察
+  const r4 = compareProjections(
+    makeRun({ tools: [tool('read', { path: '/a', limit: 10 })] }),
+    makeRun({ tools: [tool('read', { path: '/a' })] }),
+  )
+  ok(r4.ok === true, '工具参数键集合不同不判失败', JSON.stringify(r4.diffs))
+  ok(r4.notes.some((x) => x.startsWith('工具参数不同')), '参数差异报观察项', JSON.stringify(r4.notes))
+
+  // 参数不同但名字与状态相同：判定通过
+  const r5 = compareProjections(
+    makeRun({ tools: [tool('bash', { command: 'ls', extra: 1 })] }),
+    makeRun({ tools: [tool('bash', { command: 'ls', extra: 2 })] }),
+  )
+  ok(r5.ok === true, '参数值不同但键集合相同，连观察项都没有', JSON.stringify(r5.notes))
 }
 
-// ---------- 4. 终态差异 ----------
+// ---------- 4. 终态 ----------
 
 {
   const r = compareProjections(makeRun({ status: 'done' }), makeRun({ status: 'failed', error: { message: '模型调用失败' } }))
-  ok(r.ok === false && r.diffs.some((d) => d.aspect === '终态'), '终态不同判不一致', JSON.stringify(r.diffs))
+  ok(r.ok === false && r.diffs.some((d) => d.aspect === '终态'), '终态不同判失败', JSON.stringify(r.diffs))
 
   // 都失败时比归类，不比原文
   const r2 = compareProjections(
     makeRun({ status: 'failed', error: { message: 'rate limit exceeded' } }),
     makeRun({ status: 'failed', error: { message: '429 too many requests' } }),
   )
-  ok(r2.ok === true, '都失败且归类相同判一致（限流的两句原文不同但归类同）', JSON.stringify(r2.diffs))
+  ok(r2.ok === true, '都失败且归类相同判通过（限流的两句原文不同但归类同）', JSON.stringify(r2.diffs))
 
   const r3 = compareProjections(
     makeRun({ status: 'failed', error: { message: '401 unauthorized' } }),
     makeRun({ status: 'failed', error: { message: 'rate limit exceeded' } }),
   )
-  ok(r3.ok === false && r3.diffs.some((d) => d.aspect === '终态' && d.detail.includes('归类')), '失败归类不同判不一致', JSON.stringify(r3.diffs))
+  ok(r3.ok === false && r3.diffs.some((d) => d.aspect === '终态' && d.detail.includes('归类')), '失败归类不同判失败', JSON.stringify(r3.diffs))
 }
 
-// ---------- 5. 用量差异 ----------
+// ---------- 5. 用量：只报观察，不判定 ----------
 
 {
-  const r = compareProjections(makeRun({ tokens: { input: 100, output: 20 } }), makeRun({ tokens: { input: 120, output: 20 } }))
-  ok(r.ok === false && r.diffs.some((d) => d.aspect === '用量' && d.detail.includes('input')), '输入 token 差超容差带判不一致', JSON.stringify(r.diffs))
+  // 读数口径不同，多大的差都不判失败
+  const r = compareProjections(makeRun({ tokens: { input: 9190, output: 8 } }), makeRun({ tokens: { input: 29118, output: 33 } }))
+  ok(r.ok === true, '用量差 30 倍也不判失败（两侧读数口径不同）', JSON.stringify(r.diffs))
+  ok(r.notes.some((x) => x.startsWith('input')), 'input 差报观察项', JSON.stringify(r.notes))
+  ok(r.notes.some((x) => x.startsWith('output')), 'output 差报观察项', JSON.stringify(r.notes))
+  ok(r.notes.every((x) => x.includes('不计入判定')), '观察项都写明不计入判定', JSON.stringify(r.notes))
 
-  // 容差带内：装配与缓存噪声只报观察项，不判不一致。实测两种模式的真实装配差
-  // 18 token、连跑波动数百 token（全来自提供商侧提示缓存），都在带内
-  {
-    const r = compareProjections(makeRun({ tokens: { input: 100, output: 20 } }), makeRun({ tokens: { input: 105, output: 23 } }))
-    ok(r.ok === true, 'token 差在容差带内判一致', JSON.stringify(r.diffs))
-    ok(r.notes.some((x) => x.startsWith('input')) && r.notes.some((x) => x.startsWith('output')), '带内的差作为观察项报出来', JSON.stringify(r.notes))
-  }
+  // 一侧整个没有用量：同样是观察，不判失败
+  const r2 = compareProjections(makeRun({ tokens: { input: 100, output: 20 } }), makeRun({ tokens: null }))
+  ok(r2.ok === true, '一侧没有用量不判失败（只报观察）', JSON.stringify(r2.diffs))
+  ok(r2.notes.some((x) => x.startsWith('input')), '缺失的用量报观察项', JSON.stringify(r2.notes))
 
-  // 超带：一侧整个不发用量是 100% 级偏差，容差带抓得住
-  {
-    const r = compareProjections(makeRun({ tokens: { input: 100, output: 20 } }), makeRun({ tokens: { input: 0, output: 0 } }))
-    ok(r.ok === false && r.diffs.filter((d) => d.aspect === '用量').length === 2, '一侧丢用量判不一致', JSON.stringify(r.diffs))
-  }
+  // cacheRead：只报观察
+  const r3 = compareProjections(makeRun({ tokens: { input: 100, output: 20 } }), withCacheRead(makeRun({ tokens: { input: 100, output: 20 } }), 14080))
+  ok(r3.ok === true, 'cacheRead 不同不判失败', JSON.stringify(r3.diffs))
+  ok(r3.notes.some((x) => x.startsWith('cacheRead')), 'cacheRead 报观察项', JSON.stringify(r3.notes))
 
-  // 边界：差正好等于容差不判，超一个 token 就判
-  {
-    const r = compareProjections(makeRun({ tokens: { input: 100, output: 20 } }), makeRun({ tokens: { input: 106, output: 20 } }))
-    ok(r.ok === true, '差等于容差不判不一致', JSON.stringify(r.diffs))
-    const r2 = compareProjections(makeRun({ tokens: { input: 100, output: 20 } }), makeRun({ tokens: { input: 107, output: 20 } }))
-    ok(r2.ok === false, '差超容差一个 token 也判不一致', JSON.stringify(r2.diffs))
-  }
+  // 用量完全相同：没有观察项
+  const r4 = compareProjections(makeRun({ tokens: { input: 100, output: 20 } }), makeRun({ tokens: { input: 100, output: 20 } }))
+  ok(r4.notes.length === 0, '用量相同时没有观察项', JSON.stringify(r4.notes))
 
-  // cacheRead 只报不断定：两条路顺序跑，后跑的吃前一侧刚热的缓存，它反映
-  // 的是执行顺序不是实现差异
-  const r2 = compareProjections(makeRun({ tokens: { input: 100, output: 20 } }), makeRun({ tokens: { input: 100, output: 20, cacheRead: 40 } }))
-  ok(r2.ok === true, 'cacheRead 不同不断差异', JSON.stringify(r2))
-  ok(r2.notes.some((x) => x.includes('cacheRead')), 'cacheRead 的差作为观察项报出来', JSON.stringify(r2.notes))
-
-  // OAR 不给金额：一边有 cost 一边没有，不算差异
-  const r3 = compareProjections(
-    makeRun({ tokens: { input: 100, output: 20, cost: 0.0123 } }),
-    makeRun({ tokens: { input: 100, output: 20 } }),
-  )
-  ok(r3.ok === true, '一边有 cost 一边没有不算差异（OAR 不给金额）', JSON.stringify(r3.diffs))
-
-  // cacheRead 一边报 0、一边不报：等价，不算差异
-  const r4 = compareProjections(makeRun({ tokens: { input: 100, output: 20 } }), withCacheRead(makeRun({ tokens: { input: 100, output: 20 } }), 0))
-  ok(r4.ok === true, 'cacheRead 一边 0 一边缺失不算差异', JSON.stringify(r4.diffs))
-  const r5 = compareProjections(makeRun({ tokens: { input: 100, output: 20 } }), withCacheRead(makeRun({ tokens: { input: 100, output: 20 } }), 40))
-  ok(r5.ok === true && r5.notes.some((x) => x.includes('cacheRead')), 'cacheRead 真的不同也只报不断定', JSON.stringify(r5))
+  // cost 允许一边有一边没有：不产生观察项（OAR 不给金额，这不是读数口径问题）
+  const r5 = compareProjections(makeRun({ tokens: { input: 100, output: 20, cost: 0.0123 } }), makeRun({ tokens: { input: 100, output: 20 } }))
+  ok(r5.ok === true && r5.notes.length === 0, '一边有 cost 一边没有不报观察', JSON.stringify(r5.notes))
 }
 
-// ---------- 6. 该容忍的噪声不误报 ----------
+// ---------- 6. 组合：判定项失败时观察项照样出 ----------
 
 {
   const r = compareProjections(
-    makeRun({ text: '写入了 /tmp/build-1234/out.log，时间 2026-11-18T10:00:00Z' }),
-    makeRun({ text: '写入了 /tmp/build-9999/out.log，时间 2026-11-18T11:22:33Z' }),
+    makeRun({ text: 'A 侧答复', tools: [tool('bash', { command: 'x' })], status: 'done', tokens: { input: 9190, output: 8 } }),
+    makeRun({ text: 'B 侧答复', tools: [tool('read', { path: '/a' })], status: 'aborted', tokens: { input: 29118, output: 33 } }),
   )
-  ok(r.ok === true, '临时路径与时间戳归一化后不误报', JSON.stringify(r.diffs))
-
-  const r2 = compareProjections(makeRun({ text: '第一段\n\n第二段' }), makeRun({ text: '第一段  第二段' }))
-  ok(r2.ok === true, '空白差异归一化后不误报', JSON.stringify(r2.diffs))
-
-  const r3 = compareProjections(
-    makeRun({ tools: [tool('bash', { command: 'ls', extra: 1 })] }),
-    makeRun({ tools: [tool('bash', { command: 'ls', extra: 2 })] }),
-  )
-  ok(r3.ok === true, '工具参数的键集合相同即算一致，值不同不误报', JSON.stringify(r3.diffs))
+  ok(r.ok === false, '判定项失败判失败')
+  ok(r.diffs.some((d) => d.aspect === '工具') && r.diffs.some((d) => d.aspect === '终态'), '工具与终态两项都报', JSON.stringify(r.diffs))
+  ok(r.notes.some((x) => x.startsWith('正文措辞')), '判定项失败时观察项照样出', JSON.stringify(r.notes))
+  ok(r.notes.some((x) => x.startsWith('input')), '用量观察项照样出', JSON.stringify(r.notes))
 }
 
 console.log()
