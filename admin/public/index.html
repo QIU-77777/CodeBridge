@@ -1751,7 +1751,7 @@ async function runDoctor() {
 }
 
 // ---------- 新建实例 ----------
-function toggleBackendGroup() {
+async function toggleBackendGroup() {
   const type = $('n-backend').value
   const pi = type === 'pi'
   const oar = type === 'oar'
@@ -1875,7 +1875,7 @@ $('lg-doctor').addEventListener('click', runDoctor)
 $('ov-create').addEventListener('click', openCreateModal)
 $('n-cancel').addEventListener('click', closeCreateModal)
 $('n-submit').addEventListener('click', submitCreate)
-$('n-backend').addEventListener('change', toggleBackendGroup)
+$('n-backend').addEventListener('change', () => { toggleBackendGroup().catch((e) => console.error(e)) })
 // 点遮罩空白处关闭弹窗；表单区域内的点击不冒泡到遮罩
 $('create-modal').addEventListener('click', (e) => { if (e.target.id === 'create-modal') closeCreateModal() })
 
