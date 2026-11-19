@@ -106,6 +106,8 @@ export class OarBackend {
 
     // 能力异步解析一次并缓存，不阻塞启动。解析完成前 caps 全 false，
     // steer 按钮不渲染、忙时不注入，几百毫秒后自动恢复
+    // 身份配置构造时就位：agent 随时可能手敲 feishu-cli，不等第一条消息
+    this.ensureLarkCliConfig()
     this._ready = this._resolve()
   }
 
