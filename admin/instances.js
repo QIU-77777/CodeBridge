@@ -251,11 +251,13 @@ function processStatus(inst) {
 
 // ---------- 文件读取 ----------
 
-function readJson(path) {
+function readJson(path, { optional = false } = {}) {
   try {
     return { data: JSON.parse(readFileSync(path, 'utf8')), error: null }
   } catch (err) {
-    if (!existsSync(path)) return { data: null, error: '文件不存在' }
+    // optional：文件不存在是正常空状态，不当错误。桥接的 Store.load 同样把
+    // 「文件不存在」当正常路径（直接 return），新实例与从没落过盘的实例都走这条
+    if (!existsSync(path)) return { data: null, error: optional ? null : '文件不存在' }
     return { data: null, error: err.message }
   }
 }
@@ -355,7 +357,8 @@ export async function piCliHealth(cfg) {
 export async function collectInstance(inst) {
   const { name, dir } = inst
   const config = readJson(join(dir, 'config.json'))
-  const state = readJson(join(dir, 'state.json'))
+  // state.json 允许不存在：桥接从没落过盘就是空状态，不是故障
+  const state = readJson(join(dir, 'state.json'), { optional: true })
   const cfg = config.data
   const [serve, pi] = await Promise.all([serveHealth(cfg), piCliHealth(cfg)])
   return {
