@@ -107,7 +107,8 @@ export function planNewInstance(body, existing = [], ownPort = null) {
     if (claimed) errors.push(`配置目录已被实例 ${claimed.name} 占用`)
   }
 
-  const type = body.backend?.type === 'pi' ? 'pi' : 'opencode'
+  const rawType = String(body.backend?.type || '')
+  const type = ['opencode', 'pi', 'oar'].includes(rawType) ? rawType : 'opencode'
   const feishu = body.feishu || {}
   const appId = String(feishu.appId || '').trim()
   if (!APP_ID_RE.test(appId)) errors.push('feishu.appId 应为 cli_ 开头的应用 ID')
@@ -167,6 +168,14 @@ export function planNewInstance(body, existing = [], ownPort = null) {
       bin: String(body.pi?.bin || '').trim() || 'pi',
       model: String(body.pi?.model || '').trim(),
       timeoutMs: Number(body.pi?.timeoutMs) || config.backend.pi.timeoutMs,
+    }
+  }
+  if (type === 'oar') {
+    config.backend.oar = {
+      ...config.backend.oar,
+      runtime: String(body.oar?.runtime || '').trim() || 'kimi',
+      model: String(body.oar?.model || '').trim(),
+      env: body.oar?.env && typeof body.oar.env === 'object' ? body.oar.env : {},
     }
   }
   return { errors: [], plan: { name, dir, backend: type, config } }

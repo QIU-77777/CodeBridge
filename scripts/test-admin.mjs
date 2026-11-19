@@ -329,11 +329,19 @@ try {
   // 配置页与新建弹窗的后端选项全部来自这一次扫描，字段契约在这里钉住
   const { scanBackends } = await import(join(REPO, 'admin', 'backends.js'))
   const scanned = await scanBackends()
-  ok(Array.isArray(scanned) && scanned.length === 2, '扫描返回两个受支持的后端')
+  ok(Array.isArray(scanned) && scanned.length === 3, '扫描返回三个受支持的后端')
   ok(
-    scanned.map((b) => b.type).join(',') === 'opencode,pi',
-    '后端顺序固定：opencode、pi',
+    scanned.map((b) => b.type).join(',') === 'opencode,pi,oar',
+    '后端顺序固定：opencode、pi、oar',
     scanned.map((b) => b.type).join(','),
+  )
+  // oar 不是 harness，是驱动多个 harness 的接口层：它的可用性看本机装了几个
+  // 运行时，版本字段放已安装数量（探测慢，这里不断言具体数字，只断言形状）
+  const oarEntry = scanned.find((b) => b.type === 'oar')
+  ok(
+    typeof oarEntry.available === 'boolean' && /^\d*$/.test(String(oarEntry.version)),
+    'oar 项的可用性是布尔、版本字段是已安装数量',
+    JSON.stringify(oarEntry),
   )
   for (const b of scanned) {
     ok(
@@ -343,6 +351,15 @@ try {
       `${b.type} 条目字段完整`,
       JSON.stringify(b).slice(0, 160),
     )
+    // oar 没有可执行文件：可用时 detail 列已安装的运行时名字，承担 bin 那角的说明
+    if (b.type === 'oar') {
+      ok(
+        b.available ? b.detail.length > 0 : b.reason.length > 0,
+        b.available ? 'oar 可用时列出已安装的运行时' : 'oar 不可用时给出原因',
+        JSON.stringify(b).slice(0, 160),
+      )
+      continue
+    }
     ok(
       b.available ? b.bin.length > 0 : b.reason.length > 0,
       b.available ? `${b.type} 可用时给出解析路径` : `${b.type} 不可用时给出原因`,

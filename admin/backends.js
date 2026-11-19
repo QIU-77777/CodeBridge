@@ -5,6 +5,10 @@
  * 只做选择，不用猜有没有装、装在哪。后端清单因此不再是写死的两个单选项，
  * 而是带可用性、版本与解析路径的数据。
  *
+ * oar 是第三类：它自己不是 harness，是一套接口驱动多个 harness。扫它不跑版本
+ * 命令，而是问 OAR 的注册表里哪些运行时在本机装着呢（复用 oar-runtimes.js 的
+ * 探测），把已安装数量带进选项标签，用户选之前就知道能选到什么。
+ *
  * 探测各自复用既有实现，不写第二套：
  *   - opencode：src/which-opencode.js 的 resolveOpencode——桌面版 OpenCode.app
  *     自带的 CLI 优先（与桌面版共用一个数据库），PATH 兜底；
@@ -19,6 +23,7 @@ import { existsSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { resolveOpencode, SOURCE_LABEL } from '../src/which-opencode.js'
 import { resolveBin, USER_BIN_DIRS } from './instances.js'
+import { probeOarRuntimes } from './oar-runtimes.js'
 
 /** 受支持的后端。顺序即页面选项顺序 */
 const SCANNERS = {
@@ -29,6 +34,7 @@ const SCANNERS = {
 const BACKEND_META = {
   opencode: { summary: '常驻 serve，流式输出' },
   pi: { summary: '长驻 RPC 进程，流式输出，支持 steer' },
+  oar: { summary: '一套接口驱动多个编码 agent 运行时' },
 }
 
 /** 起一次 `bin --version`，超时或失败返回空串 */
@@ -130,6 +136,40 @@ async function scanPi() {
 }
 
 /**
+ * oar 后端：问 OAR 的注册表里哪些运行时本机装着。
+ *
+ * 不跑版本命令——那要一个个起进程；探测已经做过一次（orient 一次快照问遍），
+ * 这里只把结果换算成选项要的形状：有任何一个已安装就算可用，版本字段放已安装
+ * 数量，让用户选之前就知道能选到什么。
+ */
+async function scanOar() {
+  let installed = 0
+  let total = 0
+  let detail = ''
+  try {
+    const probe = await probeOarRuntimes()
+    total = (probe.runtimes || []).length
+    installed = (probe.runtimes || []).filter((r) => r.installed).length
+    detail = installed
+      ? `已安装 ${installed} 个：${(probe.runtimes || [])
+          .filter((r) => r.installed)
+          .map((r) => r.name || r.id)
+          .join('、')}`
+      : '本机还没有已安装的运行时，选 opencode 或 pi'
+  } catch (err) {
+    return {
+      type: 'oar',
+      available: false,
+      bin: '',
+      version: '',
+      detail: '',
+      reason: `OAR 探测失败：${err?.message || err}。装好任一 harness 后再选`,
+    }
+  }
+  return { type: 'oar', available: installed > 0, bin: '', version: String(installed), detail, reason: '' }
+}
+
+/**
  * 扫本机受支持的 coding agent。页面打开配置页与新建弹窗时调用。
  * 代价是两次 `--version`（各自 5 秒超时），通常一秒内完成。
  *
@@ -140,5 +180,6 @@ export async function scanBackends() {
   for (const type of Object.keys(SCANNERS)) {
     out.push({ ...BACKEND_META[type], ...(await SCANNERS[type]()) })
   }
+  out.push({ ...BACKEND_META.oar, ...(await scanOar()) })
   return out
 }

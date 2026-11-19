@@ -529,6 +529,12 @@ KIMI_MODEL_PROVIDER_TYPE=openai"></textarea></label>
           <label class="fld"><span>pi.timeoutMs（多久没有 stdout 就终止；stdout 一直在刷但产不出事件的命令不算）</span><input type="number" id="n-piTimeout" placeholder="600000"></label>
           <label class="fld"><span>pi.toolTimeoutMs（工具在飞时的静默预算，留空用默认 1800000）</span><input type="number" id="n-piToolTimeout" placeholder="1800000"></label>
         </div>
+        <div id="n-oar-group" class="hidden">
+          <label class="fld"><span>运行时（探测本机装了哪些，装好后重新打开本弹窗）</span>
+            <select id="n-oarRuntime"></select>
+          </label>
+          <div id="n-oar-scan" class="hint" style="margin-bottom:8px"></div>
+        </div>
       </div>
       <div>
         <h3>飞书应用</h3>
@@ -1746,12 +1752,24 @@ async function runDoctor() {
 
 // ---------- 新建实例 ----------
 function toggleBackendGroup() {
-  const pi = $('n-backend').value === 'pi'
+  const type = $('n-backend').value
+  const pi = type === 'pi'
+  const oar = type === 'oar'
   $('n-pi-group').classList.toggle('hidden', !pi)
-  $('n-oc-group').classList.toggle('hidden', pi)
+  $('n-oc-group').classList.toggle('hidden', type !== 'opencode')
+  $('n-oar-group').classList.toggle('hidden', !oar)
   const b = refreshBackendScan('n-backend', 'n-backend-scan')
   // pi.bin 预填扫描到的本机路径：只填空字段，用户改过的不覆盖
   if (pi && !$('n-piBin').value.trim()) $('n-piBin').value = b?.bin || ''
+  if (oar) {
+    if (!state.oarRuntimes) {
+      $('n-oar-scan').innerHTML = '<span class="dim">探测中…（要起进程，最多一分钟）</span>'
+      await loadOarRuntimes(undefined, true)
+    }
+    const probe = state.oarRuntimes
+    fillOarRuntimeSelect($('n-oarRuntime'), probe, $('n-oarRuntime').value || 'kimi')
+    $('n-oar-scan').innerHTML = oarRuntimeScanHtml(probe, $('n-oarRuntime').value)
+  }
 }
 
 async function openCreateModal() {
@@ -1763,6 +1781,10 @@ async function openCreateModal() {
   // 默认落在本机可用的第一个后端上，「选一个就好」从已装的那个开始
   const first = backends.find((b) => b.available) || backends[0]
   if (first) $('n-backend').value = first.type
+  // oar 后端的运行时下拉要探测数据：探测慢（要起进程），只在用户真选 oar 时才等
+  if ($('n-backend').value === 'oar' && !state.oarRuntimes) {
+    await loadOarRuntimes(undefined, true)
+  }
   toggleBackendGroup()
 }
 
@@ -1792,6 +1814,9 @@ async function submitCreate() {
       model: $('n-piModel').value.trim(),
       timeoutMs: $('n-piTimeout').value.trim() === '' ? undefined : Number($('n-piTimeout').value),
       toolTimeoutMs: $('n-piToolTimeout').value.trim() === '' ? undefined : Number($('n-piToolTimeout').value),
+    },
+    oar: {
+      runtime: $('n-oarRuntime').value,
     },
   }
   // opencode 后端的 serve 密码留空时由服务端自动生成（serve 与桥接共用同一个值），

@@ -185,14 +185,17 @@ try {
 
   // 本地 coding agent 扫描：配置页与新建弹窗的选项来源。GET，不需要写操作头
   const backends = await fetch(`${BASE}/api/backends`, { headers: { Accept: 'application/json' } }).then((x) => x.json())
-  ok(Array.isArray(backends.backends) && backends.backends.length === 2, 'GET /api/backends 返回两个后端')
+  ok(Array.isArray(backends.backends) && backends.backends.length === 3, 'GET /api/backends 返回三个后端')
   ok(
     backends.backends.every((b) => typeof b.type === 'string' && typeof b.available === 'boolean' && typeof b.summary === 'string'),
     '每个后端带类型、可用性与一句话说明',
   )
+  // oar 没有可执行文件：可用时用 detail 列已安装的运行时，不可用时用 reason 说原因
   ok(
-    backends.backends.filter((b) => b.available).every((b) => typeof b.bin === 'string' && b.bin.length > 0),
-    '可用的后端带解析到的路径',
+    backends.backends
+      .filter((b) => b.type !== 'oar' && b.available)
+      .every((b) => typeof b.bin === 'string' && b.bin.length > 0),
+    '可用的 harness 后端带解析到的路径',
   )
   ok(
     backends.backends.filter((b) => !b.available).every((b) => typeof b.reason === 'string' && b.reason.length > 0),
