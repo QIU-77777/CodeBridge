@@ -522,7 +522,7 @@ npm run dry
 
 ## 配置
 
-`config.example.json` 是配置模板，`prompts.json` 保存发给模型的全部文案（按 `always` / `once` 分组，互斥选项收在字典里），`src/config.js` 的 `DEFAULTS` 提供其余缺省值。文件配置覆盖默认值，环境变量覆盖文件配置。配置在进程启动时读取，修改后重启实例生效。
+`config.example.json` 是配置模板，`prompts.json` 保存发给模型的全部文案（按 `always` / `once` 分组，互斥选项收在字典里），`src/config.js` 的 `DEFAULTS` 提供其余缺省值。文件配置覆盖默认值，环境变量覆盖文件配置。配置在进程启动时读取，修改后重启实例生效。模型由各 agent harness 自己的本机配置决定，设置方法见 [docs/default-models.md](docs/default-models.md)。
 
 ### 字段
 
@@ -1080,5 +1080,6 @@ logs/                      运行日志（不入库）
 | [prompts.json](prompts.json) | 发给模型的全部提示词模板：`always` 的来源标注、协作 id、可@的同伴与身份声明，`once` 的协作规则，含互斥字典说明 |
 | [docs/design-notes.md](docs/design-notes.md) | 实现笔记：飞书卡片 2.0 的坑、状态与并发、opencode 版本一致性、群聊话题模型 |
 | [docs/pi-backend.md](docs/pi-backend.md) | pi 后端方案：合成事件、会话、超时、GitHub 身份、prompt 前缀、事故复盘 |
+| [docs/default-models.md](docs/default-models.md) | pi、opencode、kimi 的默认模型在哪里设置，改完怎么重启生效 |
 | [docs/tmux-ops.md](docs/tmux-ops.md) | tmux 运维层方案与验收标准 |
 | [docs/images/NOTICE.md](docs/images/NOTICE.md) | 产品截图的脱敏处理说明 |
