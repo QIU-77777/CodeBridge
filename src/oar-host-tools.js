@@ -38,6 +38,7 @@ const ASK_SCHEMA = {
   properties: {
     chat_id: { type: 'string', description: '要问哪个飞书会话' },
     question: { type: 'string', description: '问题本身' },
+    thread_id: { type: 'string', description: '可选，问在哪个话题下；不给就是主聊天流' },
     timeout_ms: { type: 'number', description: '等回答的毫秒数，默认 300000，上限 3600000' },
   },
   required: ['chat_id', 'question'],
@@ -65,7 +66,8 @@ export function feishuHostTools({ transport, store, askHuman, logger = console }
     {
       name: 'send_message',
       description:
-        '给一个飞书会话发消息，以本实例这个飞书应用的身份发出。用来把结论、进度或需要人知道的事告诉群里。',
+        '给一个飞书会话发消息，以本实例这个飞书应用的身份发出。用来把结论、进度或需要人知道的事告诉群里。' +
+        '只往 list_chats 列出的会话发，不要凭猜给地址。',
       inputSchema: SEND_SCHEMA,
       annotations: { destructiveHint: false, openWorldHint: true, idempotentHint: false },
       handler: async (input) => {
@@ -106,7 +108,10 @@ export function feishuHostTools({ transport, store, askHuman, logger = console }
         if (!chatId || !question) return { content: [{ type: 'text', text: 'chat_id 与 question 都不能为空' }], isError: true }
         const raw = Number(input.timeout_ms)
         const timeoutMs = Number.isFinite(raw) && raw > 0 ? Math.min(raw, 3_600_000) : 300_000
-        const answer = await askHuman(chatId, question, timeoutMs)
+        // 作用域由桥接算：问题发在哪个 chat 的哪个话题，就只收那一处的回答。
+        // 不给 thread_id 就是主聊天流
+        const scopeKey = `chat:${chatId}|thread:${input.thread_id ? String(input.thread_id) : ''}`
+        const answer = await askHuman(scopeKey, question, timeoutMs)
         if (answer === null) return { content: [{ type: 'text', text: '超时，没有人回答。' }], isError: true }
         return answer
       },

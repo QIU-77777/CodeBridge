@@ -262,6 +262,21 @@ async function promptAndSettle(be, seen, sid, text) {
   })
   await sleep(30)
   ok(pushed?.steer === true, 'subscribe 时补发能力', JSON.stringify(pushed))
+  ok(pushed?.type === 'oar', '推上去的 caps 带 type，setCaps 整体替换后才不会丢掉', JSON.stringify(pushed))
+  ok(be.caps.type === 'oar', '解析后的 caps 也带 type', JSON.stringify(be.caps))
+
+  // 解析前的保守值同样带 type：解析完成前 /login 就能走对分支
+  const be2 = makeBackend(
+    makeRuntime((t) => t.say('x'), {
+      sessionCapabilities: () => ({ steer: true }),
+      installation: async () => {
+        await sleep(200)
+        return { kind: 'available', via: 'bundled' }
+      },
+    }),
+  )
+  ok(be2.caps.type === 'oar', '解析前的 caps 也带 type', JSON.stringify(be2.caps))
+  ok(be2.caps.steer === false, '解析前 steer 仍是 false')
 
   const opts = be.buildSessionOptions({ directory: root, model: 'kimi-code/k3', name: '起个名字' })
   ok(opts.cwd === root && opts.model === 'kimi-code/k3', '目录与模型进选项', JSON.stringify(opts))
@@ -290,7 +305,103 @@ async function promptAndSettle(be, seen, sid, text) {
   ok(msg.includes('没有 opencode 的 agent 概念'), '切 agent 明确拒绝', msg)
 }
 
-// ---------- 9. 运行时没装 ----------
+// ---------- 9. 忙等守卫与空闲回收竞态 ----------
+
+{
+  // 切模型与删会话都会 dispose 正在跑的会话，等于杀掉当前回合，必须拒绝
+  const be = makeBackend(
+    makeRuntime(async (t) => {
+      t.say('开始。')
+      await sleep(400)
+      t.say('结束。')
+    }),
+  )
+  await ready(be)
+  const seen = []
+  be.subscribe((ev) => seen.push(ev), () => {})
+  const s = await be.createSession({ directory: root })
+  const p = be.prompt(s.id, '长任务')
+  await sleep(60)
+
+  ok(be.isBusy(s.id) === true, '回合进行中 isBusy 为 true')
+  let msg = ''
+  try {
+    await be.switchModel(s.id, { providerID: 'kimi-code', id: 'k4' })
+  } catch (e) {
+    msg = e.message
+  }
+  ok(msg === '有任务正在跑，等它结束再切模型', '忙时切模型明确拒绝', msg)
+  let msg2 = ''
+  try {
+    await be.deleteSession(s.id)
+  } catch (e) {
+    msg2 = e.message
+  }
+  ok(msg2 === '有任务正在跑，等它结束再删会话', '忙时删会话明确拒绝', msg2)
+  ok(be.live.size === 1, '被拒之后会话还在跑')
+
+  await promptAndSettle(be, seen, s.id, '等它结束')
+  await p
+  ok(be.isBusy(s.id) === false, '回合结束 isBusy 为 false')
+  await be.switchModel(s.id, { providerID: 'kimi-code', id: 'k4' })
+  ok((await be.getSession(s.id)).model?.id === 'k4', '空闲后切模型正常', JSON.stringify((await be.getSession(s.id)).model))
+}
+
+{
+  // 空闲回收竞态：复用会话时必须清掉上一轮装的定时器，否则长回合会被腰斩
+  const be = makeBackend(
+    makeRuntime(async (t) => {
+      t.say('回合：' + t.input)
+      await sleep(500)
+      t.say('（跑完）')
+    }),
+  )
+  await ready(be)
+  const seen = []
+  be.subscribe((ev) => seen.push(ev), () => {})
+  const s = await be.createSession({ directory: root })
+  // 第一轮跑完，handler 的 _finalizeRun 会调 noteRunEnded 装定时器（这里
+  // 手动调，idleMs 收到 30ms 模拟那个定时器）
+  be.idleMs = 30
+  await promptAndSettle(be, seen, s.id, '第一条')
+  be.noteRunEnded(s.id)
+  ok(be.idleTimers.get(s.id) !== undefined, '第一轮跑完装了空闲定时器')
+  ok(be.live.size === 1, '会话还活着（定时器还没触发）')
+
+  // 第二条消息立刻到：复用会话前定时器必须被清掉，否则这一轮跑到一半被 dispose
+  be.idleMs = 30
+  await promptAndSettle(be, seen, s.id, '第二条')
+  const types = seen.slice(seen.indexOf(seen.find((e) => e.data.sessionID === s.id && e.type === 'session.execution.succeeded'))).map((e) => e.type)
+  ok(!types.includes('session.execution.failed'), '复用会话后长回合没被腰斩', types.join(','))
+  ok(be.live.size === 1, '复用后会话还在')
+  ok((await be.getSession(s.id)).oarId, 'OAR 会话 id 还在')
+}
+
+// ---------- 10. 忙时注入不抛 busy ----------
+
+{
+  // 统一走 deliver：忙时 steer 或排队，不把用户的消息变成失败卡片
+  const be = makeBackend(
+    makeRuntime(async (t) => {
+      t.say('第一轮：' + t.input)
+      while (t.steered.length === 0 && !t.signal.aborted) await sleep(20)
+      t.say('收到：' + t.steered.join('|'))
+    }),
+  )
+  await ready(be)
+  const seen = []
+  be.subscribe((ev) => seen.push(ev), () => {})
+  const s = await be.createSession({ directory: root })
+  const p = be.prompt(s.id, '先跑着')
+  await sleep(60)
+  // 忙时再发一条：必须落到 queued 或 steered，不能抛 busy
+  const landed = await be.prompt(s.id, '忙时插一句')
+  ok(landed === 'queued' || landed === 'steered', '忙时发送落到排队或引导，不抛错', landed)
+  await promptAndSettle(be, seen, s.id, '再跑一轮')
+  await p
+}
+
+// ---------- 11. 运行时没装 ----------
 
 {
   const be = makeBackend(

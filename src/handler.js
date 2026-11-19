@@ -583,6 +583,23 @@ export class Bridge {
     return { key: msg.key || `root:${rootId}`, chatId: msg.chatId, replyTo: rootId }
   }
 
+  /**
+   * 等待类状态的作用域键：chat 加 thread。
+   *
+   * 登录等待与 ask_human 都只收同一个作用域里的答案。只按 chatId 收会把同一
+   * 个群里别的话题的消息吞掉——那边的人 @ 了我，消息却没了，agent 水远看不到。
+   */
+  _scopeKey(msg) {
+    if (msg.chatType !== 'group') return `chat:${msg.chatId}`
+    return `chat:${msg.chatId}|thread:${msg.rootId || ''}`
+  }
+
+  /** 一条消息是否落在某个作用域里 */
+  _inScope(scope, msg) {
+    if (!scope) return false
+    return scope.chatId === msg.chatId && (scope.threadId || '') === (msg.rootId || '')
+  }
+
   async onMessage(msg) {
     const text = (msg.text || '').trim()
     if (!text) return
@@ -592,9 +609,10 @@ export class Bridge {
       return
     }
 
-    // 登录流程在等人回答：这条消息就是答案，不进任务链路。一台机器一个登录态，
-    // 所以不按话题隔离，谁发起谁答，同一个人同时只跑一个登录
-    if (this.loginFlow?.awaitingText) {
+    // 登录流程在等人回答：这条消息就是答案，不进任务链路。
+    // 按 chat 加 thread 限定：登录卡片发在哪个话题就只收那个话题的答案，别的
+    // 话题、别的群的消息照常进任务链路，不被吞掉
+    if (this.loginFlow?.awaitingText && this._inScope(this.loginScope, msg)) {
       const flow = this.loginFlow
       if (text === '/取消' || text === '/cancel') {
         flow.cancel()
@@ -606,10 +624,12 @@ export class Bridge {
       }
     }
 
-    // 有人在等问题回答（ask_human 工具）：这条消息就是回答
-    const ask = this.pendingAsks.get(msg.chatId)
+    // 有人在等问题回答（ask_human 工具）：同一条作用域规则，问题发在主聊天流
+    // 就只收主聊天流的回答
+    const askKey = this._scopeKey(msg)
+    const ask = this.pendingAsks.get(askKey)
     if (ask) {
-      this.pendingAsks.delete(msg.chatId)
+      this.pendingAsks.delete(askKey)
       clearTimeout(ask.timer)
       ask.resolve(text)
       return null
@@ -648,15 +668,19 @@ export class Bridge {
       // 要的是实时；注入失败退回下面的排队路，消息不丢
       if (msg.isBot && this.caps.steer === true) {
         try {
-          await this.oc.prompt(binding.sessionId, msg.text, { delivery: 'steer' })
-          // 反馈要能自明：谁的消息、内容是什么，以及生效时机——排入当前
-          // 回合，本回合工具调用结束后交付，下次模型调用生效。卡片那路带
-          // 「来自 / 内容 / 注入说明」，文本这路可以不一样，但这几样不能少：
-          // 不然群里只看到一句光秃秃的「已引导」，不知道注入的是什么、什么时候生效
+          const landed = await this.oc.prompt(binding.sessionId, msg.text, { delivery: 'steer' })
+          // 反馈要能自明：谁的消息、内容是什么、以及生效时机。落点决定文案：
+          // 统一走 deliver 之后，忙时注入可能落在排队（运行时那一刻拒了 steer），
+          // 那一条要等当前回合结束才跑，说成「已排入当前回合」是骗人
+          // OAR 后端返回落点字符串，另两个后端的返回值不是这个形状，按老文案走
+          const effect =
+            landed === 'queued'
+              ? '已排进队列，当前回合结束后接着跑'
+              : '已排入当前回合，本回合工具调用结束后交付，下次模型调用生效'
           const from = this.nameOf(msg.userId) || msg.userId
           await this.t.sendText(
             ctx.chatId,
-            `已引导：${from} 的消息已排入当前回合，本回合工具调用结束后交付，下次模型调用生效，不中止已有工作。\n\n${truncate(msg.text, 120)}`,
+            `已引导：${from} 的消息${effect}，不中止已有工作。\n\n${truncate(msg.text, 120)}`,
             { replyTo: ctx.replyTo },
           )
           return null
@@ -1003,7 +1027,9 @@ export class Bridge {
       return this.t.sendText(ctx.chatId, '这条话题还没有绑定会话', { replyTo: ctx.replyTo })
     }
     const ok = await this.oc.interrupt(binding.sessionId)
-    return this.t.sendText(ctx.chatId, ok ? '已发送中止请求' : '中止失败（可能当前没有在执行）', {
+    // false 的两种来路：这个后端没有正在执行的回合（OAR 的会话已被回收、或
+    // 回合早就结束）。说清是「已经结束」，不要说成失败
+    return this.t.sendText(ctx.chatId, ok ? '已发送中止请求' : '没有正在执行的任务，它已经结束了', {
       replyTo: ctx.replyTo,
     })
   }
@@ -1124,6 +1150,8 @@ export class Bridge {
     this.loginCardId = null
     this.loginNavKey = ctx.key
     this.loginNavRt = ctx.replyTo || ''
+    // 只收同一个 chat 加同一个 thread 里的答案
+    this.loginScope = { chatId: ctx.chatId, threadId: ctx.replyTo || '' }
 
     // 卡片先落地，登录过程在它上面 patch：人看到的是一张卡在变，不是一堆新消息
     const first = await this.t.sendCard(ctx.chatId, loginCard(flow.state, { label, k: ctx.key, rt: ctx.replyTo || '' }), {
@@ -1170,14 +1198,25 @@ export class Bridge {
    *
    * @returns {Promise<string|null>} 回答的文本；超时返回 null
    */
-  async askHuman(chatId, question, timeoutMs = 300_000) {
+  /**
+   * 给一个飞书会话提一个问题，等到回答或超时。
+   *
+   * 一个作用域同时只等一个回答：第二个问题会顶掉第一个（第一个拿到超时）。
+   * 回答不挑人——群里任何人答都算，这本来就是把决定权交回给群里。
+   * 作用域按 chat 加 thread：别的话题、别的群的消息不会被吞。
+   *
+   * @param {string} scopeKey _scopeKey 算出来的作用域
+   * @returns {Promise<string|null>} 回答的文本；超时返回 null
+   */
+  async askHuman(scopeKey, question, timeoutMs = 300_000) {
+    const chatId = String(scopeKey).replace(/^chat:([^|]+)(\|thread:.*)?$/, '$1')
     await this.t.sendText(chatId, question)
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
-        if (this.pendingAsks.get(chatId)?.resolve === resolve) this.pendingAsks.delete(chatId)
+        if (this.pendingAsks.get(scopeKey)?.resolve === resolve) this.pendingAsks.delete(scopeKey)
         resolve(null)
       }, timeoutMs)
-      this.pendingAsks.set(chatId, { resolve, timer })
+      this.pendingAsks.set(scopeKey, { resolve, timer })
     })
   }
 
@@ -1186,7 +1225,8 @@ export class Bridge {
     this.oc.setHost?.({
       transport: this.t,
       store: this.store,
-      askHuman: (chatId, question, timeoutMs) => this.askHuman(chatId, question, timeoutMs),
+      // 作用域由桥接算：宿主的 askHuman 只拿得到 chat_id，thread 在桥接这边
+      askHuman: (scopeKey, question, timeoutMs) => this.askHuman(scopeKey, question, timeoutMs),
     })
   }
 
@@ -1390,8 +1430,9 @@ export class Bridge {
           if (this.caps.steer === true && run?.state?.status === 'running') {
             const item = this.store.removeQueued(key, a.q)
             if (!item) return { toast: { type: 'error', content: '这条消息不在队列里（可能已经发出或被取消）' } }
+            let landed
             try {
-              await this.oc.prompt(binding.sessionId, item.text, { delivery: 'steer' })
+              landed = await this.oc.prompt(binding.sessionId, item.text, { delivery: 'steer' })
             } catch (err) {
               // 注入失败（老版本 serve 不认识 delivery 等）：消息不能丢，放回
               // 队首，按老路数中止当前改发
@@ -1416,7 +1457,9 @@ export class Bridge {
             // 说明」并撤掉按钮，与取消分支一样只翻新、不发新卡，避免同一事件
             // 出现两张内容相同的「已引导」
             this.refreshQueuedCard(item, queuedSteeredCard)
-            return { toast: { type: 'success', content: '已引导：下一步生效，不中断' } }
+            // 落排队的那一条要等当前回合结束，跟引导的生效时机不同，toast 分开说
+            const toast = landed === 'queued' ? '已排进队列：当前回合结束后接着跑' : '已引导：下一步生效，不中断'
+            return { toast: { type: 'success', content: toast } }
           }
           // 后端不支持 steer，或任务已经结束（点得太慢）：提到队首，任务还在
           // 就中止，等排空时发出去。按 qid 找，找不到说明它已经发出去（或被

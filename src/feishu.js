@@ -564,7 +564,7 @@ export class FeishuTransport {
     return {
       who: self?.name || this.cfg.botName || '',
       app: this.cfg.appId ? render(a.identityApp, { appId: this.cfg.appId }) : '',
-      key: this.backendType === 'pi' ? 'pi' : 'opencode',
+      key: this.backendType === 'pi' ? 'pi' : this.backendType === 'oar' ? 'oar' : 'opencode',
     }
   }
 

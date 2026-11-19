@@ -487,7 +487,13 @@ export class PiBackend {
           this._emit(sessionId, 'session.text.ended', { text })
         }
         const u = pickUsage(ev.message.usage)
-        if (u) this._emit(sessionId, 'session.usage.updated', { tokens: { input: u.input, output: u.output }, cost: u.cost })
+        // cacheRead 一起发：OAR 那条路是有的，两边都发才能对照；卡片只渲染
+        // in/out，多发一个字段不影响显示
+        if (u) {
+          const tokens = { input: u.input, output: u.output }
+          if (u.cacheRead) tokens.cacheRead = u.cacheRead
+          this._emit(sessionId, 'session.usage.updated', { tokens, cost: u.cost })
+        }
         break
       }
       case 'tool_execution_start':
