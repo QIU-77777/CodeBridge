@@ -264,6 +264,13 @@ export class OarBackend {
   /** 第一次开会话前把飞书工具服务起来。运行时不收 MCP 就不起，白起一个端口 */
   async _ensureHostTools() {
     if (this.hostServer !== undefined) return this.hostServer
+    // 默认不挂：这套工具要先教每个 harness 用，比让 agent 敲 CLI 更绕。挂载本身
+    // 还有代价——三个工具的 schema 加 instructions 让每轮输入多 457 到 749 token。
+    // 要用就显式开 backend.oar.hostTools=true，用完再关
+    if (this.cfg.backend?.oar?.hostTools !== true) {
+      this.hostServer = null
+      return null
+    }
     const refused = this.runtime.refusedSessionOptions || {}
     if (refused.mcpServers || refused.mcpServerCredentials || !this.host?.transport) {
       this.hostServer = null
