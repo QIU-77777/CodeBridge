@@ -171,6 +171,9 @@
   @media (max-width: 980px) { .grid2, .grid3 { grid-template-columns: 1fr; } }
   .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }
   .hint { font-size: 12px; color: var(--dim); }
+  /* 探测页的问号：说明收进 title 气泡，默认不占地方 */
+  .rt-help { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; margin-left: 4px; border-radius: 50%; border: 1px solid currentColor; font-size: 10px; line-height: 1; cursor: help; vertical-align: middle; opacity: .7; }
+  .rt-help:hover { opacity: 1; }
   .err { color: var(--red); font-size: 13px; white-space: pre-wrap; }
   .ok { color: var(--green); font-weight: 600; }
   .kv { display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: 6px 14px; font-size: 13px; margin: 0; }
@@ -453,16 +456,8 @@ KIMI_MODEL_PROVIDER_TYPE=openai"></textarea></label>
           </div>
           <p class="hint" id="rt-status"></p>
           <p class="hint">
-            本机装了哪些编码 agent 运行时、各登没登录、能用哪些模型、配额余多少。探测不开会话、不发消息、不跑安装。
-          </p>
-          <p class="hint">
-            为什么有实例选择器：探测按当前实例的 backend.oar.env 叠加来看——环境变量会改变运行时看到的模型与登录态，选不同实例可能看到不同结果。
-          </p>
-          <p class="hint">
-            「探测器没找到」不等于没装：运行时装在 PATH 之外时（例如 opencode 桌面版自带的 CLI，在 App 包里面），探测器同样找不到。用 opencode 后端的实例不受影响，它走自己的解析逻辑。
-          </p>
-          <p class="hint">
-            「不报告登录状态」是正常现象：pi 与 dsh 这类运行时不提供登录状态查询，它们的凭据挂在模型提供方上，看「提供方已配置」那一列。
+            本机装了哪些编码 agent 运行时、各登没登录、能用哪些模型、配额余多少。
+            <span class="rt-help" title="探测不开会话、不发消息、不跑安装。&#10;&#10;为什么有实例选择器：探测按当前实例的 backend.oar.env 叠加来看，环境变量会改变运行时看到的模型与登录态，选不同实例可能看到不同结果。&#10;&#10;「探测器没找到」不等于没装：运行时装在 PATH 之外时（例如 opencode 桌面版自带的 CLI，在 App 包里面），探测器同样找不到。用 opencode 后端的实例不受影响，它走自己的解析逻辑。&#10;&#10;「不报告登录状态」是正常现象：pi 与 dsh 这类运行时不提供登录状态查询，它们的凭据挂在模型提供方上，看「提供方已配置」那一列。">?</span>
           </p>
           <div id="rt-runtimes"></div>
         </div>
