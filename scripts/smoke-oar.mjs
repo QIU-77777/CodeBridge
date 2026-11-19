@@ -7,6 +7,9 @@
  *   node scripts/smoke-oar.mjs claude --env ANTHROPIC_BASE_URL=https://...
  *
  * 六项：安装探测、一句话回合、工具回合（看 exitCode）、abort、忙时注入、图片输入。
+ * 第 4 项与第 5 项各起一个长回合，不共用：kimi 没有 steer，注入落 queued 之后
+ * abort，OAR 会把排队的那条交付出去开新回合，abort 的终态观测被带偏（实测：共用
+ * 回合时采到 done，拆开后采到 aborted）。
  * 判定逻辑与已知限制在 src/oar-smoke.js（KNOWN_REFUSALS）。
  *
  * 真实模型调用：会花钱，要本机装好并登录对应运行时。手动跑，不进 CI。
@@ -212,19 +215,31 @@ export async function collectSmokeObservations({
       // 运行时到底上不上报 token 总量：原始会话的读数，判定层据此决定断不断用量
       obs.reportsTokens = Boolean(raw.usage().value?.total)
 
-      // 4、5. 长任务：忙时注入 + abort（产品路径，共用同一回合）
+      // 4. abort：单独一个长回合，不掺注入
+      // 等待起点取在 prompt 之后、中断之前：abort 的终止事件在中断调用返回前就
+      // 已经同步进 seen，起点取在中断之后会把它漏掉，新一轮的运行态永远等不到
+      // 终态（实测：等到超时，状态停在 running）
       const running = be.prompt(session.id, LONG_PROMPT)
-      // 等待起点取在 prompt 之后、注入与中断之前：abort 的终止事件在中断调用
-      // 返回前就已经同步进 seen，起点取在中断之后会把它漏掉，新一轮的运行态
-      // 永远等不到终态（实测：等到超时，状态停在 running）
       const abortFrom = seen.length
       await waitTurnActive(abortFrom)
-      await sleep(500) // 让回合真的进入工具执行，注入才落在忙时
-      const landed = await be.prompt(session.id, INJECT_PROMPT, { delivery: 'steer' })
+      await sleep(500) // 让回合真的进入工具执行，abort 才落在忙时
       const accepted = await be.interrupt(session.id)
       const abortState = await settleBridge(abortFrom)
       await running.catch(() => {})
       obs.abort = { accepted, terminal: abortState.status }
+
+      // 5. 忙时注入：另一个长回合。注入与 abort 不共用——kimi 没有 steer，注入落
+      // queued 之后 abort，OAR 会把排队的那条交付出去开新回合，abort 的终态就被
+      // 带偏了（实测共用回合采到 done，拆开采到 aborted）
+      const running2 = be.prompt(session.id, LONG_PROMPT)
+      const injectFrom = seen.length
+      await waitTurnActive(injectFrom)
+      await sleep(500) // 让回合真的进入工具执行，注入才落在忙时
+      const landed = await be.prompt(session.id, INJECT_PROMPT, { delivery: 'steer' })
+      // 注入之后把这个回合收干净，别让它拖着下一项
+      await be.interrupt(session.id).catch(() => {})
+      await settleBridge(injectFrom).catch(() => {})
+      await running2.catch(() => {})
       obs.inject = { landed, declaredSteer: be.caps.steer === true }
 
       // 6. 图片输入（原始会话：图片不在桥接的事件契约里）
