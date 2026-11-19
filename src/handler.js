@@ -294,6 +294,13 @@ export class Bridge {
     }
 
     const run = this.runs.get(sid)
+    // opencode 的会话在没显式指定模型时 session.model 是空的（b9a9aba 取消选模型
+    // 之后新建的会话都这样），卡片因此没有模型行。真实模型在 session.step.started
+    // 的 data.model 里报出来，第一次拿到就补进前缀；后续的 flush 会带上它
+    if (run && ev.type === 'session.step.started' && ev.data?.model && !run.meta.model) {
+      const m = ev.data.model
+      run.meta.model = m.providerID ? `${m.providerID}/${m.id}` : String(m.id || '')
+    }
     if (!run) {
       // 不在 runs 表里的会话：多半是母回合派生的子代理。它的活动要接到
       // 母回合的静默计时器上，否则母回合会被看门狗误判成卡死

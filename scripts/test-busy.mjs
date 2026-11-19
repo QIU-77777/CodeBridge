@@ -7,7 +7,7 @@
  * 的按钮（中止当前改发这条 / 取消）、按 qid 定位同一条、任务收尾后自动排空、
  * 队列落盘重启不丢。
  */
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -28,6 +28,7 @@ function ok(cond, name, extra = '') {
 
 const { Store } = await import(join(REPO, 'src', 'store.js'))
 const { Bridge } = await import(join(REPO, 'src', 'handler.js'))
+const { RunState } = await import(join(REPO, 'src', 'render.js'))
 
 const root = mkdtempSync(join(tmpdir(), 'ocb-busy-'))
 
@@ -382,6 +383,34 @@ try {
     await h.bridge.start()
     await new Promise((res) => setTimeout(res, 2200))
     ok(h.prompts.some((p) => p.text?.includes('重启前排的')), '重启后 reconcile 把队列里的消息补发出去')
+  }
+
+  // 9b. opencode 没显式指定模型时，session.model 是空的；真实模型在
+  // session.step.started 的 data.model 里报出来，卡片前缀要能补上
+  {
+    const h = makeHarness()
+    const key = 'chat-model'
+    h.store.set(key, { sessionId: 'ses_m', chatId: key, directory: '/tmp' })
+    const st = new RunState('ses_m')
+    st.status = 'running'
+    h.bridge.runs.set('ses_m', { state: st, cardId: 'c-m', chatId: key, lastFlush: 0, meta: { key, model: '' } })
+    const run = h.bridge.runs.get('ses_m')
+    ok(run.meta.model === '', '起跑时模型为空（opencode 未指定模型的会话就是这样）')
+    h.bridge.onEvent({
+      type: 'session.step.started',
+      data: { sessionID: 'ses_m', model: { providerID: 'stepgo', id: 'deepseek-v4.1-flash-working' } },
+    })
+    ok(
+      run.meta.model === 'stepgo/deepseek-v4.1-flash-working',
+      'step.started 报出的模型补进卡片前缀',
+      JSON.stringify(run.meta.model),
+    )
+    // 已经有值时不覆盖：第一次拿到的是本回合实际运行的模型
+    h.bridge.onEvent({
+      type: 'session.step.started',
+      data: { sessionID: 'ses_m', model: { providerID: 'other', id: 'x' } },
+    })
+    ok(run.meta.model === 'stepgo/deepseek-v4.1-flash-working', '已有模型时不覆盖', JSON.stringify(run.meta.model))
   }
 
   // 10. 落盘：队列重新 load 不丢，qid 也带回来（按钮还点得动）
