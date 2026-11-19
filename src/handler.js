@@ -4,6 +4,7 @@ import { resolve } from 'node:path'
 import { RunState } from './render.js'
 import {
   helpCard,
+  loginCard,
   permissionCard,
   runCard,
   sessionsCard,
@@ -16,6 +17,7 @@ import {
 } from './cards.js'
 import { truncate } from './render.js'
 import { renderXmlBody } from './prompt-layout.js'
+import { LoginFlow } from './oar-login.js'
 
 const MAX_PROMPT_CHARS = 20000
 
@@ -54,11 +56,18 @@ export class Bridge {
      *  活动计入母回合时按它沿链上找，见 _noteSubSession */
     this.sessionParent = new Map()
     this.seenMessages = new Map()
+    /** chatId -> 等待中的提问（ask_human 工具）：下一条同会话的消息就是回答 */
+    this.pendingAsks = new Map()
     this.serverInfo = null
     this.lastEnv = null
   }
 
   // ---------- 生命周期 ----------
+
+  /** 后端能力后到（OAR 异步解析）时整体替换，渲染与命令降级跟着变 */
+  setCaps(caps) {
+    this.caps = caps
+  }
 
   async start() {
     this.serverInfo = await this.oc.health().catch((e) => ({ ok: false, error: e.message }))
@@ -66,6 +75,10 @@ export class Bridge {
     this.stopEvents = this.oc.subscribe(
       (ev) => this.onEvent(ev),
       (s) => {
+        // OAR 后端的能力是异步解析的：解析完成前是保守值（不渲染 steer 按钮、
+        // 忙时不注入），解析完成后随状态事件送上来，换掉它，卡片与 /help 按
+        // 运行时的真实能力渲染
+        if (s.caps) this.setCaps(s.caps)
         const label = this.caps.label || 'opencode'
         if (s.connected) this.log.info(`${label} 后端已就绪`)
         else this.log.warn(`${label} 事件通道断开: ${s.reason || ''}`)
@@ -423,6 +436,9 @@ export class Bridge {
   _finalizeRun(sid, run) {
     if (run.flushed) return
     run.flushed = true
+    // OAR 后端的会话空闲回收：一轮跑完后一段时间没有新消息，就关掉运行中的
+    // 会话，下次发消息用 resume 把历史带回来。不养热进程，白占一个进程
+    this.oc.noteRunEnded?.(sid)
     // 卡片已经收尾，把「还有人在跑」的记录抹掉，重启时就不会误标成已中断
     this.store.clearInflight?.(sid)
     // 结束后再保留一小段时间便于清理。**只删还是同一个 run 对象的情况**：
@@ -574,6 +590,29 @@ export class Bridge {
     if (!this.isAllowed(msg.userId)) {
       this.log.warn(`拒绝非白名单用户 ${msg.userId}`)
       return
+    }
+
+    // 登录流程在等人回答：这条消息就是答案，不进任务链路。一台机器一个登录态，
+    // 所以不按话题隔离，谁发起谁答，同一个人同时只跑一个登录
+    if (this.loginFlow?.awaitingText) {
+      const flow = this.loginFlow
+      if (text === '/取消' || text === '/cancel') {
+        flow.cancel()
+        return null
+      }
+      if (flow.answer(text)) {
+        await this.patchLoginCard(flow)
+        return null
+      }
+    }
+
+    // 有人在等问题回答（ask_human 工具）：这条消息就是回答
+    const ask = this.pendingAsks.get(msg.chatId)
+    if (ask) {
+      this.pendingAsks.delete(msg.chatId)
+      clearTimeout(ask.timer)
+      ask.resolve(text)
+      return null
     }
 
     const ctx = this.ctxOf(msg)
@@ -805,6 +844,12 @@ export class Bridge {
 
       case 'agent':
         return this.cmdAgent(ctx, arg)
+
+      case 'login':
+        return this.cmdLogin(ctx)
+
+      case 'logout':
+        return this.cmdLogout(ctx)
 
       default:
         return to(`未知命令 /${name}，发送 /help 查看可用命令`)
@@ -1042,6 +1087,109 @@ export class Bridge {
     return this.t.sendText(ctx.chatId, `已切换到 ${target.providerID}/${target.id}`, { replyTo: ctx.replyTo })
   }
 
+  // ---------- 登录 ----------
+
+  /** 当前后端是不是 OAR、能不能登录。不是就给一句明确的话 */
+  _loginSupported() {
+    if (this.caps.type !== 'oar') {
+      return { ok: false, reason: `当前后端是 ${this.caps.label || this.caps.type}，登录由它自己管，桥接不代理` }
+    }
+    if (typeof this.oc.login !== 'function') {
+      return { ok: false, reason: '这个后端没有登录接口' }
+    }
+    return { ok: true }
+  }
+
+  /**
+   * /login：跑一次运行时自己的登录，把过程摊在卡片上。
+   *
+   * 一台机器一个登录态，所以不按话题隔离：谁发起谁答，同时只跑一个。
+   */
+  async cmdLogin(ctx) {
+    const sup = this._loginSupported()
+    if (!sup.ok) return this.t.sendText(ctx.chatId, sup.reason, { replyTo: ctx.replyTo })
+
+    // 上一个登录还在跑：先取消它，不要两个登录同时改本机凭据
+    if (this.loginFlow) this.loginFlow.cancel()
+
+    const label = this.caps.label || this.cfg.backend?.oar?.runtime || 'oar'
+    const flow = new LoginFlow({
+      runtime: this.oc.runtime,
+      installation: this.oc.installation,
+      env: this.oc.env,
+      onState: () => this.patchLoginCard(flow),
+      logger: this.log,
+    })
+    this.loginFlow = flow
+    this.loginCardId = null
+    this.loginNavKey = ctx.key
+    this.loginNavRt = ctx.replyTo || ''
+
+    // 卡片先落地，登录过程在它上面 patch：人看到的是一张卡在变，不是一堆新消息
+    const first = await this.t.sendCard(ctx.chatId, loginCard(flow.state, { label, k: ctx.key, rt: ctx.replyTo || '' }), {
+      replyTo: ctx.replyTo,
+    })
+    this.loginCardId = first?.message_id || null
+
+    const result = await flow.start()
+    this.loginFlow = null
+    await this.patchLoginCard(flow)
+    this.log.info?.(`登录结束：${result?.kind || '?'}`)
+    return null
+  }
+
+  /** 登录卡片原地更新。卡片没了（被删、过期）就安静收场，不重发 */
+  async patchLoginCard(flow) {
+    if (!this.loginCardId) return
+    const label = this.caps.label || this.cfg.backend?.oar?.runtime || 'oar'
+    const nav = { k: this.loginNavKey || '', rt: this.loginNavRt || '' }
+    try {
+      await this.t.patchCard(this.loginCardId, loginCard(flow.state, { label, ...nav }))
+    } catch (err) {
+      this.log.warn?.('登录卡片更新失败: ' + (err?.message || err))
+    }
+  }
+
+  /** /logout：登出。同样只由人发起 */ 
+  async cmdLogout(ctx) {
+    if (this.caps.type !== 'oar' || typeof this.oc.logout !== 'function') {
+      return this.t.sendText(ctx.chatId, '当前后端不提供登出接口', { replyTo: ctx.replyTo })
+    }
+    const r = await this.oc.logout()
+    const text = r?.kind === 'logged_out' ? '已登出。' : `登出失败：${r?.reason || '?'}${r?.detail ? '：' + r.detail : ''}`
+    return this.t.sendText(ctx.chatId, text, { replyTo: ctx.replyTo })
+  }
+
+  // ---------- 向人提问（ask_human 工具用） ----------
+
+  /**
+   * 给一个飞书会话提一个问题，等到回答或超时。
+   *
+   * 一个会话同时只等一个回答：第二个问题会顶掉第一个（第一个拿到超时）。
+   * 回答不挑人——群里任何人答都算，这本来就是把决定权交回给群里。
+   *
+   * @returns {Promise<string|null>} 回答的文本；超时返回 null
+   */
+  async askHuman(chatId, question, timeoutMs = 300_000) {
+    await this.t.sendText(chatId, question)
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        if (this.pendingAsks.get(chatId)?.resolve === resolve) this.pendingAsks.delete(chatId)
+        resolve(null)
+      }, timeoutMs)
+      this.pendingAsks.set(chatId, { resolve, timer })
+    })
+  }
+
+  /** 传输层到了之后把飞书能力交给后端：宿主工具在这一刻才能起 */
+  attachHostTools() {
+    this.oc.setHost?.({
+      transport: this.t,
+      store: this.store,
+      askHuman: (chatId, question, timeoutMs) => this.askHuman(chatId, question, timeoutMs),
+    })
+  }
+
   async cmdAgent(ctx, arg) {
     if (this.caps.agents === false) {
       return this.t.sendText(
@@ -1202,6 +1350,26 @@ export class Bridge {
           }
           return { toast: { type: 'success', content: '已中止' } }
         }
+        case 'login-answer': {
+          // 选项类提问的答案走按钮回来
+          const flow = this.loginFlow
+          if (!flow || flow.state.phase !== 'prompt') {
+            return { toast: { type: 'info', content: '这个登录已经结束了' } }
+          }
+          if (flow.answer(String(a.v ?? ''))) {
+            await this.patchLoginCard(flow)
+            return { toast: { type: 'success', content: '已收到' } }
+          }
+          return { toast: { type: 'error', content: '这个提问已经回答过了' } }
+        }
+
+        case 'login-cancel': {
+          const flow = this.loginFlow
+          if (!flow) return { toast: { type: 'info', content: '登录已经结束' } }
+          flow.cancel()
+          return { toast: { type: 'success', content: '已取消登录' } }
+        }
+
         case 'perm': {
           if (this.caps.permissions === false) {
             return { toast: { type: 'info', content: `${this.caps.label} 后端没有交互式授权` } }

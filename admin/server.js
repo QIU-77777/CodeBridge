@@ -20,6 +20,7 @@ import { homedir } from 'node:os'
 import { execFile } from 'node:child_process'
 import { collectAll, collectInstance, discoverInstances } from './instances.js'
 import { scanBackends } from './backends.js'
+import { probeOarRuntimes } from './oar-runtimes.js'
 import { startInstance, stopInstance, restartInstance, doctor, readLog, installInstance, rollbackService } from './control.js'
 import { planNewInstance, writeNewInstance, nextFreeUrl } from './create.js'
 import {
@@ -558,6 +559,19 @@ async function handleApi(req, res, url) {
   if (parts[1] === 'backends') {
     if (req.method !== 'GET') return sendError(res, 405, '只支持 GET')
     return sendJson(res, 200, { backends: await scanBackends() })
+  }
+
+  // OAR 运行时探测：本机装了什么编码 agent 运行时、登没登录、能用哪些模型。
+  // 环境叠加按实例来——同一个实例将会看到的那个环境，不是管理后台自己的
+  if (parts[1] === 'oar' && parts[2] === 'runtimes') {
+    if (req.method !== 'GET') return sendError(res, 405, '只支持 GET')
+    const inst = url.searchParams.get('instance')
+    let env
+    if (inst) {
+      const found = discoverInstances().find((i) => i.name === inst)
+      env = found?.config?.data?.backend?.oar?.env
+    }
+    return sendJson(res, 200, await probeOarRuntimes({ env }))
   }
 
   if (parts[1] !== 'instances') return sendError(res, 404, '未知接口')

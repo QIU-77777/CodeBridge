@@ -6,7 +6,7 @@
 import * as Lark from '@larksuiteoapi/node-sdk'
 import { loadConfig } from '../src/config.js'
 import { mdToElements, mdToText } from '../src/md.js'
-import { runCard, textCard, sessionsCard, permissionCard, statusCard, helpCard, fmtCost } from '../src/cards.js'
+import { runCard, textCard, sessionsCard, permissionCard, statusCard, helpCard } from '../src/cards.js'
 import { RunState } from '../src/render.js'
 
 let pass = 0
@@ -81,7 +81,6 @@ function walk(node, cb) {
 const st = new RunState('ses_test')
 st.text = MD
 st.status = 'done'
-st.cost = 0.0123
 st.tokens = { input: 1200, output: 340 }
 st.tools.push({ id: 't1', name: 'bash', input: { command: 'ls' }, status: 'ok', output: '' })
 
@@ -142,46 +141,24 @@ ok(size < 30_000, `runCard 序列化 < 30KB（${size} 字节）`)
     JSON.stringify(card.body.elements.find((e) => e.tag === 'markdown' && e.text_size === 'notation'))
   const line = last(runCard(st, { directory: '/tmp', isGroup: true }))
   ok(line.includes('in 1200') && line.includes('out 340'), '后缀带 in/out')
-  ok(line.includes('$0.01'), '后缀带金额')
   ok(line.includes('｜') && line.includes('/help'), '用量和帮助在同一行，用 ｜ 隔开')
-  ok(line.includes('$0.01｜@我'), '｜ 前后不留空格')
+  ok(line.includes('in 1200 · out 340｜@我'), '｜ 前后不留空格')
   ok(
-    line.indexOf('out 340') < line.indexOf('$0.01') && line.indexOf('$0.01') < line.indexOf('｜'),
-    '顺序是 in · out · 金额 ｜ 帮助',
+    line.indexOf('out 340') < line.indexOf('｜'),
+    '顺序是 in · out ｜ 帮助',
   )
 }
 
-// 金额为 0（套餐型 provider）也要显示，不能整段消失
+// 没有 token 消耗时不显示空的用量行
 {
-  const zero = new RunState('ses_zero')
-  zero.status = 'done'
-  zero.text = 'ok'
-  zero.cost = 0
-  zero.tokens = { input: 66636, output: 9509 }
-  const noteOf = (card) =>
-    JSON.stringify(card.body.elements.find((e) => e.tag === 'markdown' && e.text_size === 'notation'))
-  const line = noteOf(runCard(zero, { directory: '/tmp' }))
-  ok(line.includes('$0.00'), 'cost=0 时显示 $0.00，而不是把金额藏掉')
-  ok(line.includes('in 66636') && line.includes('out 9509'), 'cost=0 不影响 in/out 显示')
-
-  // 完全没用量也没金额时，不显示空的金额位
   const bare = new RunState('ses_bare')
   bare.status = 'done'
   bare.text = 'ok'
+  const noteOf = (card) =>
+    JSON.stringify(card.body.elements.find((e) => e.tag === 'markdown' && e.text_size === 'notation'))
   const bareLine = noteOf(runCard(bare, { directory: '/tmp' }))
-  ok(!bareLine.includes('$'), '没有用量时不显示金额')
+  ok(!bareLine.includes('in ') && !bareLine.includes('out '), '没有用量时不显示 in/out')
 }
-
-// 金额格式随量级变化
-{
-  ok(fmtCost(0) === '$0.00', 'fmtCost(0)')
-  ok(fmtCost(0.00042) === '$0.00', 'fmtCost 小于一分显示 $0.00')
-  ok(fmtCost(0.0123) === '$0.01', 'fmtCost 一分钱')
-  ok(fmtCost(0.1234) === '$0.12', 'fmtCost 一角二')
-  ok(fmtCost(12.3456) === '$12.35', 'fmtCost 两位小数四舍五入')
-  ok(fmtCost(undefined) === '' && fmtCost(NaN) === '', 'fmtCost 非法值返回空')
-}
-
 
 // 失败卡片：已知错误要带一句「接下来干什么」
 {

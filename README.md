@@ -23,9 +23,9 @@
 <table>
 <tr>
 <td valign="top"><img src="docs/images/request-and-reply.png" alt="发起请求与接收回复" height="520"><br>
-卡片顶部一行元信息：<b>目录</b> / <b>模型</b> / <b>耗时</b> / <b>步数</b>；底部一行用量：<code>in</code> / <code>out</code> / <code>$</code>。工具调用链路默认不显示，只看结论；正文按助手叙述的段累加，每一段之间空一行，多步运行的中间回复和最终答复按顺序都看得见。</td>
+卡片顶部一行元信息：<b>目录</b> / <b>模型</b> / <b>耗时</b> / <b>步数</b>；底部一行用量：<code>in</code> / <code>out</code>。工具调用链路默认不显示，只看结论；正文按助手叙述的段累加，每一段之间空一行，多步运行的中间回复和最终答复按顺序都看得见。</td>
 <td valign="top"><img src="docs/images/session-switch.png" alt="多会话管理" height="520"><br>
-会话按目录隔离，列表中只出现当前目录下的会话。每条后面有「已用时长 · 模型 · 累计成本」，点「切换」后新发一条确认卡片。</td>
+会话按目录隔离，列表中只出现当前目录下的会话。每条后面有「已用时长 · 模型」，点「切换」后新发一条确认卡片。</td>
 </tr>
 </table>
 
@@ -36,7 +36,7 @@
 | 能力 | 行为 |
 |---|---|
 | 远程派活 | 飞书里发一句话，本机 Agent 在指定项目目录执行 |
-| 流式卡片 | 正文、步数、耗时、token、成本在同一张卡片内刷新 |
+| 流式卡片 | 正文、步数、耗时、token 在同一张卡片内刷新 |
 | 富文本 | Markdown 表格渲染成飞书原生表格，代码块带语法高亮 |
 | 多会话 | `/sessions` 列出会话并点按钮切换；`/new` 新建；`/cd` 换目录 |
 | 群里并行 | 每 @ 一次开一条话题，一条话题一个会话，多条话题并行执行 |
@@ -324,6 +324,8 @@ flowchart TB
 
 `admin/` 只监听 `127.0.0.1`。`requestGuards()` 校验 Host 属于 `localhost` 或 `127.0.0.1`，写操作额外要求 `Content-Type: application/json` 与 `X-OCB-Admin: 1`。这套校验用于阻挡跨站表单。响应里的 `appSecret` 与 `opencode.password` 一律掩码；写配置时密钥留空表示保持原值，并先备份成 `config.json.bak`。
 
+「会话与后端」页有一块 OAR 运行时探测：本机装了哪些编码 agent 运行时、各登没登录、能用哪些模型、配额余多少。数据来自 OAR 的 `orient()`——一次有界快照，不开会话、不发消息、不跑安装，按当前实例的 `backend.oar.env` 叠加来看。装好或登录后点「刷新」。这里报的是 OAR 适配器看到的情况：opencode 走桌面版自带的 CLI 时 OAR 的探测器可能找不到它，用 opencode 后端不受影响。
+
 ### 边界上的薄弱处
 
 | 位置 | 现状 | 后果 |
@@ -527,7 +529,11 @@ npm run dry
 
 | 键 | 说明 | 默认值 |
 |---|---|---|
-| `backend.type` | `opencode` 或 `pi` | `opencode` |
+| `backend.type` | `opencode`、`pi` 或 `oar` | `opencode` |
+| `backend.oar.runtime` | `backend.type = oar` 时的运行时 id：`claude` / `codex` / `pi` / `kimi` / `qwen` / `grok` / `opencode` / `antigravity` / `codebuddy` / `qoder` / `devin` / `factory` / `dsh`。`cursor` 与 `pi-durable` 要宿主传 SDK，第一版不支持 | `""` |
+| `backend.oar.model` | 模型，留空用运行时自己的默认。`claude`、`cursor`、`opencode`、`qwen`、`factory` 没有默认标记，建议显式给 | `""` |
+| `backend.oar.env` | 扁平环境变量，原样进 OAR 的 `SessionOptions.env`，登录与登录状态查询用同一份。值填 `null` 删掉继承的键。每个运行时认哪些键见下表 | `{}` |
+| `backend.oar.idleMs` | 一轮跑完后多久回收运行中的会话，下次发消息用恢复把历史带回来；`0` 关掉 | `600000` |
 | `backend.pi.bin` | pi CLI 路径 | `pi` |
 | `backend.pi.model` | 传给 `--model`，留空用 pi 的默认值 | `""` |
 | `backend.pi.timeoutMs` | 模型静默多久判定超时（无在飞工具时），每吐一行 stdout 重置 | `600000` |
@@ -535,6 +541,24 @@ npm run dry
 | `backend.pi.settleQuietMs` | 最终回答后静默多久按已完成收尾，`0` 关闭此机制 | `180000` |
 | `backend.pi.extraArgs` | 额外启动参数，例如 `["--no-extensions"]` | `[]` |
 | `backend.pi.cliSessionRoot` | 终端 `pi -r` 会话根目录 | `~/.pi/agent/sessions` |
+
+#### `backend.oar.env` 每个运行时认哪些键
+
+同一份 env 同时给会话、登录、登录状态查询用。
+
+| 运行时 | 键 |
+|---|---|
+| claude | `ANTHROPIC_BASE_URL`、`ANTHROPIC_API_KEY` |
+| codex | `CODEX_HOME`，指向放 `config.toml` 的目录 |
+| kimi | `KIMI_MODEL_NAME`、`KIMI_MODEL_BASE_URL`、`KIMI_MODEL_API_KEY`、`KIMI_MODEL_PROVIDER_TYPE=openai` |
+| grok | `GROK_HOME` |
+| opencode | `XDG_CONFIG_HOME` |
+| dsh | `DSH_HOME` |
+| antigravity | 文档写 `GEMINI_HOME`，但 CLI 1.5.9 忽略这个变量，实际要走 `HOME` |
+| factory | 没有 env 入口，走 `~/.factory/settings.json` |
+| pi | 没有配置字段。`OAR_PI_AGENT_DIR` 是进程级的，pi 的 SDK 模式 env 只到 Bash 子进程、不到进程内的提供方。第三方提供方在桥接进程环境里设（launchd plist 的 `EnvironmentVariables`），`models.json` 放 `OAR_PI_AGENT_DIR` 指向的目录 |
+
+密钥只放 env 或运行时自己的配置，不放 `launchArgs`——那会出现在 `ps` 里，同机任何用户可读。
 | `feishu.appId` / `feishu.appSecret` | 应用凭证 | `""` |
 | `feishu.domain` | `feishu` 或 `lark` | `feishu` |
 | `feishu.allowlist` | 放行名单，空数组表示不限制 | `[]` |
@@ -683,9 +707,10 @@ prompts.json
 | `/del <序号>` | 删除会话 |
 | `/cd <目录>` | 换工作目录并重置绑定 |
 | `/stop` | 中止当前执行 |
-| `/status` | 查看绑定、模型、token、成本 |
+| `/status` | 查看绑定、模型、token |
 | `/model` / `/model <序号>` | 列出模型 / 切换模型 |
 | `/agent` / `/agent <名字>` | 列出 agent / 切换 agent（仅 opencode 后端） |
+| `/login` / `/logout` | 登录 / 登出当前运行时（仅 OAR 后端） |
 
 别名：`/ls` = `/sessions`，`/use` = `/switch`，`/abort` = `/stop`，`/delete` = `/del`，`/?` = `/help`。
 
@@ -725,7 +750,7 @@ bot 之间的 @ 不排队：支持 steer 的后端上直接注入正在跑的那
 | `- 列表` / `> 引用` | 圆点列表 / 普通正文 |
 | 加粗、斜体、行内代码、链接 | 原样支持 |
 
-单张卡片上限 30KB，超大表格裁剪到 50 行 8 列。卡片分三段：前缀（目录 / 模型 / 耗时 / 步数）、正文、后缀（用量小字与按钮）。正文按助手叙述的段累加，段间空一行。金额保留两位小数；部分模型提供商在 `/api/model` 里把成本填 0，此时显示 `$0.00`。
+单张卡片上限 30KB，超大表格裁剪到 50 行 8 列。卡片分三段：前缀（目录 / 模型 / 耗时 / 步数）、正文、后缀（用量小字与按钮）。正文按助手叙述的段累加，段间空行。用量只显示 token 消耗（输入与输出），不显示金额：金额要按模型单价表自己算，OAR 的用量接口也不提供这个字段。
 
 ---
 
@@ -745,6 +770,35 @@ bot 之间的 @ 不排队：支持 steer 的后端上直接注入正在跑的那
 | 卡死判定 | `behavior.idleTimeoutMs`（无工具在飞）、`behavior.toolIdleTimeoutMs`（工具在飞） | `backend.pi.timeoutMs`（模型静默）、`backend.pi.toolTimeoutMs`（工具在飞）与 `backend.pi.settleQuietMs` |
 
 pi 的 `/sessions` 同时列出桥接会话与终端 `pi -r` 会话。切到终端会话后走 `pi --session <文件>` 续聊，两端读写同一个 JSONL。终端会话的改名、删除、切模型由 pi 自己管理，桥接会明确拒绝这三个操作。
+
+### OAR 后端
+
+`backend.type = oar` 时，执行层走 [OAR](https://github.com/botiverse/oar)（Open Agent Runtime）：一套接口驱动多个编码 agent 运行时，桥接的交互层一行不改。`backend.oar.runtime` 选运行时，第一版放开 12 个，`cursor` 与 `pi-durable` 要宿主传 SDK，第一版不支持。
+
+| 能力 | OAR 后端 |
+|---|---|
+| 执行方式 | 运行时自己的接口：app-server、无头协议、SDK 或厂商 ACP server，一个会话一个进程（pi 默认进程内 SDK） |
+| 流式正文 | `session.events()` 的规范事件经 `src/oar-events.js` 翻译成 `session.*` 形状，`render.js` 只有一套聚合逻辑 |
+| 引导（steer） | 忙时注入统一走 `session.deliver`：能引导就引导，不能就排队，运行时没有 `steer` 成员时不写分支 |
+| 权限审批卡片 | 不支持。OAR 的运行时请求回答接口还没定；kimi 的适配器无条件选 yolo 模式，权限请求不到宿主 |
+| `/agent` | 不支持，明确拒绝 |
+| `/sessions` | 桥接自己的索引（`<配置目录>/oar-sessions/`）：OAR 没有跨运行时的会话管理，这是宿主的事 |
+| `/rename`、`/del` | 改名明确拒绝（`name` 只在建会话时给，恢复不替换）；删除删桥接索引并 dispose 运行中的会话 |
+| `/model` | 会话中切换走 dispose 加 resume，索引里的模型立即更新，卡片显示与实际执行一致 |
+| `/login`、`/logout` | 走运行时自己的登录，卡片给地址与设备码，回执码直接发到群里。桥接不碰密钥 |
+| 空闲回收 | 一轮跑完 `backend.oar.idleMs` 后 dispose，下次发消息用 resume 把历史带回来 |
+| 成本 | 不显示。OAR 的用量接口只有 token 与上下文，没有金额 |
+| 飞书能力 | 以宿主工具挂给任何 harness：`send_message`、`list_chats`、`ask_human`。身份由桥接进程持有，不进子进程环境 |
+
+**飞书能力为什么换成宿主工具。** 现在只有 pi 后端能让 agent 在飞书上发言，做法是把本实例的飞书凭证注进子进程环境、让 agent 自己敲 feishu-cli。多机器人同机部署时，那个机器级配置经常是另一个实例的，代理就以别人的身份发言（真实事故记在 `src/pi.js` 的注释里）。OAR 后端改成：桥接在自己进程内起一个 MCP 服务器（只监听 `127.0.0.1`，带随机 bearer 令牌），把三个工具挂上去，任何 harness 通过自己的 MCP 通道连进来。
+
+- `send_message`：给指定飞书会话发消息，以本实例这个应用的身份发出。可带 `reply_to` 落到同一话题下。
+- `list_chats`：列出这个实例知道的会话（绑定键、会话 id、目录、当前会话），用来找到该往哪里发。
+- `ask_human`：向一个会话里的人提一个问题，等到回答或超时（默认 5 分钟，上限 1 小时）。一个会话同时只等一个回答，回答不挑人。
+
+这不改变 agent 间的协作方式：传输仍然是飞书群消息，@、话题、忙时 steer 都不变。这是宿主给 agent 发工具，不是建立父子关系。挂不上的运行时由 `refusedSessionOptions` 决定：pi-durable 拒绝 `mcpServers`、antigravity 拒绝带头部的条目、dsh 只收 stdio，这三种不挂，其余都挂。
+
+`/login` 的交互来自 OAR 的登录契约：事件面是 `auth_url`、`device_code`、`info`，回答面是 `text`、`secret`、`manual_code`、`select`。前三者让用户把答案发到群里，`select` 渲染成按钮。取消随时可以，中止信号交给 OAR，它停掉登录进程及其子进程。
 
 ### 多实例
 
@@ -900,6 +954,7 @@ logs/                      运行日志（不入库）
 | `npm run dry` | 无飞书的终端 REPL，全链路模拟 |
 | `OC_PW=<密码> npm run selftest -- --model <providerID/modelID>` | 真实模型集成自测：建会话、发 prompt、删会话、流式聚合、卡片回调、白名单、@ 判定 |
 | `npm run test:render` / `test:patch` | 卡片渲染与 patch 顺序 |
+| `npm run test:oar-events` / `test:oar-backend` / `test:oar-probe` / `test:oar-login` / `test:oar-host-tools` | OAR 事件翻译层、OAR 后端、运行时探测、登录流程、飞书宿主工具，全部离线，不装 harness、不登录、不连模型提供商 |
 | `npm run test:cmd-route` | 群里「@机器人 /命令」的分流，含缺少 `cmdText` 时的回退 |
 | `npm run test:busy` / `test:runfail` / `test:wedge` | 排队、运行失败、看门狗收尾 |
 | `npm run test:errors` | 失败卡片的错误分类与「下一步」提示 |

@@ -109,11 +109,17 @@ class DryTransport {
   }
 }
 
+function backendLineOf(cfg, caps) {
+  if (caps.type === 'opencode') return `  opencode : ${cfg.opencode.url}`
+  if (caps.type === 'oar') {
+    const oar = cfg.backend?.oar || {}
+    return `  ${caps.label}     : 运行时 ${oar.runtime}${oar.model ? ` · 模型 ${oar.model}` : ''}`
+  }
+  return `  ${caps.label}     : ${cfg.backend.pi.bin}${cfg.backend.pi.model ? ` (${cfg.backend.pi.model})` : ''}`
+}
+
 function printBanner(cfg, caps) {
-  const backendLine =
-    caps.type === 'opencode'
-      ? `  opencode : ${cfg.opencode.url}`
-      : `  ${caps.label}     : ${cfg.backend.pi.bin}${cfg.backend.pi.model ? ` (${cfg.backend.pi.model})` : ''}`
+  const backendLine = backendLineOf(cfg, caps)
   console.log(`
 ┌──────────────────────────────────────────────┐
 │  ${caps.label} ⇄ 飞书 桥接${DRY ? '（dry 模式：不连飞书）' : '                        '}│
@@ -169,6 +175,9 @@ ${created ? '   已为你生成模板，请填入 appId / appSecret。\n' : '   
       } else {
         console.error('   请先启动：opencode serve --port 19876 --hostname 127.0.0.1')
       }
+    } else if (caps.type === 'oar') {
+      console.error(`❌ ${caps.label} 后端不可用: ${err.message}`)
+      console.error(`   运行时 ${cfg.backend?.oar?.runtime} 要在本机安装并登录，装没装、登没登可以用它自带的 CLI 查。`)
     } else {
       console.error(`❌ ${caps.label} 后端不可用: ${err.message}`)
       console.error(`   检查 backend.pi.bin 指向的 CLI 是否存在、能否执行。`)
@@ -219,6 +228,9 @@ ${created ? '   已为你生成模板，请填入 appId / appSecret。\n' : '   
     backendType: caps.type,
   })
   bridge.t = ft
+  // 飞书能力作为宿主工具交给后端：任何 harness 都能以本实例的身份在飞书上说话，
+  // 不再靠把凭证注进子进程让 agent 自己敲 CLI
+  bridge.attachHostTools()
 
   await bridge.start()
   await ft.start()
