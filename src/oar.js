@@ -91,7 +91,7 @@ export class OarBackend {
     const idle = Number(this.oar.idleMs)
     this.idleMs = Number.isFinite(idle) && idle >= 0 ? idle : 600_000
 
-    this.configDir = cfg.__configDir || CONFIG_DIR
+    this.configDir = CONFIG_DIR
     this.sessionDir = sessionDir || join(CONFIG_DIR, 'oar-sessions')
     this.indexPath = join(this.sessionDir, 'index.json')
     // 桥接会话 id -> 运行中的 OAR 会话
