@@ -253,6 +253,10 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 21h8M12 18v3M7 9l2.5 2.5L13 8"/></svg>
         会话与后端
       </button>
+      <button data-tab="runtimes">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/><path d="M7 7h.01M7 17h.01M11 7h6M11 17h6"/></svg>
+        运行时探测
+      </button>
       <button data-tab="logs">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v14H4z"/><path d="M8 9l3 3-3 3M13 15h4"/></svg>
         日志与体检
@@ -435,9 +439,21 @@ KIMI_MODEL_PROVIDER_TYPE=openai"></textarea></label>
             <summary>可用模型（<span id="ss-models-count">0</span>）</summary>
             <div id="ss-models" class="mono dim" style="max-height:160px;overflow:auto"></div>
           </details>
-          <h3>OAR 运行时探测</h3>
-          <p class="hint">本机装了哪些编码 agent 运行时、各登没登录、能用哪些模型、配额余多少。探测不开会话、不发消息，按当前实例的 backend.oar.env 叠加来看。装好或登录后点「刷新」。这里报的是 OAR 适配器看到的情况：opencode 走桌面版自带的 CLI 时，OAR 的探测器可能找不到它，用 opencode 后端不受影响。</p>
-          <div id="ss-oar-runtimes"></div>
+        </div>
+      </section>
+
+      <!-- 运行时探测 -->
+      <section id="tab-runtimes" class="hidden">
+        <div class="card">
+          <div class="toolbar">
+            <span class="dim">实例</span>
+            <select id="rt-instance" style="min-width:240px"></select>
+            <span class="spacer"></span>
+            <button class="btn primary" id="rt-refresh">重新探测</button>
+          </div>
+          <p class="hint" id="rt-status"></p>
+          <p class="hint">本机装了哪些编码 agent 运行时、各登没登录、能用哪些模型、配额余多少。探测不开会话、不发消息、不跑安装，按当前实例的 backend.oar.env 叠加来看。装好或登录后点「重新探测」。这里报的是 OAR 适配器看到的情况：opencode 走桌面版自带的 CLI 时，OAR 的探测器可能找不到它，用 opencode 后端不受影响。</p>
+          <div id="rt-runtimes"></div>
         </div>
       </section>
 
@@ -718,6 +734,7 @@ const TAB_META = {
   config: ['配置', '编辑实例的 config.json'],
   feishu: ['飞书应用', '凭证、白名单与名字对照'],
   sessions: ['会话与后端', 'serve 健康、会话与模型、运行时探测'],
+  runtimes: ['运行时探测', '本机装了哪些编码 agent 运行时、各登没登录、能用哪些模型'],
   logs: ['日志与体检', '日志跟随与 doctor'],
 }
 
@@ -729,7 +746,7 @@ document.querySelectorAll('#tabs button').forEach((btn) => {
 function switchTab(tab) {
   state.tab = tab
   document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === tab))
-  for (const t of ['overview', 'config', 'feishu', 'sessions', 'logs']) {
+  for (const t of ['overview', 'config', 'feishu', 'sessions', 'runtimes', 'logs']) {
     $('tab-' + t).classList.toggle('hidden', t !== tab)
   }
   const meta = TAB_META[tab]
@@ -740,6 +757,7 @@ function switchTab(tab) {
   if (tab === 'config') loadConfigTab()
   if (tab === 'feishu') loadFeishuTab()
   if (tab === 'sessions') loadSessionsTab()
+  if (tab === 'runtimes') loadRuntimesTab()
   if (tab === 'logs') loadLogsTab()
 }
 
@@ -799,7 +817,7 @@ function renderSummary(instances) {
 
 /** 跳到指定页签并选中该实例；体检入口在切过去后直接触发 */
 function gotoInstance(tab, name) {
-  const sel = $(tab === 'logs' ? 'lg-instance' : tab === 'sessions' ? 'ss-instance' : 'cfg-instance')
+  const sel = $(tab === 'logs' ? 'lg-instance' : tab === 'sessions' ? 'ss-instance' : tab === 'runtimes' ? 'rt-instance' : 'cfg-instance')
   if (sel && [...sel.options].some((o) => o.value === name)) sel.value = name
   switchTab(tab)
   if (tab === 'logs') runDoctor()
@@ -817,7 +835,7 @@ async function loadOverview() {
   try {
     const json = await api('/api/instances')
     state.instances = json.instances
-    for (const id of ['cfg-instance', 'fs-instance', 'ss-instance', 'lg-instance']) fillSelect($(id), true)
+    for (const id of ['cfg-instance', 'fs-instance', 'ss-instance', 'lg-instance', 'rt-instance']) fillSelect($(id), true)
     $('head-meta').textContent = `${state.instances.length} 个实例`
     $('head-host').textContent = location.host
     renderSummary(json.instances)
@@ -1286,13 +1304,24 @@ function fmtAgo(ts) {
  * 把失败折叠成「没有会话 / 没有进行中的卡片」会让用户把故障读成正常状态，
  * 其中 inflight 的假空态最危险——飞书上正有一张卡片永远停在「执行中」。
  */
-async function loadOarRuntimesPanel() {
-  const name = $('ss-instance').value
-  const box = $('ss-oar-runtimes')
-  if (!box) return
-  box.innerHTML = '<p class="hint">探测中…（要起进程，可能连服务，最多一分钟）</p>'
-  const probe = await loadOarRuntimes(name, true)
-  box.innerHTML = oarRuntimesTableHtml(probe)
+async function loadRuntimesTab() {
+  const name = $('rt-instance').value
+  const box = $('rt-runtimes')
+  if (!name || !box) return
+  const status = $('rt-status')
+  status.innerHTML = '<span class="dim">探测中…（要起进程，可能连服务，最多一分钟）</span>'
+  box.innerHTML = ''
+  try {
+    const probe = await loadOarRuntimes(name, true)
+    box.innerHTML = oarRuntimesTableHtml(probe)
+    const list = probe.runtimes || []
+    const installed = list.filter((r) => r.installed).length
+    status.innerHTML = '<span class="ok">探测完成：' + installed + ' 个已安装 / 共 ' + list.length + ' 个</span>'
+  } catch (err) {
+    // 失败与空分开说：探测失败不是「一个都没装」
+    status.innerHTML = '<span class="err">探测失败：' + esc(err.message) + '</span>'
+    box.innerHTML = ''
+  }
 }
 
 async function loadSessionsTab() {
@@ -1777,6 +1806,8 @@ $('fs-instance').addEventListener('change', loadFeishuTab)
 $('fs-verify').addEventListener('click', verifyFeishu)
 $('fs-allow-btn').addEventListener('click', addAllow)
 $('ss-instance').addEventListener('change', loadSessionsTab)
+$('rt-instance').addEventListener('change', loadRuntimesTab)
+$('rt-refresh').addEventListener('click', loadRuntimesTab)
 $('ss-refresh').addEventListener('click', loadSessionsTab)
 $('lg-instance').addEventListener('change', loadLogsTab)
 $('lg-file').addEventListener('change', loadLogsTab)
