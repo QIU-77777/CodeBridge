@@ -592,6 +592,8 @@ const state = {
   log: { since: 0, follow: true, timer: null, name: '', file: 'bridge' },
   backends: null,
   oarRuntimes: null,
+  oarRuntimesFor: '',
+  oarRuntimesAt: 0,
 }
 
 // ---------- 本地 coding agent 扫描 ----------
@@ -666,10 +668,13 @@ function refreshBackendScan(selectId, lineId) {
 const FALLBACK_OAR_RUNTIMES = ['claude', 'codex', 'pi', 'kimi', 'qwen', 'grok', 'opencode', 'antigravity', 'codebuddy', 'qoder', 'devin', 'factory', 'dsh']
 
 async function loadOarRuntimes(instance, refresh = false) {
-  if (!state.oarRuntimes || refresh) {
+  // 缓存按实例名记：切实例的 env 叠加不同，探到的结果可能不同，不能复用
+  if (refresh || !state.oarRuntimes || state.oarRuntimesFor !== instance) {
     try {
       const q = instance ? '?instance=' + encodeURIComponent(instance) : ''
       state.oarRuntimes = await api('/api/oar/runtimes' + q)
+      state.oarRuntimesFor = instance
+      state.oarRuntimesAt = Date.now()
     } catch {
       state.oarRuntimes = null
     }
@@ -1327,11 +1332,22 @@ function fmtAgo(ts) {
  * 把失败折叠成「没有会话 / 没有进行中的卡片」会让用户把故障读成正常状态，
  * 其中 inflight 的假空态最危险——飞书上正有一张卡片永远停在「执行中」。
  */
-async function loadRuntimesTab() {
+async function loadRuntimesTab(force) {
   const name = $('rt-instance').value
   const box = $('rt-runtimes')
   if (!name || !box) return
   const status = $('rt-status')
+  if (force) state.oarRuntimesAt = 0 // 「重新探测」按钮：作废缓存时间戳
+  const cached = state.oarRuntimes
+  const fresh = cached && state.oarRuntimesFor === name && state.oarRuntimesAt && Date.now() - state.oarRuntimesAt < 300_000
+  if (fresh) {
+    // 复用缓存：探测要起进程、可能连服务，切个页签就重跑一遍没有意义
+    box.innerHTML = oarRuntimesTableHtml(cached)
+    const list = cached.runtimes || []
+    const installed = list.filter((r) => r.installed).length
+    status.innerHTML = '<span class="ok">探测完成：' + installed + ' 个已安装 / 共 ' + list.length + ' 个（缓存，点「重新探测」刷新）</span>'
+    return
+  }
   status.innerHTML = '<span class="dim">探测中…（要起进程，可能连服务，最多一分钟）</span>'
   box.innerHTML = ''
   try {
@@ -1830,7 +1846,7 @@ $('fs-verify').addEventListener('click', verifyFeishu)
 $('fs-allow-btn').addEventListener('click', addAllow)
 $('ss-instance').addEventListener('change', loadSessionsTab)
 $('rt-instance').addEventListener('change', loadRuntimesTab)
-$('rt-refresh').addEventListener('click', loadRuntimesTab)
+$('rt-refresh').addEventListener('click', () => loadRuntimesTab(true))
 $('ss-refresh').addEventListener('click', loadSessionsTab)
 $('lg-instance').addEventListener('change', loadLogsTab)
 $('lg-file').addEventListener('change', loadLogsTab)
