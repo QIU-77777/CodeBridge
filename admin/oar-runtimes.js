@@ -57,7 +57,9 @@ function installationOf(probe) {
       detail: `版本过低：${snap.installedVersion || '未知'}，要求 ${snap.requiredVersion || '未知'}。${snap.reason || ''}`,
     }
   }
-  return { installed: false, state: 'not_found', detail: '本机没有这个运行时' }
+  // 说「探测器没找到」而不是「没有装」：运行时装在 PATH 之外（桌面版 App 自带的
+  // CLI 就是这样）时，探测器同样找不到，那并不是没装
+  return { installed: false, state: 'not_found', detail: '探测器没找到：PATH 与常见安装位置都没有可执行文件' }
 }
 
 /** 登录状态归一。unknown 与超时都算没确认，不当成已登录 */

@@ -452,7 +452,18 @@ KIMI_MODEL_PROVIDER_TYPE=openai"></textarea></label>
             <button class="btn primary" id="rt-refresh">重新探测</button>
           </div>
           <p class="hint" id="rt-status"></p>
-          <p class="hint">本机装了哪些编码 agent 运行时、各登没登录、能用哪些模型、配额余多少。探测不开会话、不发消息、不跑安装，按当前实例的 backend.oar.env 叠加来看。装好或登录后点「重新探测」。这里报的是 OAR 适配器看到的情况：opencode 走桌面版自带的 CLI 时，OAR 的探测器可能找不到它，用 opencode 后端不受影响。</p>
+          <p class="hint">
+            本机装了哪些编码 agent 运行时、各登没登录、能用哪些模型、配额余多少。探测不开会话、不发消息、不跑安装。
+          </p>
+          <p class="hint">
+            为什么有实例选择器：探测按当前实例的 backend.oar.env 叠加来看——环境变量会改变运行时看到的模型与登录态，选不同实例可能看到不同结果。
+          </p>
+          <p class="hint">
+            「探测器没找到」不等于没装：运行时装在 PATH 之外时（例如 opencode 桌面版自带的 CLI，在 App 包里面），探测器同样找不到。用 opencode 后端的实例不受影响，它走自己的解析逻辑。
+          </p>
+          <p class="hint">
+            「不报告登录状态」是正常现象：pi 与 dsh 这类运行时不提供登录状态查询，它们的凭据挂在模型提供方上，看「提供方已配置」那一列。
+          </p>
           <div id="rt-runtimes"></div>
         </div>
       </section>
@@ -671,7 +682,11 @@ function fillOarRuntimeSelect(sel, probe, current) {
     ? probe.runtimes
     : FALLBACK_OAR_RUNTIMES.map((id) => ({ id, name: id, installed: false, auth: { loggedIn: false } }))
   sel.innerHTML = list.map((r) => {
-    const mark = !r.installed ? '未安装' : r.auth && r.auth.loggedIn ? '可用' + (r.installation && r.installation.version ? ' ' + r.installation.version : '') : '未登录'
+    const mark = !r.installed
+      ? '未安装'
+      : r.auth && r.auth.loggedIn
+        ? '可用' + (r.installation && r.installation.version ? ' ' + r.installation.version : '')
+        : '已安装'
     return '<option value="' + esc(r.id) + '">' + esc(r.name || r.id) + ' · ' + mark + '</option>'
   }).join('')
   if (current && list.some((r) => r.id === current)) sel.value = current
@@ -695,7 +710,7 @@ function oarRuntimeScanHtml(probe, runtimeId) {
   const parts = []
   if (r.installation && r.installation.version) parts.push('v' + esc(r.installation.version))
   if (r.installation && r.installation.command) parts.push('<span class="mono">' + esc(r.installation.command) + '</span>')
-  parts.push(r.auth && r.auth.loggedIn ? '<span class="ok">已登录</span>' : '<span class="warn">未登录</span>')
+  parts.push(r.auth && r.auth.loggedIn ? '<span class="ok">已登录</span>' : authLabel(r))
   if (r.models) parts.push(r.models.length + ' 个模型')
   return parts.join(' · ')
 }
@@ -704,7 +719,15 @@ function oarRuntimeScanHtml(probe, runtimeId) {
 function oarRuntimesTableHtml(probe) {
   if (!probe || !probe.runtimes || !probe.runtimes.length) return '<p class="hint">探测失败或没有可用数据。</p>'
   const rows = probe.runtimes.map((r) => {
-    const st = !r.installed ? ['未安装', 'dim'] : r.auth && r.auth.loggedIn ? ['可用', 'ok'] : ['未登录', 'warn']
+    // 四种状态各有措辞：装了且登录了叫可用；装了但登录态是 unsupported/unknown
+    // 的叫「已安装」——那类运行时（pi、dsh）本来就不报告登录状态，叫未登录是误导
+    const st = !r.installed
+      ? ['未安装', 'dim']
+      : r.auth && r.auth.loggedIn
+        ? ['可用', 'ok']
+        : r.auth && (r.auth.state === 'logged_out' || r.auth.state === 'unknown')
+          ? ['已安装', 'warn']
+          : ['已安装', 'dim']
     const detail = !r.installed
       ? esc((r.installation && r.installation.detail) || '本机没有这个运行时')
       : [
