@@ -97,6 +97,8 @@ pi 和 dsh 都不提供 `/api/session`、`/api/event`。所以多起一个进程
 cwd: <directory>                                          # 话题绑定的项目目录
 ```
 
+桥接不选模型：启动 pi 时不传 `--model`，pi 用它自己配置里的默认模型（`~/.pi/agent/settings.json` 的 `defaultProvider` / `defaultModel`）。会话索引里的 model 只用于展示；换模型只改 harness 自己的配置，重启实例或等空闲回收后下一次运行即跟随。
+
 终端 `pi -r` 建的会话不在这套参数里：它按工作目录存在 `~/.pi/agent/sessions/<按目录编码>/` 下，`--session-id` 在桥接的平铺目录中找不到对应文件。对这类会话 `prompt()` 改传 `--session <jsonl 路径>`，cwd 取 jsonl 头部的 `cwd`，模型取 `model_change` 行——两端读写同一个文件。扫描只读每个文件的头部（`readCliSessionHead()`，上限 512KB）：id 与 cwd 在第一行，标题取第一条 `role=user` 的消息（与 pi 的 resume 选择器同源），模型取 `model_change` 行。
 
 `getSession(id)` 先查桥接的 `index.json`，再回退到终端目录扫描。桥接重启后内存 Map 空了，但文件还在，续聊能接上；文件也丢了就抛错，`Bridge` 现有的 `catch` 会自动重建会话。
@@ -289,7 +291,6 @@ trace 里应该只有我们的助手在跑（`github-app-credential.mjs get`）�
 | `/status` | 正常，服务器信息显示 `pi` CLI 版本 |
 | `/stop`、中止按钮 | 正常，kill 子进程 |
 | `/rename`、`/del` | 正常，作用于本地会话文件 |
-| `/model` | 列出 `backend.pi.model` 指定的模型和历史会话里用过的模型；不调用 `pi --list-models`，两者都空时列表为空，需先在配置里指定 `backend.pi.model`。切换改会话内模型 |
 | `/agent` | 明确回「pi 后端没有 opencode 的 agent 概念」 |
 | 权限卡片回调 | 不会发生；收到旧卡片的 `perm` 动作时只回一个 info toast |
 
@@ -317,7 +318,7 @@ trace 里应该只有我们的助手在跑（`github-app-credential.mjs get`）�
 
 1. **终态 patch 与文本 patch 竞争**（`src/handler.js`）。pi 的 `finish()` 在同一时刻连发 `text.delta` / `usage` / `backend.meta` / `succeeded` 四个事件，前一个触发一次立即 patch，后一个又触发一次，两个请求同时在途。飞书侧的生效顺序没有保证：「已完成」快照先到、「执行中」快照后到，卡片就停在旧状态。同一份代码在另一次运行上落地正确，说明竞争结果不确定。修复：`flushRun()` 改为串行——在途期间到达的刷新只标记 `patchDue`，由在途那次落地后带上最新快照再发；快照在发送时构建，终态一定最后生效。两个后端都受益（opencode 的末段文本与终态事件同样可能挤在同一时刻）。
 2. **运行期间没有任何事件**（`src/pi.js`）。旧实现只把 stdout 攒进缓冲区，进程结束才一次性解析，运行中的卡片一次都不刷新。修复：`_streamEvent()` 逐条翻译（见 4.2 的表），文本、工具、步数、模型名、用量全部边收边发。
-3. **模型名与步数缺失**。模型：会话创建时是空的（配置没写 `backend.pi.model`），真实模型只出现在助手消息里，旧实现只在终态补一次——终态 patch 丢了就永远没有。步数：pi 后端从不发 `session.step.started`，`RunState.steps` 永远是 0，前缀的「步数」字段（`steps > 1` 才渲染）永远不出现。两条都已修（4.2 的映射表）。
+3. **模型名与步数缺失**。模型：桥接建会话时不指定模型，真实模型只出现在助手消息里，旧实现只在终态补一次——终态 patch 丢了就永远没有。步数：pi 后端从不发 `session.step.started`，`RunState.steps` 永远是 0，前缀的「步数」字段（`steps > 1` 才渲染）永远不出现。两条都已修（4.2 的映射表）。
 
 ### 排查中被证据逼出来的第三个修点
 

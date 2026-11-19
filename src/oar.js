@@ -87,7 +87,6 @@ export class OarBackend {
       throw new Error(`运行时注册表里没有 ${this.runtimeId}，升级 @botiverse/oar 或检查 runtime 拼写`)
     }
     this.env = this.oar.env && typeof this.oar.env === 'object' ? this.oar.env : undefined
-    this.defaultModel = this.oar.model || ''
     const idle = Number(this.oar.idleMs)
     this.idleMs = Number.isFinite(idle) && idle >= 0 ? idle : 600_000
 
@@ -193,7 +192,7 @@ export class OarBackend {
     const refused = this.runtime.refusedSessionOptions || {}
     const opts = {}
     if (directory) opts.cwd = directory
-    const m = model || this.defaultModel
+    const m = model
     if (m) opts.model = m
     if (name && !refused.name) opts.name = name
     // 身份叠加：飞书凭证与 lark-cli 配置让 agent 以自己的应用身份发言，GitHub
@@ -326,7 +325,7 @@ export class OarBackend {
   }
 
   _modelRef(model) {
-    const raw = model || this.defaultModel
+    const raw = model
     if (!raw) return null
     if (typeof raw === 'object') return { providerID: raw.providerID || '', id: raw.id || '' }
     const [providerID, ...rest] = String(raw).split('/')
@@ -359,7 +358,7 @@ export class OarBackend {
   async deleteSession(id) {
     const idx = this._load()
     if (!idx[id]) throw new Error(`会话 ${id} 不存在`)
-    // 同 switchModel：删会话会 dispose 正在跑的回合
+    // 删会话会 dispose 正在跑的回合，所以先拒绝忙碌的会话
     if (this.isBusy(id)) throw new Error('有任务正在跑，等它结束再删会话')
     delete idx[id]
     this._save()
@@ -372,43 +371,13 @@ export class OarBackend {
     return Boolean(this.live.get(id)?.busy)
   }
 
-  async switchModel(id, model) {
-    const s = this._load()[id]
-    if (!s) throw new Error(`会话 ${id} 不存在`)
-    // 切模型要 dispose 正在跑的会话，等于杀掉当前回合。明确拒绝，别让用户的
-    // 任务白跑一半
-    if (this.isBusy(id)) throw new Error('有任务正在跑，等它结束再切模型')
-    s.model = this._modelRef(model)
-    s.time.updated = Date.now()
-    this._save()
-    // 运行中的会话改模型：OAR 没有运行中改模型的接口，关掉它，下一条消息用
-    // 新模型恢复。这样卡片显示与实际执行一致
-    this._dropLive(id, '切换模型')
-    return true
-  }
-
-  async listModels() {
-    if (!this.installation) return []
-    try {
-      const models = await this.runtime.listModels?.(this.installation)
-      return (models || []).map((m) => ({
-        providerID: m.providerID || m.provider || '',
-        id: m.id || m.model || '',
-        name: m.name || '',
-      }))
-    } catch (err) {
-      this.log.warn?.('OAR 后端列模型失败: ' + (err?.message || err))
-      return []
-    }
-  }
-
   async listAgents() {
     return []
   }
 
   async switchAgent() {
     throw new Error(
-      `${this.caps.label || this.runtimeId} 没有 opencode 的 agent 概念；要换模型用 /model`,
+      `${this.caps.label || this.runtimeId} 没有 opencode 的 agent 概念；模型由运行时的本地配置决定`,
     )
   }
 
@@ -492,7 +461,6 @@ export class OarBackend {
     }
     const options = this.buildSessionOptions({
       directory: entry.location?.directory,
-      model: entry.model?.id ? `${entry.model.providerID ? entry.model.providerID + '/' : ''}${entry.model.id}` : '',
       // 第一次开才带名字：运行时的 UI 里会话不该是匿名的。恢复不传——恢复从来
       // 不替换运行时就有的名字
       name: entry.oarId ? undefined : entry.title,

@@ -531,7 +531,6 @@ key = root:<root_id || message_id>
 **P1**
 4. 轨迹按需展开（默认折叠，点一下看最近 6 个工具调用摘要）
 5. 成本拦截而不只是展示（超预算中止、每日汇总）
-6. 卡片内直接选模型与 Agent（`POST /api/session/:id/model` 字段够了，缺交互组件）
 7. 文件与图片输入（`im.v1.messageResource.get` 下载落盘 → prompt 的 `files` 字段）
 
 **P2**

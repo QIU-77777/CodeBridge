@@ -171,7 +171,7 @@ try {
     ok(a[a.indexOf('--session') + 1].endsWith('11111111-aaaa-bbbb-cccc-000000000001.jsonl'), '传的是那个会话的 jsonl 路径')
     ok(!a.includes('--session-id'), '不再传 --session-id（平铺目录里找不到它）')
     ok(!a.includes('--session-dir'), '不再传 --session-dir')
-    ok(a.includes('--model') && a[a.indexOf('--model') + 1] === 'stepfun-platform/step-5-preview', '模型按会话里用过的传，保持连续')
+    ok(!a.includes('--model'), '不传 --model：模型由 pi 自己的配置决定')
     ok(call.opts.cwd === REPO_DIR, '子进程 cwd 是会话自己的目录', String(call.opts.cwd))
 
     // 桥接自建会话的 argv 必须原样不动
@@ -202,13 +202,6 @@ try {
       msg = err.message
     }
     ok(/终端 pi/.test(msg), '删除被拒并说明原因', msg)
-    msg = ''
-    try {
-      await b.switchModel(cliId, { id: 'x', providerID: 'y' })
-    } catch (err) {
-      msg = err.message
-    }
-    ok(/终端 pi/.test(msg), '切模型被拒并说明原因', msg)
     // 桥接会话的写操作照旧
     const created = await b.createSession({ title: '可改', directory: REPO_DIR })
     const renamed = await b.renameSession(created.id, '改过了')

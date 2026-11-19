@@ -43,7 +43,7 @@
 | 话题近况 | 群里没 @ 我的讨论我本来收不到；被 @ 唤醒时，桥接把该话题最近 N 条消息原文随任务一起带给模型，省掉模型自己去拉聊天记录的那几步（私聊不需要，每条都进会话）。需求与决策见 [docs/topic-context-spec.md](docs/topic-context-spec.md) |
 | 结构化上下文 | 发给模型的 body 用 `<profile>` / `<context>` / `<task>` 三段 XML 包起来，段内是键值行：身份与长期规则、本次来源与话题近况、要执行的任务各归其位；`<context>` 里别人的发言和 `<task>` 正文中的同名闭合标签会被中和，不会顶开结构。`behavior.promptLayout=plain` 可一字不差回到旧的方括号前缀。调研与决定见 [docs/context-marking-proposal.md](docs/context-marking-proposal.md)，实测样本见 [docs/prompt-samples.md](docs/prompt-samples.md) |
 | 权限审批 | opencode 后端申请读取敏感文件时，飞书弹卡片让人点允许或拒绝 |
-| 模型切换 | `/model`、`/agent` 在线切换，无需重启 |
+| 模型来源 | 由各 agent harness 自己的本机配置决定，桥接不选模型 |
 | 排队与中止 | 同一会话上一条还在执行时，人的消息排进队列、bot 之间的 @ 在支持 steer 的后端上直接注入；卡片上可引导（steer）、取消、`/stop` |
 | 可换后端 | `opencode` 与 `pi` 内置；其他命令行 Agent 实现 `Backend` 接口后接入，共用卡片、会话、排队与中止逻辑 |
 | 多机器人 | 多个飞书应用 + 多份配置 + 多个进程，各自精确判断「@ 的是我」 |
@@ -458,15 +458,14 @@ npm run init -- --add-allow=ou_你的openid           # 往现有配置追加白
   "opencode": {
     "url": "http://127.0.0.1:19876",
     "password": "my-secret-123",
-    "defaultDirectory": "/Users/you/project",
-    "defaultModel": "stepfun-step-plan/step-3.5-flash"
+    "defaultDirectory": "/Users/you/project"
   }
 }
 ```
 
 两项要点：
 
-- `opencode.defaultModel` 填 `providerID/modelID`。opencode 默认模型在部分地区会报 `RegionError`。列出可用模型：
+- 模型由 opencode 自己的配置决定，桥接不选模型。列出可用模型：
 
   ```bash
   curl -s -u opencode:my-secret-123 http://127.0.0.1:19876/api/model \
@@ -531,11 +530,9 @@ npm run dry
 |---|---|---|
 | `backend.type` | `opencode`、`pi` 或 `oar` | `opencode` |
 | `backend.oar.runtime` | `backend.type = oar` 时的运行时 id：`claude` / `codex` / `pi` / `kimi` / `qwen` / `grok` / `opencode` / `antigravity` / `codebuddy` / `qoder` / `devin` / `factory` / `dsh`。`cursor` 与 `pi-durable` 要宿主传 SDK，第一版不支持 | `""` |
-| `backend.oar.model` | 模型，留空用运行时自己的默认。`claude`、`cursor`、`opencode`、`qwen`、`factory` 没有默认标记，建议显式给 | `""` |
 | `backend.oar.env` | 扁平环境变量，原样进 OAR 的 `SessionOptions.env`，登录与登录状态查询用同一份。值填 `null` 删掉继承的键。每个运行时认哪些键见下表 | `{}` |
 | `backend.oar.idleMs` | 一轮跑完后多久回收运行中的会话，下次发消息用恢复把历史带回来；`0` 关掉 | `600000` |
 | `backend.pi.bin` | pi CLI 路径 | `pi` |
-| `backend.pi.model` | 传给 `--model`，留空用 pi 的默认值 | `""` |
 | `backend.pi.timeoutMs` | 模型静默多久判定超时（无在飞工具时），每吐一行 stdout 重置 | `600000` |
 | `backend.pi.toolTimeoutMs` | 工具在飞时的静默预算，`tool_execution_start` 切换、`end`/`turn_end` 切回 | `1800000` |
 | `backend.pi.settleQuietMs` | 最终回答后静默多久按已完成收尾，`0` 关闭此机制 | `180000` |
@@ -569,7 +566,6 @@ npm run dry
 | `opencode.url` | serve 地址 | `http://127.0.0.1:19876` |
 | `opencode.password` | serve 密码，与 `OPENCODE_SERVER_PASSWORD` 一致 | `""` |
 | `opencode.defaultDirectory` | `/new` 不带目录时使用；pi 每次执行也起在该目录 | `$HOME` |
-| `opencode.defaultModel` | `providerID/modelID`，建议显式填写 | `""` |
 | `github.mode` | `off` / `app` / `pat`，控制 GitHub 身份注入 | `off` |
 | `github.appId` / `installationId` / `privateKeyPath` | GitHub App 身份参数 | `""` |
 | `github.token` | `pat` 模式使用的个人访问令牌 | `""` |
@@ -674,11 +670,11 @@ prompts.json
 |---|---|
 | `OCB_CONFIG_DIR` | 指定配置目录，多实例必需 |
 | `OCB_INSTANCE` | launchd 服务名后缀，多实例必需 |
-| `OCB_BACKEND` / `OCB_PI_BIN` / `OCB_PI_MODEL` | 覆盖后端类型、pi 路径、pi 模型 |
+| `OCB_BACKEND` / `OCB_PI_BIN` | 覆盖后端类型、pi 路径 |
 | `FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_DOMAIN` | 覆盖飞书凭证与域名 |
 | `OPENCODE_URL` / `OPENCODE_SERVER_PASSWORD` | 覆盖 serve 地址与密码 |
 | `OPENCODE_BIN` | 指定 `up.sh` 使用的 opencode 可执行文件 |
-| `BRIDGE_DEFAULT_DIR` / `BRIDGE_DEFAULT_MODEL` | 覆盖默认目录与默认模型 |
+| `BRIDGE_DEFAULT_DIR` | 覆盖默认工作目录 |
 | `BRIDGE_ALLOWLIST` | 逗号分隔的白名单 |
 | `BRIDGE_NODE` | `install-agent.sh` 写入 plist 的 node 路径 |
 | `OCB_SDK_TIMEOUT_MS` | 飞书 SDK 请求超时，默认 20000 |
@@ -708,7 +704,6 @@ prompts.json
 | `/cd <目录>` | 换工作目录并重置绑定 |
 | `/stop` | 中止当前执行 |
 | `/status` | 查看绑定、模型、token |
-| `/model` / `/model <序号>` | 列出模型 / 切换模型 |
 | `/agent` / `/agent <名字>` | 列出 agent / 切换 agent（仅 opencode 后端） |
 | `/login` / `/logout` | 登录 / 登出当前运行时（仅 OAR 后端） |
 
@@ -784,7 +779,6 @@ pi 的 `/sessions` 同时列出桥接会话与终端 `pi -r` 会话。切到终�
 | `/agent` | 不支持，明确拒绝 |
 | `/sessions` | 桥接自己的索引（`<配置目录>/oar-sessions/`）：OAR 没有跨运行时的会话管理，这是宿主的事 |
 | `/rename`、`/del` | 改名明确拒绝（`name` 只在建会话时给，恢复不替换）；删除删桥接索引并 dispose 运行中的会话 |
-| `/model` | 会话中切换走 dispose 加 resume，索引里的模型立即更新，卡片显示与实际执行一致 |
 | `/login`、`/logout` | 走运行时自己的登录，卡片给地址与设备码，回执码直接发到群里。桥接不碰密钥 |
 | 空闲回收 | 一轮跑完 `backend.oar.idleMs` 后 dispose，下次发消息用 resume 把历史带回来 |
 
@@ -1025,7 +1019,7 @@ logs/                      运行日志（不入库）
 | `renameSession()` / `deleteSession()` | 改名与删除会话 |
 | `prompt(sessionId, text)` | 发送一次任务，进度通过事件流回传 |
 | `interrupt(sessionId)` | 中止当前执行 |
-| `listModels()` / `defaultModel()` / `switchModel()` | 支撑 `/model` |
+| `listModels()` / `defaultModel()` | 只供 `doctor` 做可用性检查 |
 | `listAgents()` / `switchAgent()` | 支撑 `/agent` |
 | `replyPermission()` / `listMessages()` | 权限审批与消息读取 |
 

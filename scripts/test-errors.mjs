@@ -39,7 +39,7 @@ function ok(cond, name, extra = '') {
   // 每一类：真实踩到过（或结构上必然出现）的错误原文 + 期望的下一步
   const cases = [
     ['Failed to decode message msg_1a680b70f001 in session ses_ede75d73', 'decode', 'recent'],
-    ['RegionError: This model is not available in your country', 'region', '/model'],
+    ['RegionError: This model is not available in your country', 'region', 'harness'],
     ['Session.BusyError: session is busy', 'busy', '/stop'],
     ['Session.NotFoundError: no such session', 'session-lost', '/new'],
     ['provider.invalid-request: The input you provided is invalid', 'context', '/new'],
@@ -48,7 +48,7 @@ function ok(cond, name, extra = '') {
     ['connect ECONNREFUSED 127.0.0.1:19876', 'network', 'up.sh'],
     ['fetch failed', 'network', 'status'],
     ['503 Service Unavailable', 'network', 'network|网络'],
-    ['model not found: some-model-id', 'model', '/model'],
+    ['model not found: some-model-id', 'model', 'harness'],
   ]
   for (const [raw, kind, hintPart] of cases) {
     const cls = classifyError(raw)

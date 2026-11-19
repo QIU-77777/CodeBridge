@@ -421,6 +421,7 @@ export class PiBackend {
     try {
       const s = this._load()[sessionId]
       if (!s) return
+      // 只更新展示用的模型；启动参数里不带模型，始终跟随 pi 的默认模型
       s.model = { providerID: model.providerID || '', id: model.id }
       this._save()
     } catch (err) {
@@ -567,14 +568,16 @@ export class PiBackend {
 
   // ---------- 会话 ----------
 
-  async createSession({ title, directory, model } = {}) {
+  async createSession({ title, directory } = {}) {
     const id = `pi-${randomUUID().slice(0, 8)}`
     const now = Date.now()
+    // 桥接不选模型：会话里记录的真实模型只用于展示，pi 每次启动都用它自己
+    // 配置里的默认模型（~/.pi/agent/settings.json）。换模型只改 harness 配置
     const s = {
       id,
       title: title || id,
       location: { directory: directory || this.cfg.opencode.defaultDirectory },
-      model: model ? { providerID: model.providerID || '', id: model.id || '' } : this._defaultModelRef(),
+      model: null,
       time: { created: now, updated: now },
       cost: 0,
       tokens: null,
@@ -582,14 +585,6 @@ export class PiBackend {
     this._load()[id] = s
     this._save()
     return s
-  }
-
-  _defaultModelRef() {
-    // pi 的模型写在 backend.pi.model；opencode.defaultModel 若显式给了也认
-    const raw = this.cfg.opencode.defaultModel || this.pi.model || ''
-    if (!raw) return null
-    const [providerID, ...rest] = raw.split('/')
-    return rest.length ? { providerID, id: rest.join('/') } : null
   }
 
   async getSession(id) {
@@ -654,43 +649,12 @@ export class PiBackend {
     return all.slice(0, Number(limit) || 100)
   }
 
-  async switchModel(id, model) {
-    const s = this._load()[id]
-    if (!s) {
-      // 终端会话的模型写在 jsonl 的 model_change 行里，由 pi 维护；桥接的
-      // index.json 管不到它。拒掉并说清，避免「显示切换成功、下次跑又变回去」
-      if (this._cliSession(id)) throw new Error('终端 pi 的会话模型由 pi 管理，桥接里切不了；要指定模型请 /new 建一个桥接会话')
-      throw new Error(`会话 ${id} 不存在`)
-    }
-    s.model = { providerID: model.providerID || '', id: model.id || String(model) }
-    s.time.updated = Date.now()
-    this._save()
-    return true
-  }
-
-  async listModels() {
-    // pi 的模型 catalog 是模糊匹配的字符串，不是 opencode 的 {providerID,id} 结构。
-    // 这里给出「配置里指定的 + 历史会话里用过的」，够 /model 选了。
-    const seen = new Map()
-    for (const s of Object.values(this._load())) {
-      const id = s.model?.id
-      if (id) seen.set(`${s.model.providerID}/${id}`, { providerID: s.model.providerID, id, name: '' })
-    }
-    const raw = this.pi.model || this.cfg.opencode.defaultModel || ''
-    if (raw) {
-      const [providerID, ...rest] = raw.split('/')
-      const id = rest.join('/') || raw
-      seen.set(raw, { providerID: rest.length ? providerID : '', id, name: '配置默认' })
-    }
-    return [...seen.values()]
-  }
-
   async listAgents() {
     return []
   }
 
   async switchAgent() {
-    throw new Error('pi 后端没有 opencode 的 agent 概念；要换模型用 /model')
+    throw new Error('pi 后端没有 opencode 的 agent 概念；模型与 agent 都在 pi 自己的配置里')
   }
 
   async replyPermission() {
@@ -842,8 +806,7 @@ export class PiBackend {
     const args = s.file
       ? ['--mode', 'rpc', '--session', s.file]
       : ['--mode', 'rpc', '--session-dir', this.sessionDir, '--session-id', sessionId]
-    const modelStr = s.model?.id ? [s.model.providerID, s.model.id].filter(Boolean).join('/') : ''
-    if (modelStr) args.push('--model', modelStr)
+    // 不传 --model：pi 用它自己配置里的默认模型。桥接不保存、也不覆盖模型选择
     args.push(...this.extraArgs)
     // --approve：飞书里没法点授权按钮，跑在已绑定的项目目录里就信任它
     if (!this.extraArgs.some((a) => a === '--approve' || a === '--no-approve' || a === '-na')) {

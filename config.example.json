@@ -3,7 +3,6 @@
     "type": "opencode",
     "pi": {
       "bin": "pi",
-      "model": "",
       "timeoutMs": 600000,
       "toolTimeoutMs": 1800000,
       "settleQuietMs": 180000,
@@ -12,7 +11,6 @@
     },
     "oar": {
       "runtime": "kimi",
-      "model": "",
       "env": {},
       "idleMs": 600000
     }
@@ -30,8 +28,7 @@
   "opencode": {
     "url": "http://127.0.0.1:19876",
     "password": "",
-    "defaultDirectory": "",
-    "defaultModel": ""
+    "defaultDirectory": ""
   },
   "github": {
     "mode": "off",

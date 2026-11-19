@@ -175,7 +175,7 @@ ok(size < 30_000, `runCard 序列化 < 30KB（${size} 字节）`)
   )
   ok(decode.includes('recent'), '解码失败给出「缺 recent 字段」的定位')
   ok(decode.includes('db') || decode.includes('opencode.db'), '解码失败提示可以修数据库')
-  ok(mk('RegionError: This model is not available in your country').includes('/model'), 'RegionError 提示换模型')
+  ok(mk('RegionError: This model is not available in your country').includes('harness'), 'RegionError 提示去 harness 配置换模型')
   ok(mk('Session.BusyError: session is busy').includes('/stop'), 'BusyError 提示 /stop')
   ok(!mk('some totally unknown failure').includes('💡'), '未知错误不加臆测提示')
 }

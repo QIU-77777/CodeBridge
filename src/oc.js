@@ -109,14 +109,6 @@ export class OpencodeClient {
     return r?.data ?? null
   }
 
-  async switchModel(id, model) {
-    await this.request(`/api/session/${encodeURIComponent(id)}/model`, {
-      method: 'POST',
-      body: { model },
-    })
-    return true
-  }
-
   async switchAgent(id, agent) {
     await this.request(`/api/session/${encodeURIComponent(id)}/agent`, {
       method: 'POST',

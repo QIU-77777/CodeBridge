@@ -23,7 +23,7 @@
  * @typedef {{ kind: string, label: string, hint: string }} ErrorClass
  */
 
-/** 按优先级排列的分类规则。hint 里的命令（/new、/model、/stop）是卡片测试断言的锚点 */
+/** 按优先级排列的分类规则。hint 里的命令（/new、/stop）是卡片测试断言的锚点 */
 const RULES = [
   {
     kind: 'decode',
@@ -38,7 +38,7 @@ const RULES = [
     kind: 'region',
     label: '地区限制',
     test: /not available in your country|not available in your region|RegionError/i,
-    hint: '这个模型在当前地区不可用。用 `/model` 换一个。',
+    hint: '这个模型在当前地区不可用。到 harness 自己的配置文件里换一个默认模型，再重启本实例。',
   },
   {
     kind: 'busy',
@@ -84,7 +84,7 @@ const RULES = [
     kind: 'model',
     label: '模型不可用',
     test: /model (was )?not (found|exist)|no such model|model_not_found|unknown model|unsupported model/i,
-    hint: '模型不可用（不存在或已下线）。用 `/model` 换一个，或检查 defaultModel 配置。',
+    hint: '模型不可用（不存在或已下线）。到 harness 自己的配置文件里换一个默认模型，再重启本实例。',
   },
 ]
 

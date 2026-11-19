@@ -29,7 +29,7 @@ function ok(cond, name, extra = '') {
 const root = mkdtempSync(join(tmpdir(), 'oar-backend-'))
 let dirSeq = 0
 const cfg = {
-  backend: { type: 'oar', oar: { runtime: 'kimi', model: 'kimi-code/k3', env: { KIMI_MODEL_PROVIDER_TYPE: 'openai' } } },
+  backend: { type: 'oar', oar: { runtime: 'kimi', env: { KIMI_MODEL_PROVIDER_TYPE: 'openai' } } },
   opencode: { defaultDirectory: root },
 }
 
@@ -218,11 +218,6 @@ async function promptAndSettle(be, seen, sid, text) {
   const s = await be.createSession({ directory: root })
   await promptAndSettle(be, seen, s.id, '第一条')
   ok(be.live.size === 1, '发过消息后会话活着')
-  await be.switchModel(s.id, { providerID: 'kimi-code', id: 'k4' })
-  const entry = await be.getSession(s.id)
-  ok(entry.model?.id === 'k4', '切模型写进索引', JSON.stringify(entry.model))
-  ok(be.live.size === 0, '切模型关掉运行中的会话，下一条用新模型恢复')
-
   let msg = ''
   try {
     await be.renameSession(s.id, '新名字')
@@ -293,8 +288,6 @@ async function promptAndSettle(be, seen, sid, text) {
     }),
   )
   await ready(be)
-  const models = await be.listModels()
-  ok(models.length === 2 && models[0].id === 'kimi-code/k3', '模型列表来自运行时', JSON.stringify(models))
   ok((await be.listAgents()).length === 0, 'agent 列表为空')
   let msg = ''
   try {
@@ -324,13 +317,6 @@ async function promptAndSettle(be, seen, sid, text) {
   await sleep(60)
 
   ok(be.isBusy(s.id) === true, '回合进行中 isBusy 为 true')
-  let msg = ''
-  try {
-    await be.switchModel(s.id, { providerID: 'kimi-code', id: 'k4' })
-  } catch (e) {
-    msg = e.message
-  }
-  ok(msg === '有任务正在跑，等它结束再切模型', '忙时切模型明确拒绝', msg)
   let msg2 = ''
   try {
     await be.deleteSession(s.id)
@@ -343,8 +329,6 @@ async function promptAndSettle(be, seen, sid, text) {
   await promptAndSettle(be, seen, s.id, '等它结束')
   await p
   ok(be.isBusy(s.id) === false, '回合结束 isBusy 为 false')
-  await be.switchModel(s.id, { providerID: 'kimi-code', id: 'k4' })
-  ok((await be.getSession(s.id)).model?.id === 'k4', '空闲后切模型正常', JSON.stringify((await be.getSession(s.id)).model))
 }
 
 {

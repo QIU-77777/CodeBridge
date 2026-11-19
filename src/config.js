@@ -41,8 +41,6 @@ export const DEFAULTS = {
     pi: {
       // CLI 路径。留空用 PATH 里的 pi，也可以用绝对路径或 $OCB_PI_BIN
       bin: 'pi',
-      // 传给 --model 的值；留空用 pi 自己配置的默认模型
-      model: '',
       // 单次执行超时（毫秒），按活跃度算：每吐一行 stdout 就重置，只有长时
       // 间没有任何输出才到点——先 SIGTERM，2 秒后 SIGKILL，并按失败收尾。
       // 这一档管模型静默：没有工具在飞时，模型挂住多久算卡死
@@ -100,8 +98,6 @@ export const DEFAULTS = {
     password: '',
     // /new 时不指定目录则用这个
     defaultDirectory: process.env.HOME || '/',
-    // 默认模型（providerID/modelID）；留空用 opencode 默认
-    defaultModel: '',
   },
   github: {
     // GitHub 身份注入：让每个 agent 以各自的 GitHub App（xxx[bot]）身份
@@ -206,14 +202,12 @@ export function loadConfig() {
   // 环境变量优先于文件
   if (process.env.OCB_BACKEND) cfg.backend.type = process.env.OCB_BACKEND
   if (process.env.OCB_PI_BIN) cfg.backend.pi.bin = process.env.OCB_PI_BIN
-  if (process.env.OCB_PI_MODEL) cfg.backend.pi.model = process.env.OCB_PI_MODEL
   if (process.env.FEISHU_APP_ID) cfg.feishu.appId = process.env.FEISHU_APP_ID
   if (process.env.FEISHU_APP_SECRET) cfg.feishu.appSecret = process.env.FEISHU_APP_SECRET
   if (process.env.FEISHU_DOMAIN) cfg.feishu.domain = process.env.FEISHU_DOMAIN
   if (process.env.OPENCODE_URL) cfg.opencode.url = process.env.OPENCODE_URL
   if (process.env.OPENCODE_SERVER_PASSWORD) cfg.opencode.password = process.env.OPENCODE_SERVER_PASSWORD
   if (process.env.BRIDGE_DEFAULT_DIR) cfg.opencode.defaultDirectory = process.env.BRIDGE_DEFAULT_DIR
-  if (process.env.BRIDGE_DEFAULT_MODEL) cfg.opencode.defaultModel = process.env.BRIDGE_DEFAULT_MODEL
   if (process.env.BRIDGE_ALLOWLIST) {
     cfg.feishu.allowlist = process.env.BRIDGE_ALLOWLIST.split(',').map((s) => s.trim()).filter(Boolean)
   }

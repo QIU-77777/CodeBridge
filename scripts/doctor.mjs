@@ -113,20 +113,10 @@ async function main() {
       const models = await withRetry(() => oc.listModels())
       line(`   ${okMark} 可用模型 ${models.length} 个`)
 
-      const want = cfg.opencode.defaultModel
-      if (want) {
-        const [pid, ...rest] = want.split('/')
-        const id = rest.join('/')
-        const found = models.find((m) => m.providerID === pid && m.id === id)
-        if (!found) problem(`defaultModel "${want}" 不在模型列表里`)
-        else line(`   ${okMark} defaultModel ${want}`)
-      } else {
-        const def = await withRetry(() => oc.defaultModel()).catch(() => null)
-        line(`   ${warnMark} defaultModel 未指定，将使用 opencode 默认：${def ? def.providerID + '/' + def.id : '未知'}`)
-        if (def && /free$/.test(def.id)) {
-          line(`      注意：*-free 模型在中国大陆常报 RegionError，建议在配置里设 defaultModel`)
-          line(`      例如: "stepfun-step-plan/step-3.5-flash"`)
-        }
+      const def = await withRetry(() => oc.defaultModel()).catch(() => null)
+      line(`   ${okMark} opencode 默认模型：${def ? def.providerID + '/' + def.id : '未知'}（桥接不选模型，跟随 harness 配置）`)
+      if (def && /free$/.test(def.id)) {
+        line(`      注意：*-free 模型在中国大陆常报 RegionError，到 opencode 自己的配置里换一个默认模型`)
       }
 
       const agents = await withRetry(() => oc.listAgents())

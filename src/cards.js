@@ -177,7 +177,7 @@ export function runCard(state, meta = {}) {
   if (state.tokens?.input) usage.push(`in ${state.tokens.input}`)
   if (state.tokens?.output) usage.push(`out ${state.tokens.output}`)
 
-  // 按钮只覆盖三个高频动作，/model /cd /switch 这些不看 /help 是发现不了的。
+  // 按钮只覆盖三个高频动作，/cd /switch 这些不看 /help 是发现不了的。
   // 群里要写清楚还得先 @ 一下，否则用户以为直接打字就行。
   const help = meta.isGroup ? '@我 并发送 `/help` 查看全部命令' : '发送 `/help` 查看全部命令'
 
@@ -500,7 +500,6 @@ export function helpCard(caps = {}) {
     '**控制**',
     '`/stop` 中止当前执行',
     '`/status` 查看绑定与服务器状态',
-    '`/model` 列出模型，`/model <序号>` 切换',
   )
   if (caps.agents !== false) body.push('`/agent` 列出 agent，`/agent <名字>` 切换')
   if (caps.type === 'oar') {

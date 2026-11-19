@@ -335,7 +335,6 @@
               </div>
               <div id="c-pi-group" class="hidden">
                 <label class="fld"><span>pi.bin（留空用 PATH 里的 pi）</span><input type="text" id="c-piBin" placeholder="pi"></label>
-                <label class="fld"><span>pi.model（留空用 pi 本地默认模型）</span><input type="text" id="c-piModel"></label>
                 <label class="fld"><span>pi.timeoutMs（多久没有 stdout 就终止；stdout 一直在刷但产不出事件的命令不算）</span><input type="number" id="c-piTimeout"></label>
                 <label class="fld"><span>pi.toolTimeoutMs（工具在飞时的静默预算，构建/测试/大搜索不吐输出时按这一档算）</span><input type="number" id="c-piToolTimeout"></label>
                 <label class="fld"><span>pi.extraArgs（逗号分隔）</span><input type="text" id="c-piExtra"></label>
@@ -344,7 +343,6 @@
                 <label class="fld"><span>运行时（打开页面时探测本机装了哪些，探测结果见「会话与后端」页）</span>
                   <select id="c-oarRuntime"></select>
                 </label>
-                <label class="fld"><span>模型（留空用运行时自己的默认；claude、opencode、qwen、factory 没有默认标记，建议显式给）</span><input type="text" id="c-oarModel" placeholder="provider/model"></label>
                 <label class="fld"><span>环境变量（每行一个 KEY=VALUE，原样进会话与登录；值写 null 删掉继承的键）</span><textarea id="c-oarEnv" rows="4" placeholder="KIMI_MODEL_NAME=...
 KIMI_MODEL_BASE_URL=...
 KIMI_MODEL_PROVIDER_TYPE=openai"></textarea></label>
@@ -352,8 +350,7 @@ KIMI_MODEL_PROVIDER_TYPE=openai"></textarea></label>
                 <div id="c-oar-scan" class="hint" style="margin-bottom:8px"></div>
               </div>
               <label class="fld"><span>默认工作目录（两个后端都用，留空用家主目录）</span><input type="text" id="c-defaultDirectory"></label>
-              <label class="fld"><span>默认模型（两个后端都用，留空用 coding agent 本地默认模型）</span><input type="text" id="c-defaultModel"></label>
-              <p class="hint">选哪个后端显示哪组字段：opencode 连本机 serve，pi 起长驻 RPC 进程，两者的配置都默认复用本机已装的那一个。默认工作目录与默认模型留空即用 coding agent 自己的本地默认值。</p>
+              <p class="hint">选哪个后端显示哪组字段：opencode 连本机 serve，pi 起长驻 RPC 进程，两者的配置都默认复用本机已装的那一个。模型由各 agent harness 自己的本机配置决定，桥接不选模型。</p>
             </div>
             <div>
               <h3>飞书应用</h3>
@@ -524,7 +521,6 @@ KIMI_MODEL_PROVIDER_TYPE=openai"></textarea></label>
         </div>
         <div id="n-pi-group" class="hidden">
           <label class="fld"><span>pi.bin（默认用扫描到的本机 pi）</span><input type="text" id="n-piBin" placeholder="pi"></label>
-          <label class="fld"><span>pi.model（留空用 pi 本地默认模型）</span><input type="text" id="n-piModel"></label>
           <label class="fld"><span>pi.timeoutMs（多久没有 stdout 就终止；stdout 一直在刷但产不出事件的命令不算）</span><input type="number" id="n-piTimeout" placeholder="600000"></label>
           <label class="fld"><span>pi.toolTimeoutMs（工具在飞时的静默预算，留空用默认 1800000）</span><input type="number" id="n-piToolTimeout" placeholder="1800000"></label>
         </div>
@@ -543,9 +539,8 @@ KIMI_MODEL_PROVIDER_TYPE=openai"></textarea></label>
           <select id="n-domain"><option value="feishu">feishu</option><option value="lark">lark</option></select>
         </label>
         <label class="fld"><span>botOpenId（选填，留空则启动时自动向飞书取）</span><input type="text" id="n-botOpenId" placeholder="ou_..."></label>
-        <h3>工作目录与模型</h3>
+        <h3>工作目录</h3>
         <label class="fld"><span>默认工作目录（两个后端都用，留空用家主目录）</span><input type="text" id="n-defaultDirectory" placeholder="留空用家主目录"></label>
-        <label class="fld"><span>默认模型（留空用 coding agent 本地默认模型）</span><input type="text" id="n-defaultModel" placeholder="providerID/modelID"></label>
       </div>
     </div>
     <div class="row" style="margin-top:16px">
@@ -948,7 +943,6 @@ function formToConfig() {
     opencode: {
       url: $('c-ocUrl').value.trim(),
       defaultDirectory: $('c-defaultDirectory').value.trim(),
-      defaultModel: $('c-defaultModel').value.trim(),
     },
     behavior: {
       streamIntervalMs: num('c-streamIntervalMs'),
@@ -962,14 +956,12 @@ function formToConfig() {
       type: $('c-backendType').value,
       pi: {
         bin: $('c-piBin').value.trim(),
-        model: $('c-piModel').value.trim(),
         timeoutMs: num('c-piTimeout'),
         toolTimeoutMs: num('c-piToolTimeout'),
         extraArgs: $('c-piExtra').value.split(',').map((s) => s.trim()).filter(Boolean),
       },
       oar: {
         runtime: $('c-oarRuntime').value,
-        model: $('c-oarModel').value.trim(),
         env: envTextToMap($('c-oarEnv').value),
         idleMs: num('c-oarIdle'),
       },
@@ -1003,7 +995,6 @@ async function loadConfigTab() {
     $('c-ocPassword').value = ''
     $('c-ocPassword').placeholder = c.opencode?.password === '********' ? '已填写（留空保持不变）' : '未填写'
     $('c-defaultDirectory').value = c.opencode?.defaultDirectory || ''
-    $('c-defaultModel').value = c.opencode?.defaultModel || ''
     $('c-streamIntervalMs').value = c.behavior?.streamIntervalMs ?? 1800
     $('c-maxBodyChars').value = c.behavior?.maxBodyChars ?? 6000
     $('c-idleTimeoutMs').value = c.behavior?.idleTimeoutMs ?? 900000
@@ -1016,7 +1007,6 @@ async function loadConfigTab() {
     const piBin = c.backend?.pi?.bin || ''
     const scannedPi = backends.find((b) => b.type === 'pi')
     $('c-piBin').value = piBin && piBin !== 'pi' ? piBin : scannedPi?.bin || 'pi'
-    $('c-piModel').value = c.backend?.pi?.model || ''
     $('c-piTimeout').value = c.backend?.pi?.timeoutMs ?? 600000
     $('c-piToolTimeout').value = c.backend?.pi?.toolTimeoutMs ?? 1800000
     $('c-piExtra').value = (c.backend?.pi?.extraArgs || []).join(',')
@@ -1024,7 +1014,6 @@ async function loadConfigTab() {
     // 将会看到的那个环境
     const probe = await loadOarRuntimes(name)
     fillOarRuntimeSelect($('c-oarRuntime'), probe, c.backend?.oar?.runtime || 'kimi')
-    $('c-oarModel').value = c.backend?.oar?.model || ''
     $('c-oarEnv').value = envMapToText(c.backend?.oar?.env)
     $('c-oarIdle').value = c.backend?.oar?.idleMs ?? 600000
     toggleConfigBackend()
@@ -1379,9 +1368,6 @@ async function loadSessionsTab() {
     $('ss-status').innerHTML = '<span class="row"><span class="dot green"></span><span class="dim">更新于 ' + esc(stamp) + '</span></span>'
 
     const idleMs = Number(detail.config?.behavior?.idleTimeoutMs) || 0
-    const defaultModel = detail.backend === 'pi'
-      ? (detail.config?.backend?.pi?.model || '')
-      : (detail.config?.opencode?.defaultModel || '')
     // 状态点 + 文字标签。模板字符串里再嵌反引号会把外层字符串提前终结，
     // 这里统一用字符串拼接
     const dot = (ok2, text) =>
@@ -1398,9 +1384,6 @@ async function loadSessionsTab() {
           : dot(false, detail.serve?.error || '无响应')) + '</dd>' +
         '<dt>serve 地址</dt><dd class="mono">' + esc(detail.config?.opencode?.url || '') + '</dd>'
     be += '<dt>默认工作目录</dt><dd class="mono">' + esc(detail.config?.opencode?.defaultDirectory || '—') + '</dd>'
-    be += '<dt>新会话默认模型</dt><dd>' + (defaultModel
-      ? '<span class="mono">' + esc(defaultModel) + '</span>'
-      : '<span class="dim">未设置，用 coding agent 本地默认模型</span>') + '</dd>'
     $('ss-backend').innerHTML = be
 
     $('ss-summary').innerHTML =
@@ -1805,11 +1788,9 @@ async function submitCreate() {
       url: $('n-ocUrl').value.trim(),
       password: $('n-ocPassword').value,
       defaultDirectory: $('n-defaultDirectory').value.trim(),
-      defaultModel: $('n-defaultModel').value.trim(),
     },
     pi: {
       bin: $('n-piBin').value.trim(),
-      model: $('n-piModel').value.trim(),
       timeoutMs: $('n-piTimeout').value.trim() === '' ? undefined : Number($('n-piTimeout').value),
       toolTimeoutMs: $('n-piToolTimeout').value.trim() === '' ? undefined : Number($('n-piToolTimeout').value),
     },

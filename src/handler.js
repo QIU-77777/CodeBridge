@@ -48,8 +48,6 @@ export class Bridge {
 
     /** @type {Map<string, {state: RunState, cardId: string|null, chatId: string, timer: any, lastFlush: number, meta: object}>} */
     this.runs = new Map()
-    /** @type {Map<string, {models: any[], expires: number}>} */
-    this.modelCache = new Map()
     /** @type {Map<string, {sessions: any[], expires: number}>} */
     this.sessionCache = new Map()
     /** 会话 id -> 父会话 id（opencode 会话数据的 parentID）或 null。子代理
@@ -863,9 +861,6 @@ export class Bridge {
       case 'delete':
         return this.cmdDelete(ctx, arg)
 
-      case 'model':
-        return this.cmdModel(ctx, arg)
-
       case 'agent':
         return this.cmdAgent(ctx, arg)
 
@@ -1079,40 +1074,6 @@ export class Bridge {
     return this.t.sendText(ctx.chatId, `已删除会话 ${targetId}`, { replyTo: ctx.replyTo })
   }
 
-  async cmdModel(ctx, arg) {
-    const binding = this.store.get(ctx.key)
-    if (!binding?.sessionId) {
-      return this.t.sendText(ctx.chatId, '当前没有绑定会话，先 /new', { replyTo: ctx.replyTo })
-    }
-    let cache = this.modelCache.get(ctx.key)
-    if (!cache || cache.expires < Date.now()) {
-      const models = await this.oc.listModels()
-      cache = { models, expires: Date.now() + 5 * 60_000 }
-      this.modelCache.set(ctx.key, cache)
-    }
-    if (!arg) {
-      // 只列中国大陆区能用的那批更实用：全部列出但截断为 60 条
-      const lines = cache.models.slice(0, 60).map((m, i) => `${i + 1}. \`${m.providerID}/${m.id}\` ${m.name || ''}`)
-      return this.t.sendCard(
-        ctx.chatId,
-        textCard('🧠 模型列表', lines.join('\n') + '\n\n用 `/model <序号>` 切换', 'purple'),
-        { replyTo: ctx.replyTo },
-      )
-    }
-    const idx = Number(arg)
-    const target =
-      Number.isFinite(idx) && idx > 0 ? cache.models[idx - 1] : cache.models.find((m) => m.id === arg)
-    if (!target) return this.t.sendText(ctx.chatId, `找不到模型: ${arg}`, { replyTo: ctx.replyTo })
-    // 终端 pi 的会话切不了模型（model_change 行由 pi 维护），switchModel 会抛错，
-    // 这里接住回成一句人能看懂的话，别让异常冒泡到事件循环里没了下文
-    try {
-      await this.oc.switchModel(binding.sessionId, { id: target.id, providerID: target.providerID })
-    } catch (err) {
-      return this.t.sendText(ctx.chatId, `切换失败: ${err.message}`, { replyTo: ctx.replyTo })
-    }
-    return this.t.sendText(ctx.chatId, `已切换到 ${target.providerID}/${target.id}`, { replyTo: ctx.replyTo })
-  }
-
   // ---------- 登录 ----------
 
   /** 当前后端是不是 OAR、能不能登录。不是就给一句明确的话 */
@@ -1234,7 +1195,7 @@ export class Bridge {
     if (this.caps.agents === false) {
       return this.t.sendText(
         ctx.chatId,
-        `${this.caps.label} 后端没有 opencode 的 agent 概念。要换模型用 /model，要改行为改 backend 配置。`,
+        `${this.caps.label} 后端没有 opencode 的 agent 概念。要改行为改 harness 自己的配置。`,
         { replyTo: ctx.replyTo },
       )
     }
@@ -1507,12 +1468,8 @@ export class Bridge {
   // ---------- 工具 ----------
 
   async createAndBind(ctx, directory) {
-    const model = this.cfg.opencode.defaultModel || this.cfg.backend?.pi?.model || ''
-    let modelRef
-    if (model) {
-      const [providerID, ...idParts] = model.split('/')
-      if (providerID && idParts.length) modelRef = { providerID, id: idParts.join('/') }
-    }
+    // 不指定模型：每个 agent harness 用它本机配置里的默认模型。桥接不保存、
+    // 不传入任何模型选择，换模型只改 harness 自己的配置文件
     // 会话默认名：飞书·YYYYMMDD·新建会话n。n 按天从 1 开始，只增不减——
     // 删会话、改会话名都不回收序号（按现存同名会话数推会把发过的号再发
     // 出去，与历史重名），计数器在 store 里落盘，见 Store.nextSessionSeq。
@@ -1520,7 +1477,7 @@ export class Bridge {
     // 一个号，跳号无害
     const day = dayStamp()
     const title = `飞书·${day}·新建会话${this.store.nextSessionSeq(day)}`
-    const session = await this.oc.createSession({ title, directory, model: modelRef })
+    const session = await this.oc.createSession({ title, directory })
     this.store.set(ctx.key, {
       sessionId: session.id,
       directory,

@@ -163,7 +163,6 @@ export function planNewInstance(body, existing = [], ownPort = null) {
     ...config.opencode,
     password: ocPassword,
     defaultDirectory: expandHome(String(oc.defaultDirectory || '').trim()) || homedir(),
-    defaultModel: String(oc.defaultModel || '').trim(),
   }
   // opencode 后端用算出或指定的地址；pi 后端不连 serve，保留模板占位值
   if (ocUrl) config.opencode.url = ocUrl
@@ -171,7 +170,6 @@ export function planNewInstance(body, existing = [], ownPort = null) {
     config.backend.pi = {
       ...config.backend.pi,
       bin: String(body.pi?.bin || '').trim() || 'pi',
-      model: String(body.pi?.model || '').trim(),
       timeoutMs: Number(body.pi?.timeoutMs) || config.backend.pi.timeoutMs,
     }
   }
@@ -179,7 +177,6 @@ export function planNewInstance(body, existing = [], ownPort = null) {
     config.backend.oar = {
       ...config.backend.oar,
       runtime: String(body.oar?.runtime || '').trim() || 'kimi',
-      model: String(body.oar?.model || '').trim(),
       env: body.oar?.env && typeof body.oar.env === 'object' ? body.oar.env : {},
     }
   }

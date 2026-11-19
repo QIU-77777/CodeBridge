@@ -669,7 +669,7 @@ try {
   ok(!/lg-instance[^>]*style/.test(indexHtml) || indexHtml.indexOf('id="lg-instance"') > indexHtml.indexOf('id="lg-doctor-card"'), '实例选择器移到体检卡（日志是机器级共享）')
   ok(/所有实例共用同一份日志/.test(indexHtml), '日志页说明所有实例共用日志')
   // opencode 专属组的内容到「工作目录与模型」小节为止，这一片里不该有工作目录字段
-  const nOcGroup = indexHtml.slice(indexHtml.indexOf('<div id="n-oc-group">'), indexHtml.indexOf('<h3>工作目录与模型</h3>'))
+  const nOcGroup = indexHtml.slice(indexHtml.indexOf('<div id="n-oc-group">'), indexHtml.indexOf('<h3>工作目录</h3>'))
   ok(
     !nOcGroup.includes('n-defaultDirectory'),
     '新建实例弹窗：默认工作目录不在 opencode 专属组里，pi 后端也能填',

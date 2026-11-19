@@ -393,7 +393,7 @@ const sessionDir = join(root, 'pi-sessions')
 // ~/.pi/agent/sessions（那里的会话会让「listSessions 列出两个」这类断言失真）
 const cliSessionRoot = join(root, 'no-such-cli-root')
 const cfg = {
-  backend: { type: 'pi', pi: { bin: 'pi', model: 'deepseek/deepseek-v4-pro', timeoutMs: 800, extraArgs: [], cliSessionRoot } },
+  backend: { type: 'pi', pi: { bin: 'pi', timeoutMs: 800, extraArgs: [], cliSessionRoot } },
   feishu: {},
   opencode: { url: 'http://127.0.0.1:19876', password: '', defaultDirectory: root, defaultModel: '' },
   behavior: {},
@@ -509,7 +509,7 @@ const main = async () => {
     const s = await b.createSession({ title: '飞书', directory: root })
     ok(s.id.startsWith('pi-'), '会话 id 有 pi- 前缀')
     ok(s.location.directory === root, '会话带工作目录')
-    ok(s.model?.id === 'deepseek-v4-pro', '默认模型写进会话对象')
+    ok(s.model === null, '桥接不选模型，会话里没有模型')
     ok((await b.getSession(s.id)).title === '飞书', 'getSession 能读回')
     ok(existsSync(join(sessionDir, 'index.json')), '会话索引已落盘')
     await b.renameSession(s.id, '改名了')
@@ -519,10 +519,7 @@ const main = async () => {
     ok((await b.listSessions()).length === 2, 'listSessions 列出两个')
     ok((await b.listSessions({ order: 'desc' }))[0].id === s2.id, '按更新时间倒序')
     ok((await b.listSessions({ search: '改名' })).length === 1, 'search 过滤')
-    ok((await b.listModels()).some((m) => m.id === 'deepseek-v4-pro'), 'listModels 含配置默认模型')
     ok((await b.listAgents()).length === 0, 'pi 没有 agent 列表')
-    await b.switchModel(s.id, { providerID: 'x', id: 'y' })
-    ok((await b.getSession(s.id)).model.id === 'y', 'switchModel 生效')
     await b.deleteSession(s2.id)
     ok((await b.listSessions()).length === 1, 'deleteSession 生效')
     // 重启后能从索引恢复，续聊才接得上
@@ -576,7 +573,7 @@ const main = async () => {
     ok(!args.includes('-p') && !args.includes('--'), '不带 -p 与 -- 分隔的正文')
     ok(args.includes('--session-id') && args[args.indexOf('--session-id') + 1] === s.id, '带 --session-id 续聊')
     ok(args.includes('--session-dir'), '带 --session-dir')
-    ok(args.includes('--model') && args[args.indexOf('--model') + 1] === 'deepseek/deepseek-v4-pro', '带 --model')
+    ok(!args.includes('--model'), '不带 --model：模型由 pi 自己的配置决定')
     ok(args.includes('--approve'), '飞书里点不了授权按钮，用 --approve')
     ok(calls[0].opts.cwd === root, 'cwd 是话题绑定的工作目录')
     ok(calls[0].opts.stdio?.[0] === 'pipe', 'stdin 可写：RPC 命令从这儿进')
@@ -1182,6 +1179,32 @@ const main = async () => {
     ok(calls.length === before + 1, '重起了新进程')
     const args = calls.at(-1).args
     ok(args.includes('--session-id') && args[args.indexOf('--session-id') + 1] === s.id, '重启用同样的 session 参数（历史延续）')
+  }
+
+  section('模型跟随 harness 默认')
+  {
+    // 实例没写 backend.pi.model：启动 pi 时不带 --model，由 pi 用自己的默认
+    // 模型。这样改 harness 的默认模型（pi 的 settings）之后，本实例下一次运行
+    // 自动跟随，不需要再改实例配置或会话索引
+    const b = makeBackend({
+      backend: { type: 'pi', pi: { bin: 'pi', model: '', timeoutMs: 5000, idleMs: 200, extraArgs: [], cliSessionRoot } },
+    })
+    currentMode = 'normal'
+    calls.length = 0
+    const s = await b.createSession({ title: '跟随默认', directory: root })
+    ok(s.model === null, '桥接不保存模型选择')
+    const r = await b.prompt(s.id, '第一轮')
+    ok(r.ok === true, '不传 --model 也能跑完')
+    ok(!calls[0].args.includes('--model'), '启动参数不带 --model，由 pi 用默认模型')
+
+    // 运行中看到的真实模型仍然补进索引，但那只是展示，不构成固定
+    const idx = JSON.parse(readFileSync(join(sessionDir, 'index.json'), 'utf8'))
+    ok(idx[s.id]?.model?.id === 'deepseek-v4-pro', '真实模型仍补进索引（展示用）')
+
+    ok(await waitFor(() => !b.procs.has(s.id), 4000), '空闲回收进程')
+    const r2 = await b.prompt(s.id, '第二轮')
+    ok(r2.ok === true && !calls.at(-1).args.includes('--model'), '回收重启后依旧跟随默认模型')
+
   }
 
   section('卡片按后端能力降级')
