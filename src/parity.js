@@ -13,9 +13,12 @@
  * 正式对照实测（同目录同 prompt，每侧连跑两遍）：
  *
  *   进判定  终态      精确相等。这是翻译层最直接的产出，两侧必须一致
- *            工具      只比工具名的序列与结果状态，精确相等
+ *            有没有  一侧调了工具另一侧没调，是结构性差异，判失败
+ *             工具
  *   只观察  文本      模型的采样不确定性让两次运行的措辞必然不同，逐字判定
  *                      是把对照变成运气
+ *            工具序列  模型自己决定分几次调用（同一句 prompt，两侧各自都跑出过
+ *                      3 次和 4 次），序列相同是运气，不是判定依据
  *            用量      两侧读数口径不同（见下），跨模式比用量永远得不到结论
  *            工具参数   模型自己选不选带可选参数（read 带不带 limit），不是
  *                      实现差异
@@ -87,21 +90,27 @@ export function compareProjections(a, b) {
     notes.push(`正文措辞不同（模型采样不确定性，不计入判定）\n  桥接：${truncate(ta, 300)}\n  OAR ：${truncate(tb, 300)}`)
   }
 
-  // 2. 工具：名字序列与结果状态精确相等；参数键集合只报观察
-  const na = toolNames(a.tools)
-  const nb = toolNames(b.tools)
-  if (na.length !== nb.length || na.some((n, i) => n !== nb[i])) {
+  // 2. 工具：只判「有没有」。序列、参数、结果状态都只报观察——模型自己决定
+  // 分几次调用（实测同一句 prompt，两侧各自都跑出过 3 次和 4 次工具），序列
+  // 相同是运气。一侧调了另一侧没调才是结构性差异
+  const hasA = a.tools.length > 0
+  const hasB = b.tools.length > 0
+  if (hasA !== hasB) {
     diffs.push({
       aspect: '工具',
-      detail: `工具序列不同\n  桥接：${JSON.stringify(na)}\n  OAR ：${JSON.stringify(nb)}`,
+      detail: `一侧没有工具调用\n  桥接：${a.tools.length} 个\n  OAR ：${b.tools.length} 个`,
     })
-  } else {
-    const bad = a.tools.map((t, i) => ({ t, o: b.tools[i] })).filter(({ t, o }) => t.status !== o.status)
-    if (bad.length) {
-      diffs.push({
-        aspect: '工具',
-        detail: `工具结果状态不同：${bad.map(({ t, o }) => `${t.name} ${t.status}≠${o.status}`).join('；')}`,
-      })
+  }
+  if (hasA && hasB) {
+    const na = toolNames(a.tools)
+    const nb = toolNames(b.tools)
+    if (na.join(',') !== nb.join(',')) {
+      notes.push(`工具序列不同（模型自己决定分几次调用，不计入判定）\n  桥接：${JSON.stringify(na)}\n  OAR ：${JSON.stringify(nb)}`)
+    }
+    const bad = a.tools.filter((t) => t.status !== 'ok').length
+    const badB = b.tools.filter((t) => t.status !== 'ok').length
+    if (bad !== badB) {
+      notes.push(`失败工具数不同：桥接 ${bad} 个，OAR ${badB} 个（不计入判定）`)
     }
     const pa = toolParams(a.tools).join(' | ')
     const pb = toolParams(b.tools).join(' | ')

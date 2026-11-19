@@ -81,38 +81,45 @@ const tool = (_name, input, status = 'ok') => ({ id: 't1', name: _name, input, s
   ok(r4.ok === true && !r4.notes.some((x) => x.startsWith('正文措辞')), '临时路径与时间戳归一化后不误报', JSON.stringify(r4.notes))
 }
 
-// ---------- 3. 工具：名字序列与结果状态进判定 ----------
+// ---------- 3. 工具：只判「有没有」，序列与参数只报观察 ----------
 
 {
-  const r = compareProjections(
+  // 一侧调了工具另一侧没调：结构性差异，判失败
+  const r = compareProjections(makeRun({ tools: [] }), makeRun({ tools: [tool('bash', { command: 'ls' })] }))
+  ok(r.ok === false && r.diffs.some((d) => d.aspect === '工具'), '一侧有工具一侧没有判失败', JSON.stringify(r.diffs))
+
+  const r2 = compareProjections(makeRun({ tools: [] }), makeRun({ tools: [] }))
+  ok(r2.ok === true, '两侧都没有工具判通过', JSON.stringify(r2.diffs))
+
+  // 序列不同：模型自己决定分几次调用（实测同一句 prompt 两侧各自都跑出过 3 次和 4 次）
+  const r3 = compareProjections(
+    makeRun({ tools: [tool('bash', { command: 'x' }), tool('bash', { command: 'y' }), tool('read', { path: '/a' })] }),
+    makeRun({ tools: [tool('bash', { command: 'x' }), tool('bash', { command: 'y' }), tool('bash', { command: 'z' }), tool('read', { path: '/a' })] }),
+  )
+  ok(r3.ok === true, '工具序列不同不判失败', JSON.stringify(r3.diffs))
+  ok(r3.notes.some((x) => x.startsWith('工具序列不同')), '序列差异报观察项', JSON.stringify(r3.notes))
+
+  // 两侧都调了工具但名字不同：也只报观察
+  const r4 = compareProjections(
     makeRun({ tools: [tool('bash', { command: 'ls' })] }),
     makeRun({ tools: [tool('read', { filePath: '/tmp/x' })] }),
   )
-  ok(r.ok === false && r.diffs.some((d) => d.aspect === '工具'), '工具名不同判失败', JSON.stringify(r.diffs))
-
-  const r2 = compareProjections(makeRun({ tools: [tool('bash', { command: 'ls' })] }), makeRun({ tools: [] }))
-  ok(r2.ok === false && r2.diffs.some((d) => d.aspect === '工具'), '工具个数不同判失败', JSON.stringify(r2.diffs))
-
-  const r3 = compareProjections(
-    makeRun({ tools: [tool('bash', { command: 'ls' }, 'ok')] }),
-    makeRun({ tools: [tool('bash', { command: 'ls' }, 'error')] }),
-  )
-  ok(r3.ok === false && r3.diffs.some((d) => d.detail.includes('结果状态')), '工具结果状态不同判失败', JSON.stringify(r3.diffs))
+  ok(r4.ok === true, '两侧都调了工具但名字不同不判失败', JSON.stringify(r4.diffs))
 
   // 参数键集合不同：模型选不选带可选参数，只报观察
-  const r4 = compareProjections(
+  const r5 = compareProjections(
     makeRun({ tools: [tool('read', { path: '/a', limit: 10 })] }),
     makeRun({ tools: [tool('read', { path: '/a' })] }),
   )
-  ok(r4.ok === true, '工具参数键集合不同不判失败', JSON.stringify(r4.diffs))
-  ok(r4.notes.some((x) => x.startsWith('工具参数不同')), '参数差异报观察项', JSON.stringify(r4.notes))
+  ok(r5.ok === true, '工具参数键集合不同不判失败', JSON.stringify(r5.diffs))
+  ok(r5.notes.some((x) => x.startsWith('工具参数不同')), '参数差异报观察项', JSON.stringify(r5.notes))
 
-  // 参数不同但名字与状态相同：判定通过
-  const r5 = compareProjections(
+  // 参数值不同但键集合相同：连观察项都没有
+  const r6 = compareProjections(
     makeRun({ tools: [tool('bash', { command: 'ls', extra: 1 })] }),
     makeRun({ tools: [tool('bash', { command: 'ls', extra: 2 })] }),
   )
-  ok(r5.ok === true, '参数值不同但键集合相同，连观察项都没有', JSON.stringify(r5.notes))
+  ok(r6.ok === true && r6.notes.length === 0, '参数值不同但键集合相同，连观察项都没有', JSON.stringify(r6.notes))
 }
 
 // ---------- 4. 终态 ----------
@@ -172,7 +179,8 @@ const tool = (_name, input, status = 'ok') => ({ id: 't1', name: _name, input, s
     makeRun({ text: 'B 侧答复', tools: [tool('read', { path: '/a' })], status: 'aborted', tokens: { input: 29118, output: 33 } }),
   )
   ok(r.ok === false, '判定项失败判失败')
-  ok(r.diffs.some((d) => d.aspect === '工具') && r.diffs.some((d) => d.aspect === '终态'), '工具与终态两项都报', JSON.stringify(r.diffs))
+  ok(r.diffs.some((d) => d.aspect === '终态'), '终态报出来', JSON.stringify(r.diffs))
+  ok(r.notes.some((x) => x.startsWith('工具序列不同')), '工具序列作为观察项报出来', JSON.stringify(r.notes))
   ok(r.notes.some((x) => x.startsWith('正文措辞')), '判定项失败时观察项照样出', JSON.stringify(r.notes))
   ok(r.notes.some((x) => x.startsWith('input')), '用量观察项照样出', JSON.stringify(r.notes))
 }
