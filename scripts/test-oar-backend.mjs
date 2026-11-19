@@ -145,6 +145,14 @@ async function promptAndSettle(be, seen, sid, text) {
   const entry = await be.getSession(s.id)
   ok(Boolean(entry.oarId), 'OAR 会话 id 记进索引', JSON.stringify(entry.oarId))
   ok(be.live.size === 1, '会话活着，下次直接复用')
+
+  // 「打开阶段事件丢失」的哨兵：运行时在打开时就报了模型，订阅必须能收到。
+  // events() 不带 cursor 只收订阅之后的新事件，实测打开阶段收到 0 条；带
+  // afterSeq: -1 才重放。这两条一起盯住订阅方式与索引写入
+  ok(types.includes('backend.meta'), '打开阶段的模型事件到达（订阅带 cursor 重放）', types.join(','))
+  const metaModel = seen.find((e) => e.type === 'backend.meta')?.data?.model
+  ok(Boolean(metaModel), '模型事件带出运行时报告的模型名', JSON.stringify(metaModel))
+  ok(Boolean(entry.model?.id), '运行时报的模型写进索引，卡片与 /status 才有值', JSON.stringify(entry.model))
 }
 
 // ---------- 4. 复用与恢复 ----------

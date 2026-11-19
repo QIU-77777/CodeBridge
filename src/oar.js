@@ -60,6 +60,14 @@ const PENDING_CAPS = {
   refused: {},
 }
 
+/** 'provider/id' 或 {providerID,id} → {providerID,id}；空值给 null */
+function modelRefOf(model) {
+  if (!model) return null
+  if (typeof model === 'object') return { providerID: model.providerID || '', id: model.id || '' }
+  const [providerID, ...rest] = String(model).split('/')
+  return rest.length ? { providerID, id: rest.join('/') } : { providerID: '', id: String(model) }
+}
+
 export class OarBackend {
   /**
    * @param {object} opts
@@ -325,11 +333,7 @@ export class OarBackend {
   }
 
   _modelRef(model) {
-    const raw = model
-    if (!raw) return null
-    if (typeof raw === 'object') return { providerID: raw.providerID || '', id: raw.id || '' }
-    const [providerID, ...rest] = String(raw).split('/')
-    return rest.length ? { providerID, id: rest.join('/') } : { providerID: '', id: raw }
+    return modelRefOf(model)
   }
 
   async getSession(id) {
@@ -474,17 +478,25 @@ export class OarBackend {
       throw new Error(this._resumeError(err, entry))
     }
     entry.oarId = session.id
+    // 运行时在打开阶段就报了模型（kimi 在第 7 条记录上），这里读一次真值写进索引：
+    // 卡片初始显示、/status、重启后的显示都靠它。配置里没写 model 时，运行时会
+    // 用自己的默认值，读真值才能把这个默认值暴露出来
+    const reported = session.model?.()?.value
+    if (reported) entry.model = modelRefOf(reported)
     entry.time.updated = Date.now()
     this._save()
 
     const live1 = { session, translate: createEventTranslator(session.id), busy: false }
     this.live.set(id, live1)
+    // 带 cursor 订阅：events() 不带 cursor 只收订阅之后的新事件，打开阶段的模型与
+    // 档位事件会全部丢掉（实测不带时收到 0 条，带 afterSeq: -1 收到 4 条）。
+    // 重放完接着走 live，是本接口的契约语义
     session.events((ev) => {
       // 忙等标记：一个会话最多一个活动回合，切模型与删会话要据此拒绝
       if (ev.kind === 'turn_started') live1.busy = true
       else if (ev.kind === 'turn_ended' || ev.kind === 'exited') live1.busy = false
       for (const b of live1.translate(ev)) this._emit(id, b.type, b.data)
-    })
+    }, { cursor: { sessionId: session.id, afterSeq: -1 } })
     return live1
   }
 
