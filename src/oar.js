@@ -487,7 +487,13 @@ export class OarBackend {
     return err?.message || String(err)
   }
 
-  async prompt(sessionId, body, opts = {}) {
+  /**
+   * 发一条消息。返回落点：prompted / steered / queued。
+   *
+   * opts 收下不用：调用方还带着 delivery: 'steer' 表示意图，而统一走 deliver
+   * 之后落点由 OAR 判断，参数不再分流。保留签名是不想逐个改调用方。
+   */
+  async prompt(sessionId, body, _opts = {}) {
     const { session } = await this._sessionFor(sessionId)
     // 统一走 deliver：空闲新开一回合，忙时能引导就引导、不能就排队，OAR 自己
     // 判断，不读 caps。不用 prompt() 是因为它在忙时的拒绝码是 busy，而忙等有

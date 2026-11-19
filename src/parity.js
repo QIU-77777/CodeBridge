@@ -36,6 +36,10 @@
  *
  * 真正能判定用量的地方是同模式重复跑（parity-pi-oar.mjs 的自检），那才是抓
  * 「装配不确定」类回归的信号。
+ *
+ * 将来要判用量，先定义读哪个数量，否则修掉确定性也不可比：两侧读的数量本来
+ * 就不同（OAR 累计多调用、桥接单次）。定义比如「末次模型调用的 input 加
+ * cacheRead」，两侧按同一个读，再谈判定。
  */
 import { truncate } from './render.js'
 import { classifyError } from './errors.js'
@@ -93,6 +97,11 @@ export function compareProjections(a, b) {
   // 2. 工具：只判「有没有」。序列、参数、结果状态都只报观察——模型自己决定
   // 分几次调用（实测同一句 prompt，两侧各自都跑出过 3 次和 4 次工具），序列
   // 相同是运气。一侧调了另一侧没调才是结构性差异
+  //
+  // 已知抖动源：模型凭记忆答、不跑工具。node --version 的输出它本来就知道，
+  // 采样一抽就可能直接说答案。提示词里「只运行这一个命令」压着，两侧目前都
+  // 跑工具，但这是采样行为，不是保证。真抖了的话这一项会假失败，那时看两侧
+  // 的观察项就能判断是不是这个原因。
   const hasA = a.tools.length > 0
   const hasB = b.tools.length > 0
   if (hasA !== hasB) {

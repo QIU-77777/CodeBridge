@@ -111,9 +111,9 @@ const toolOf = (tools, name) => tools.find((t) => t.name === name)
   await ask.handler({ chat_id: 'oc_a', question: '在话题里问', thread_id: 'om_root_1' })
   ok(asked.scope === 'chat:oc_a|thread:om_root_1', '给了 thread_id 就限定到那个话题', JSON.stringify(asked))
 
-  const r2 = await ask.handler({ chat_id: 'oc_a', question: '快点', timeout_ms: 60_000 })
+  await ask.handler({ chat_id: 'oc_a', question: '快点', timeout_ms: 60_000 })
   ok(asked.timeoutMs === 60_000, '超时可调', String(asked.timeoutMs))
-  const r3 = await ask.handler({ chat_id: 'oc_a', question: '太久', timeout_ms: 99_999_999 })
+  await ask.handler({ chat_id: 'oc_a', question: '太久', timeout_ms: 99_999_999 })
   ok(asked.timeoutMs === 3_600_000, '超时上限一小时，不给无限等', String(asked.timeoutMs))
 
   const timeoutAnswer = await toolOf(

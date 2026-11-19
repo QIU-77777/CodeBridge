@@ -25,12 +25,24 @@ function ok(cond, name, extra = '') {
   }
 }
 
-/** 造一个跑完的运行态：正文、工具、终态、用量 */
-function makeRun({ text = '结论：跑通了。', tools = [], status = 'done', tokens = { input: 100, output: 20 }, error = null }) {
+/**
+ * 造一个跑完的运行态。
+ *
+ * tokens 的形状故意宽松：cost 只有桥接侧给，OAR 不给，用例要把一边有一边没有
+ * 的情况造出来，所以这里不把它写死成 { input, output }
+ */
+/**
+ * 造一个跑完的运行态。opts 收宽松对象：tokens 里的 cost 只有桥接侧给，
+ * OAR 不给，用例要造一边有一边没有
+ */
+function makeRun(opts) {
+  const o = opts || {}
+  const { text = '结论：跑通了。', tools = [], status = 'done', tokens = { input: 100, output: 20 }, error = null } = o
   const st = new RunState('ses_x')
   st.text = text
   st.tools = tools
   st.status = status
+  // tokens 宽松：cost 只有桥接侧给，OAR 不给，用例要造一边有一边没有
   st.tokens = tokens
   st.error = error
   return st
@@ -42,7 +54,16 @@ function withCacheRead(run, v) {
   return run
 }
 
-const tool = (_name, input, status = 'ok') => ({ id: 't1', name: _name, input, status, output: '' })
+/**
+ * 造一个工具行。
+ *
+ * 函数声明而不是箭头常量：顶层裸块跟在箭头函数后面时，TypeScript 解析器会把
+ * 那个 { 当成泛型类型参数的延续，报一串「Identifier expected」的假错。node 自
+ * 己解析完全合法，测试也一直跑得过，是 TS 的怪癖。
+ */
+function tool(_name, input, status = 'ok') {
+  return { id: 't1', name: _name, input, status, output: '' }
+}
 
 // ---------- 1. 判定项一致判通过 ----------
 
