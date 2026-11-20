@@ -35,7 +35,6 @@
     "smoke:oar": "node scripts/smoke-oar.mjs",
     "test:parity": "node scripts/test-parity.mjs",
     "test:skill": "node scripts/test-skill.mjs",
-    "skill:install": "node scripts/install-skill.mjs",
     "test:oar-scope": "node scripts/test-oar-scope.mjs",
     "parity:pi-oar": "node scripts/parity-pi-oar.mjs",
     "test:serve-password": "node scripts/test-serve-password.mjs",

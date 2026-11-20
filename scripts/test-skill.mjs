@@ -8,13 +8,12 @@
  *      正文覆盖六件必做的事
  *   2. 提示词与 skill 的分工：提示词里必须留住的硬约束还在；提示词里的长度
  *      降下来了；提示词指向 skill 名
- *   3. 安装脚本：装到临时目录、幂等、内容变了会重写、能卸掉
+ *   3. skill 目录自包含：引用的 references 文件在目录内
  */
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
-import { buildPayload, installTo, removeFrom, SKILL_NAME } from './install-skill.mjs'
+const SKILL_NAME = 'bridge-collaboration'
 
 const REPO = fileURLToPath(new URL('..', import.meta.url))
 
@@ -102,45 +101,12 @@ const skill = readFileSync(skillPath, 'utf8')
   ok(/对方正忙时消息会引导还是排队[\s\S]*需要等待回复时怎么轮询/.test(skill.split('---')[1] || ''), 'description 含「等待回复」与「正忙」触发词')
 }
 
-// ---------- 3. 安装脚本 ----------
+// ---------- 3. 目录自包含 ----------
 
 {
-  const root = mkdtempSync(join(tmpdir(), 'skill-install-'))
-  const payload = buildPayload()
-  ok(payload.digest.length === 12, '指纹是 12 位', payload.digest)
-  ok(payload.principles.includes('桥接 agent 协作原则'), '原则副本取自 docs/collaboration-principles.md')
-
-  ok(installTo(root, payload) === 'created', '首次安装：created')
-  const dir = join(root, SKILL_NAME)
-  ok(existsSync(join(dir, 'SKILL.md')), '装了 SKILL.md')
-  ok(existsSync(join(dir, 'references', 'principles.md')), '装了 references/principles.md')
-  ok(readFileSync(join(dir, '.version'), 'utf8').trim() === payload.digest, '版本文件写的是当前指纹')
-  ok(installTo(root, payload) === 'unchanged', '同一版再装：unchanged（不重复写）')
-
-  // 手改已装文件：.version 仍匹配，也要被发现并修复
-  writeFileSync(join(dir, 'SKILL.md'), 'edited\n', 'utf8')
-  ok(installTo(root, payload, { dryRun: true }) === 'updated', '手改 SKILL.md：dry-run 报 updated 且不写')
-  ok(readFileSync(join(dir, 'SKILL.md'), 'utf8') === 'edited\n', 'dry-run 不改文件')
-  ok(installTo(root, payload) === 'updated', '手改 SKILL.md：updated')
-  ok(readFileSync(join(dir, 'SKILL.md'), 'utf8') === payload.body, '手改的 SKILL.md 被还原')
-
-  // 误删引用文件：同样要补回
-  rmSync(join(dir, 'references', 'principles.md'))
-  ok(installTo(root, payload) === 'updated', '缺 principles.md：updated')
-  ok(existsSync(join(dir, 'references', 'principles.md')), 'principles.md 被补回')
-
-  // 版本文件过期：内容一致时不重写
-  writeFileSync(join(dir, '.version'), 'oldversion1\n', 'utf8')
-  ok(installTo(root, payload) === 'unchanged', '仅 .version 过期而内容一致：unchanged')
-  const before = statSync(join(dir, 'SKILL.md')).mtimeMs
-  ok(installTo(root, payload) === 'unchanged', '再次回到 unchanged')
-  ok(statSync(join(dir, 'SKILL.md')).mtimeMs === before, 'unchanged 时不动文件（幂等的实质）')
-
-  ok(removeFrom(root) === true, '卸载：目录被删掉')
-  ok(!existsSync(dir), '卸载后目录不存在')
-  ok(removeFrom(root) === false, '重复卸载：返回 false 不报错')
-
-  rmSync(root, { recursive: true, force: true })
+  const ref = join(REPO, 'skills', SKILL_NAME, 'references', 'principles.md')
+  ok(existsSync(ref), 'references/principles.md 在 skill 目录内（整个目录可直接复制使用）')
+  ok(existsSync(ref) && readFileSync(ref, 'utf8').includes('桥接 agent 协作原则'), '原则文件内容正确')
 }
 
 console.log()
