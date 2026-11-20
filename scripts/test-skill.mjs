@@ -81,6 +81,9 @@ const skill = readFileSync(skillPath, 'utf8')
     ['230027 时请人贴原文或开权限', /230027[\s\S]*贴原文/],
     ['指向 skill 名', /bridge-collaboration/],
     ['CLI 不在 PATH 时怎么找', /command -v feishu-cli/],
+    ['发出消息后不退出，轮询前先读 skill 第四节', /发出消息后不要退出[\s\S]*bridge-collaboration 第四节[\s\S]*轮询/],
+    ['重放去重：回复前先查已有回复', /重放[\s\S]*已有你的回复[\s\S]*跳过/],
+    ['只用注入的应用身份，不换别的凭证', /不要换用别的应用凭证/],
   ]
   for (const [label, re] of hard) ok(re.test(rules), `提示词留住硬约束：${label}`)
 
@@ -88,7 +91,15 @@ const skill = readFileSync(skillPath, 'utf8')
   ok(rules.length < 1200, '提示词已收窄（细则搬进 skill）', `${rules.length} 字`)
   // 反过来：不该再出现只有 skill 才需要的东西
   ok(!/--start-time/.test(rules), '轮询的坑搬进 skill，不占提示词', '提示词里仍有 --start-time')
-  ok(!/sleep 留在进程内/.test(rules), '轮询流程搬进 skill', '提示词里仍有轮询流程')
+  ok(!/--page-size|ByCreateTimeDesc/.test(rules), '轮询命令细节搬进 skill', '提示词里仍有轮询命令')
+
+  // 提示词里出现的每个 feishu-cli 子命令，skill 里都要有完整用法可查
+  const cmds = new Set([...rules.matchAll(/feishu-cli (msg \w+)/g)].map((m) => m[1]))
+  for (const c of cmds) ok(skill.includes(`feishu-cli ${c}`), `提示词用到的 feishu-cli ${c} 在 skill 里有用法`)
+
+  // 提示词指向的 skill 章节必须真实存在
+  ok(/^## 四、发出消息后：轮询新消息$/m.test(skill), 'skill 第四节标题与提示词的指向一致')
+  ok(/对方正忙时消息会引导还是排队[\s\S]*需要等待回复时怎么轮询/.test(skill.split('---')[1] || ''), 'description 含「等待回复」与「正忙」触发词')
 }
 
 // ---------- 3. 安装脚本 ----------
@@ -106,9 +117,21 @@ const skill = readFileSync(skillPath, 'utf8')
   ok(readFileSync(join(dir, '.version'), 'utf8').trim() === payload.digest, '版本文件写的是当前指纹')
   ok(installTo(root, payload) === 'unchanged', '同一版再装：unchanged（不重复写）')
 
-  // 内容变了要重写：改版本文件模拟旧版
+  // 手改已装文件：.version 仍匹配，也要被发现并修复
+  writeFileSync(join(dir, 'SKILL.md'), 'edited\n', 'utf8')
+  ok(installTo(root, payload, { dryRun: true }) === 'updated', '手改 SKILL.md：dry-run 报 updated 且不写')
+  ok(readFileSync(join(dir, 'SKILL.md'), 'utf8') === 'edited\n', 'dry-run 不改文件')
+  ok(installTo(root, payload) === 'updated', '手改 SKILL.md：updated')
+  ok(readFileSync(join(dir, 'SKILL.md'), 'utf8') === payload.body, '手改的 SKILL.md 被还原')
+
+  // 误删引用文件：同样要补回
+  rmSync(join(dir, 'references', 'principles.md'))
+  ok(installTo(root, payload) === 'updated', '缺 principles.md：updated')
+  ok(existsSync(join(dir, 'references', 'principles.md')), 'principles.md 被补回')
+
+  // 版本文件过期：内容一致时不重写
   writeFileSync(join(dir, '.version'), 'oldversion1\n', 'utf8')
-  ok(installTo(root, payload) === 'updated', '版本不同：updated')
+  ok(installTo(root, payload) === 'unchanged', '仅 .version 过期而内容一致：unchanged')
   const before = statSync(join(dir, 'SKILL.md')).mtimeMs
   ok(installTo(root, payload) === 'unchanged', '再次回到 unchanged')
   ok(statSync(join(dir, 'SKILL.md')).mtimeMs === before, 'unchanged 时不动文件（幂等的实质）')

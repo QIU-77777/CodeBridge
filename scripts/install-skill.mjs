@@ -3,14 +3,14 @@
  * 把仓库里的 bridge-collaboration skill 装到本机技能目录。
  *
  *   node scripts/install-skill.mjs                 # 装到 ~/.agents/skills/
- *   node scripts/install-skill.mjs --target opencode
+ *   node scripts/install-skill.mjs --target claude
  *   node scripts/install-skill.mjs --dry-run       # 只看会写什么
  *   node scripts/install-skill.mjs --remove        # 卸掉
  *
  * 为什么要有这个脚本：技能目录是各家 harness 自己的机制，没有一份所有工具都
- * 认的位置。~/.agents/skills/ 是 Agent Skills 规范里的开放位置，pi、kimi、codex
- * 都认它；opencode 用自己的 ~/.config/opencode/skills。所以同一份内容要装到
- * 多个位置，脚本负责按目标复制并保持幂等。
+ * 认的位置。~/.agents/skills/ 是 Agent Skills 规范里的开放位置，opencode 也会扫
+ * 它；Claude Code 只扫 ~/.claude/skills。所以同一份内容要装到多个位置，脚本负责
+ * 按目标复制并保持幂等。
  *
  * 事实来源只有两处，都在仓库里：
  *   skills/bridge-collaboration/SKILL.md        协作手册正文
@@ -29,10 +29,8 @@ const PRINCIPLES = join(REPO, 'docs', 'collaboration-principles.md')
 
 /** 各 harness 的技能根目录。键是 --target 的取值 */
 const TARGETS = {
-  // Agent Skills 规范里的开放位置：pi、kimi、codex 都扫它
+  // Agent Skills 规范里的开放位置：opencode 等 harness 都扫它
   agents: join(homedir(), '.agents', 'skills'),
-  // opencode 自己的全局技能目录
-  opencode: join(homedir(), '.config', 'opencode', 'skills'),
   // claude code 的全局技能目录
   claude: join(homedir(), '.claude', 'skills'),
 }
@@ -52,7 +50,7 @@ function parseArgs(argv) {
     else if (a === '--remove') out.remove = true
     else if (a === '--quiet') out.quiet = true
     else if (a === '--help' || a === '-h') {
-      console.log('用法：node scripts/install-skill.mjs [--target agents|opencode|claude] [--dry-run] [--remove]')
+      console.log('用法：node scripts/install-skill.mjs [--target agents|claude] [--dry-run] [--remove]')
       process.exit(0)
     } else {
       console.error(`未知参数: ${a}`)
@@ -64,34 +62,51 @@ function parseArgs(argv) {
   return out
 }
 
-/** 技能正文 + 原则副本，算一个指纹，用来判断是否需要重写 */
+const REF_REL = join('references', 'principles.md')
+
+/** 一组文件（相对路径 + 内容）的指纹，路径也计入 */
+function fingerprint(files) {
+  const h = createHash('sha256')
+  for (const [rel, content] of Object.entries(files).sort(([a], [b]) => a.localeCompare(b))) {
+    h.update(rel).update('\0').update(content).update('\0')
+  }
+  return h.digest('hex').slice(0, 12)
+}
+
+/** 要安装的文件清单与指纹 */
 function buildPayload() {
   const body = readFileSync(join(SOURCE_DIR, 'SKILL.md'), 'utf8')
   const principles = readFileSync(PRINCIPLES, 'utf8')
-  // 带版本指纹：读的人能看出手上是哪一版；也用于幂等判断
-  const digest = createHash('sha256').update(body).update('\n---\n').update(principles).digest('hex').slice(0, 12)
-  return { body, principles, digest }
+  const files = { 'SKILL.md': body, [REF_REL]: principles }
+  return { body, principles, files, digest: fingerprint(files) }
+}
+
+/** 读目标目录里实际存在的文件算指纹，缺文件或读不到都算不一致 */
+function installedDigest(dir, payload) {
+  try {
+    const files = {}
+    for (const rel of Object.keys(payload.files)) files[rel] = readFileSync(join(dir, rel), 'utf8')
+    return fingerprint(files)
+  } catch {
+    return null
+  }
 }
 
 /**
- * 装一份到目标目录。幂等：目录里已经是同一版就什么都不写。
+ * 装一份到目标目录。幂等：磁盘上的文件内容与要装的一致就什么都不写。
  * @returns {'created'|'updated'|'unchanged'}
  */
 function installTo(root, payload, { dryRun = false } = {}) {
   const dir = join(root, SKILL_NAME)
-  const refDir = join(dir, 'references')
-  const marker = join(dir, '.version')
-  const want = payload.digest
-
-  if (existsSync(marker) && readFileSync(marker, 'utf8').trim() === want) return 'unchanged'
+  if (installedDigest(dir, payload) === payload.digest) return 'unchanged'
 
   const state = existsSync(dir) ? 'updated' : 'created'
   if (dryRun) return state
 
-  mkdirSync(refDir, { recursive: true })
+  mkdirSync(join(dir, 'references'), { recursive: true })
   writeFileSync(join(dir, 'SKILL.md'), payload.body, 'utf8')
-  writeFileSync(join(refDir, 'principles.md'), payload.principles, 'utf8')
-  writeFileSync(marker, want + '\n', 'utf8')
+  writeFileSync(join(dir, REF_REL), payload.principles, 'utf8')
+  writeFileSync(join(dir, '.version'), payload.digest + '\n', 'utf8')
   return state
 }
 

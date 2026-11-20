@@ -1019,13 +1019,13 @@ logs/                      运行日志（不入库）
 装法与更新：
 
 ```bash
-npm run skill:install                      # 装到 ~/.agents/skills/（pi、kimi、codex 都扫这个开放位置）
-npm run skill:install -- --target opencode # 再装一份到 ~/.config/opencode/skills/
+npm run skill:install                      # 装到 ~/.agents/skills/（opencode 等 harness 扫这个开放位置）
+npm run skill:install -- --target claude   # 再装一份到 ~/.claude/skills/（Claude Code 只扫这里）
 npm run skill:install -- --dry-run         # 只看会写什么
 npm run skill:install -- --remove          # 卸掉
 ```
 
-内容来源只有两处，都在仓库里：`skills/bridge-collaboration/SKILL.md` 与 `docs/collaboration-principles.md`（后者复制成 skill 的 `references/principles.md`）。脚本按内容指纹判断是否需要重写，同一版重复安装什么都不写。
+内容来源只有两处，都在仓库里：`skills/bridge-collaboration/SKILL.md` 与 `docs/collaboration-principles.md`（后者复制成 skill 的 `references/principles.md`）。脚本读目标目录里实际的文件内容算指纹来判断是否需要重写，同一版重复安装什么都不写；已装文件被改动或缺失时会重新写入。
 
 新装的 skill 要在新会话里才会被读到：各 harness 只在启动或新会话时扫描技能目录。
 
