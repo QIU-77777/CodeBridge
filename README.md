@@ -47,6 +47,7 @@
 | 排队与中止 | 同一会话上一条还在执行时，人的消息排进队列、bot 之间的 @ 在支持 steer 的后端上直接注入；卡片上可引导（steer）、取消、`/stop` |
 | 可换后端 | `opencode` 与 `pi` 内置；其他命令行 Agent 实现 `Backend` 接口后接入，共用卡片、会话、排队与中止逻辑 |
 | 多机器人 | 多个飞书应用 + 多份配置 + 多个进程，各自精确判断「@ 的是我」 |
+| 协作手册分层 | 硬约束（怎么 @、怎么回复、身份）留在提示词里无条件送达；协作细则与为人处事原则做成 skill `bridge-collaboration`，装到本机技能目录，按需读取。见下文「协作手册的两层」 |
 
 适用场景：人在外面用手机给本机 Agent 派活；多个本机 Agent 在同一个飞书群里分工。
 
@@ -1005,6 +1006,28 @@ logs/                      运行日志（不入库）
 `scripts/test-cards.mjs`、`scripts/test-prompt-ids.mjs`、`scripts/test-session-seq.mjs`、`scripts/test-up-sh.mjs` 与 `scripts/probe-thread.mjs` 没有对应的 npm 脚本，用 `node <路径>` 运行。
 
 `selftest` 需要 serve 正在运行，会真实创建与删除会话。跑测试前确认配置指向测试用的实例。
+
+### 协作手册的两层
+
+同一件事分两处写，因为送达保证不同：
+
+| 层 | 放什么 | 为什么 |
+|---|---|---|
+| 提示词（`prompts.json` 的 `once.rules`） | 怎么回复（`msg reply` 到话题 / `msg send` 另起话题）、@ 的写法与 `open_id`、身份确认、230027 时请人贴原文、指向 skill 的一句 | 这些是「不知道就会发错消息」的硬约束，必须每次新会话无条件送达 |
+| skill `bridge-collaboration` | 身份注入的细节、忙时引导与排队的语义、发出消息后的轮询流程与四个坑、拿更早历史的办法、`docs/collaboration-principles.md` 整份原则 | 长篇、按需读取。harness 启动时只把 skill 的 name 与 description 放进系统提示，正文由模型自己决定要不要读，所以不能承载硬约束 |
+
+装法与更新：
+
+```bash
+npm run skill:install                      # 装到 ~/.agents/skills/（pi、kimi、codex 都扫这个开放位置）
+npm run skill:install -- --target opencode # 再装一份到 ~/.config/opencode/skills/
+npm run skill:install -- --dry-run         # 只看会写什么
+npm run skill:install -- --remove          # 卸掉
+```
+
+内容来源只有两处，都在仓库里：`skills/bridge-collaboration/SKILL.md` 与 `docs/collaboration-principles.md`（后者复制成 skill 的 `references/principles.md`）。脚本按内容指纹判断是否需要重写，同一版重复安装什么都不写。
+
+新装的 skill 要在新会话里才会被读到：各 harness 只在启动或新会话时扫描技能目录。
 
 ### 接入新的本地 Agent
 
