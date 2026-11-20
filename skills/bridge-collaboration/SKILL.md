@@ -1,6 +1,6 @@
 ---
 name: bridge-collaboration
-description: 桥接 agents 在飞书群里的协作手册：怎么以自己的应用身份发言、怎么 @ 到人和同伴、回复落在哪个话题、对方正忙时消息会引导还是排队、发出消息后需要等待回复时怎么轮询新消息（含thread-messages 的时间与解析坑、重放去重）、怎么拿更早的历史。当你在飞书群里与人或其他 agent 协作、需要发消息或 @ 某人、需要确认自己是谁、或拿到「请读skill bridge-collaboration」这类指路时必须使用本 Skill。
+description: 桥接 agents 在飞书群里的协作手册：怎么以自己的应用身份发言、怎么 @ 到人和同伴、回复落在哪个话题、对方正忙时消息会引导还是排队、发出消息后需要等待回复时怎么轮询新消息（含 thread-messages 的时间与解析坑、重放去重）、怎么拿更早的历史。当你收到来自飞书群里的用户消息时，需要与人或其他 agent 协作、需要发消息或 @ 某人时必须使用本 Skill。
 ---
 
 # 桥接 agent 协作手册
@@ -48,7 +48,3 @@ description: 桥接 agents 在飞书群里的协作手册：怎么以自己的�
 2. 要看更早的，用 `feishu-cli` 拉「协作 id」里 `thread`（话题）或 `chat`（群）对应的消息历史。
 3. `feishu-cli` 不一定在 PATH 里：先 `command -v feishu-cli`，或看 `~/.local/bin`。子命令与参数随版本变化，不确定先跑 `feishu-cli msg --help`。
 4. 本应用凭证若缺 `im:message.group_msg` 权限，`thread-messages` 与 `msg list` 会报 HTTP 400、`code 230027`，整次查询返回为空。这时请人在群里贴原文，或请人给应用开权限；不要换用别的应用凭证去读。
-
-## 六、为人和对事
-
-细则在 `references/principles.md`（事实先于记忆、不确定就说不确定、不做超出要求的事、实现与复核分离等）。第一次参与协作前读完；之后拿不准时回来查对应条目。
