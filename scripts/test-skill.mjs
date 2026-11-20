@@ -8,7 +8,6 @@
  *      正文覆盖六件必做的事
  *   2. 提示词与 skill 的分工：提示词里必须留住的硬约束还在；提示词里的长度
  *      降下来了；提示词指向 skill 名
- *   3. skill 目录自包含：引用的 references 文件在目录内
  */
 import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
@@ -39,11 +38,7 @@ const skill = readFileSync(skillPath, 'utf8')
   ok(Boolean(fm), 'SKILL.md 以 frontmatter 开头')
   const head = fm ? fm[1] : ''
   ok(/^name:\s*bridge-collaboration\s*$/m.test(head), 'frontmatter 的 name 与目录名一致', head.slice(0, 60))
-  // description 是 YAML 折叠块（>-），要读到下一个顶层键为止
-  const descLines = head.split('\n')
-  const start = descLines.findIndex((l) => l.startsWith('description:'))
-  const body = start < 0 ? [] : descLines.slice(start + 1).filter((l) => /^\s+\S/.test(l))
-  const desc = body.join(' ').trim()
+  const desc = (head.match(/^description:\s*(.+)$/m) || [, ''])[1].trim()
   ok(desc.length > 40, 'description 写清什么时候该用（够长才有用）', `${desc.length} 字`)
 
   // 六件必做的事，少一件这份手册就不完整
@@ -56,7 +51,6 @@ const skill = readFileSync(skillPath, 'utf8')
     ['更早历史：230027 如实说明', /230027/],
   ]
   for (const [label, re] of musts) ok(re.test(skill), `手册覆盖：${label}`)
-  ok(/references\/principles\.md/.test(skill), '正文指向 references/principles.md', '缺少指针时读的人找不到原则')
 }
 
 // ---------- 2. 提示词与 skill 的分工 ----------
@@ -99,14 +93,6 @@ const skill = readFileSync(skillPath, 'utf8')
   // 提示词指向的 skill 章节必须真实存在
   ok(/^## 四、发出消息后：轮询新消息$/m.test(skill), 'skill 第四节标题与提示词的指向一致')
   ok(/对方正忙时消息会引导还是排队[\s\S]*需要等待回复时怎么轮询/.test(skill.split('---')[1] || ''), 'description 含「等待回复」与「正忙」触发词')
-}
-
-// ---------- 3. 目录自包含 ----------
-
-{
-  const ref = join(REPO, 'skills', SKILL_NAME, 'references', 'principles.md')
-  ok(existsSync(ref), 'references/principles.md 在 skill 目录内（整个目录可直接复制使用）')
-  ok(existsSync(ref) && readFileSync(ref, 'utf8').includes('桥接 agent 协作原则'), '原则文件内容正确')
 }
 
 console.log()

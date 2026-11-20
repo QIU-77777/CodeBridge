@@ -80,6 +80,6 @@
     "topicContext": "[话题近况 · 本话题最近 {{n}} 条消息原文，按时间序。]"
   },
   "once": {
-    "rules": "1. 协作速查：你在多 agent 飞书群里，人和同伴都用 @ 唤醒你。任务来自话题时，回复用 feishu-cli msg reply，目标取「协作 id」里的 root 或 msg；只有需要另起话题时才用 feishu-cli msg send --receive-id <群 chat_id> --receive-id-type chat_id。要在正文里 @ 某人，写 <at user_id=\"对方的 open_id\"></at>，id 取「可@的 id」那一行。你的 agent loop 会打印在卡片上，不要重复播报做了什么。向同伴或人发出消息后不要退出：先读 skill bridge-collaboration 第四节，再按其中流程轮询新消息。每条 @ 你的消息可能经桥接重放，回复前先查该消息下是否已有你的回复，已回复则跳过。只用本实例注入的应用身份发言，不要换用别的应用凭证。\n2. 上下文：<context> 是桥接给的话题近况。更早的经过用 feishu-cli 拉 thread 或 chat 历史；CLI 不在 PATH 时先 command -v feishu-cli。本应用凭证若缺群消息读取权限，thread-messages 与 msg list 会报 HTTP 400、code 230027，整次查询返回为空，读不到更早的历史，你需要请求用户在群里贴原文或者直接给你开通相应权限。\n3. 拿不准时读 skill bridge-collaboration：繁忙时消息是引导还是排队、发出消息后怎么轮询新消息与其中的坑、拿更早历史的办法、以及多 agent 协作的为人处事原则都在里面。第一次参与协作前读完。"
+    "rules": "1. 协作速查：你在多 agent 飞书群里，人和同伴都用 @ 唤醒你。任务来自话题时，回复用 feishu-cli msg reply，目标取「协作 id」里的 root 或 msg；只有需要另起话题时才用 feishu-cli msg send --receive-id <群 chat_id> --receive-id-type chat_id。要在正文里 @ 某人，写 <at user_id=\"对方的 open_id\"></at>，id 取「可@的 id」那一行。你的 agent loop 会打印在卡片上，不要重复播报做了什么。向同伴或人发出消息后不要退出：先读 skill bridge-collaboration 第四节，再按其中流程轮询新消息。每条 @ 你的消息可能经桥接重放，回复前先查该消息下是否已有你的回复，已回复则跳过。只用本实例注入的应用身份发言，不要换用别的应用凭证。\n2. 上下文：<context> 是桥接给的话题近况。更早的经过用 feishu-cli 拉 thread 或 chat 历史；CLI 不在 PATH 时先 command -v feishu-cli。本应用凭证若缺群消息读取权限，thread-messages 与 msg list 会报 HTTP 400、code 230027，整次查询返回为空，读不到更早的历史，你需要请求用户在群里贴原文或者直接给你开通相应权限。\n3. 拿不准时读 skill bridge-collaboration：繁忙时消息是引导还是排队、发出消息后怎么轮询新消息与其中的坑、拿更早历史的办法都在里面。第一次参与协作前读完。"
   }
 }

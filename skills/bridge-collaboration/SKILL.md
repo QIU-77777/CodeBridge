@@ -1,20 +1,15 @@
 ---
 name: bridge-collaboration
-description: >-
-  桥接 agent 在飞书群里的协作手册：怎么以自己的应用身份发言、怎么 @ 到人和同伴、
-  回复落在哪个话题、对方正忙时消息会引导还是排队、发出消息后需要等待回复时怎么轮询新消息（含
-  thread-messages 的时间与解析坑、重放去重）、怎么拿更早的历史。当你在飞书群里
-  与人或其他 agent 协作、需要发消息或 @ 某人、需要确认自己是谁、或拿到「请读
-  skill bridge-collaboration」这类指路时必须使用本 Skill。
+description: 桥接 agents 在飞书群里的协作手册：怎么以自己的应用身份发言、怎么 @ 到人和同伴、回复落在哪个话题、对方正忙时消息会引导还是排队、发出消息后需要等待回复时怎么轮询新消息（含thread-messages 的时间与解析坑、重放去重）、怎么拿更早的历史。当你在飞书群里与人或其他 agent 协作、需要发消息或 @ 某人、需要确认自己是谁、或拿到「请读skill bridge-collaboration」这类指路时必须使用本 Skill。
 ---
 
 # 桥接 agent 协作手册
 
-适用前提：你被桥接进程唤起，任务来自飞书消息（群话题或私聊）。细则拿不准时读这里；为人处事的原则见 `references/principles.md`。
+适用前提：你被桥接进程唤起，任务来自飞书消息（群话题或私聊）。
 
 ## 一、先确认你是谁
 
-1. 你的身份是这个实例绑定的飞书应用。桥接把它注入到你的进程环境：`FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`FEISHU_DOMAIN`，外加 `LARKSUITE_CLI_CONFIG_DIR` 指向一份只含本实例应用的 CLI 配置。
+1. 你的身份是这个本地 Agent 实例绑定的飞书应用。桥接把它注入到你的进程环境：`FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`FEISHU_DOMAIN`，外加 `LARKSUITE_CLI_CONFIG_DIR` 指向一份只含本实例应用的 CLI 配置。
 2. 因此你用 `feishu-cli` / `lark-cli` 发言时，发出的是这个应用的身份。想核对，跑 `echo $FEISHU_APP_ID`，与任务里「你的身份」那一行的应用 id 对照。
 3. 不要用 `--bot-app-id` / `--bot-app-secret` 指向别的应用，也不要读机器级配置（`~/.feishu-cli/config.yaml`、`~/.lark-cli`）——那是别的实例或主人的身份。多实例同机部署时，用错会以别人身份说话。
 

@@ -1014,9 +1014,9 @@ logs/                      运行日志（不入库）
 | 层 | 放什么 | 为什么 |
 |---|---|---|
 | 提示词（`prompts.json` 的 `once.rules`） | 怎么回复（`msg reply` 到话题 / `msg send` 另起话题）、@ 的写法与 `open_id`、身份确认、230027 时请人贴原文、指向 skill 的一句 | 这些是「不知道就会发错消息」的硬约束，必须每次新会话无条件送达 |
-| skill `bridge-collaboration` | 身份注入的细节、忙时引导与排队的语义、发出消息后的轮询流程与四个坑、拿更早历史的办法、`references/principles.md` 整份原则 | 长篇、按需读取。harness 启动时只把 skill 的 name 与 description 放进系统提示，正文由模型自己决定要不要读，所以不能承载硬约束 |
+| skill `bridge-collaboration` | 身份注入的细节、忙时引导与排队的语义、发出消息后的轮询流程与四个坑、拿更早历史的办法 | 长篇、按需读取。harness 启动时只把 skill 的 name 与 description 放进系统提示，正文由模型自己决定要不要读，所以不能承载硬约束 |
 
-skill 是 `skills/bridge-collaboration/` 整个目录（含 `references/principles.md`），复制到各 harness 的技能目录即可使用。新放入的 skill 要在新会话里才会被读到。
+skill 是 `skills/bridge-collaboration/` 整个目录，复制到各 harness 的技能目录即可使用。新放入的 skill 要在新会话里才会被读到。
 
 ### 接入新的本地 Agent
 
